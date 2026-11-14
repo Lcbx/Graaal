@@ -157,8 +157,13 @@ class RenderingSettings:
 			options = self.aa_pass.settings
 			changed, value = imgui.checkbox("Show AA edges", options.show_edges)
 			if changed: options = replace(options, show_edges=value)
+			changed, value = imgui.checkbox("Hybrid luma/chroma", options.hybrid_luma_chroma)
+			if changed: options = replace(options, hybrid_luma_chroma=value)
+			if options.hybrid_luma_chroma:
+				changed, value = imgui.slider_float("Chroma weight", options.chroma_weight, 0.01, 5.0, "%.3f")
+				if changed: options = replace(options, chroma_weight=value)
 			if self.aa_mode == "lxaa":
-				changed, value = imgui.slider_float("LXAA edge threshold", options.lxaa_edge_threshold, 0.0, 1.0, "%.3f")
+				changed, value = imgui.slider_float("LXAA edge threshold", options.lxaa_edge_threshold, 0.01, 1.0, "%.3f")
 				if changed: options = replace(options, lxaa_edge_threshold=value)
 				changed, value = imgui.checkbox("LXAA line check", options.lxaa_line_check)
 				if changed: options = replace(options, lxaa_line_check=value)
@@ -168,11 +173,11 @@ class RenderingSettings:
 				changed, value = imgui.slider_int("FAAA quality", options.faaa_quality, 1, 9)
 				if changed: options = replace(options, faaa_quality=value)
 			else:
-				changed, value = imgui.slider_float("DDAA2 diffusion strength", options.ddaa2_strength, 0.0, 10.0, "%.2f")
+				changed, value = imgui.slider_float("DDAA2 diffusion strength", options.ddaa2_strength, 0.01, 10.0, "%.2f")
 				if changed: options = replace(options, ddaa2_strength=value)
-				changed, value = imgui.slider_float("DDAA2 minimum edge threshold", options.ddaa2_threshold_min, 0.0, 1.0, "%.4f")
+				changed, value = imgui.slider_float("DDAA2 minimum edge threshold", options.ddaa2_threshold_min, 0.01, 1.0, "%.4f")
 				if changed: options = replace(options, ddaa2_threshold_min=value)
-				changed, value = imgui.slider_float("DDAA2 relative edge threshold", options.ddaa2_threshold_max, 0.0, 1.0, "%.4f")
+				changed, value = imgui.slider_float("DDAA2 relative edge threshold", options.ddaa2_threshold_max, 0.01, 1.0, "%.4f")
 				if changed: options = replace(options, ddaa2_threshold_max=value)
 				changed, value = imgui.slider_int("DDAA2 edge search steps", options.ddaa2_edge_steps, 0, 5)
 				_item_tooltip("Each step searches three pixels in each direction; zero disables edge search.")

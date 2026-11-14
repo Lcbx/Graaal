@@ -3,6 +3,8 @@
 `AntialiasingPass` applies LXAA, FAAA or DDAA2 to a single-sample color target.
 `AntialiasingSettings` controls each algorithm. Set `show_edges=True` to
 display detected edges in green.
+Set `hybrid_luma_chroma=True` to include color differences in edge detection;
+`chroma_weight` controls their contribution from 0 to 5 and defaults to 0.5.
 
 ```python
 from graaal.AntialiasingPass import AntialiasingPass, AntialiasingSettings

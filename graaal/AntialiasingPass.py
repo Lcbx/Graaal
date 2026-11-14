@@ -19,12 +19,15 @@ class AntialiasingSettings:
 	ddaa2_threshold_max: float = 0.166
 	ddaa2_edge_steps: int = 5
 	show_edges: bool = False
+	hybrid_luma_chroma: bool = False
+	chroma_weight: float = 0.5
 
 	def __post_init__(self):
 		if not np.isfinite(self.lxaa_edge_threshold) or not 0 <= self.lxaa_edge_threshold <= 1: raise ValueError("LXAA threshold must be between 0 and 1")
 		if not np.isfinite(self.faaa_edge_threshold) or not 1 <= self.faaa_edge_threshold <= 9: raise ValueError("FAAA threshold must be between 1 and 9")
 		if type(self.faaa_quality) is not int or not 1 <= self.faaa_quality <= 9: raise ValueError("FAAA quality must be an integer between 1 and 9")
-		if type(self.lxaa_line_check) is not bool or type(self.show_edges) is not bool: raise ValueError("AA switches must be boolean")
+		if any(type(value) is not bool for value in (self.lxaa_line_check, self.show_edges, self.hybrid_luma_chroma)): raise ValueError("AA switches must be boolean")
+		if not np.isfinite(self.chroma_weight) or not 0 <= self.chroma_weight <= 5: raise ValueError("Chroma weight must be between 0 and 5")
 		if not np.isfinite(self.ddaa2_strength) or not 0 <= self.ddaa2_strength <= 10: raise ValueError("DDAA2 strength must be between 0 and 10")
 		if not all(np.isfinite(value) and 0 <= value <= 1 for value in (self.ddaa2_threshold_min, self.ddaa2_threshold_max)): raise ValueError("DDAA2 thresholds must be between 0 and 1")
 		if type(self.ddaa2_edge_steps) is not int or not 0 <= self.ddaa2_edge_steps <= 5: raise ValueError("DDAA2 edge steps must be an integer between 0 and 5")
@@ -83,6 +86,8 @@ class AntialiasingPass:
 		if output.format != self.target_format or output.sample_count != 1: raise ValueError("Antialiasing output must match the target format and be single-sample")
 		params = {field.name: getattr(self.settings, field.name) for field in fields(self.settings) if field.name.startswith(mode+"_")}
 		params["show_edges"] = self.settings.show_edges
+		params["hybrid_luma_chroma"] = self.settings.hybrid_luma_chroma
+		params["chroma_weight"] = float(self.settings.chroma_weight)
 		key = (mode, *params.values())
 		if key not in self.pipelines:
 			shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "antialiasing.shader"), params={"srgb_surface": self.target_format.endswith("-srgb"), "manual_filter": self.manual_filter, "mode": mode, **params})
