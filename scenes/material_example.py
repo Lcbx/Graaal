@@ -3,8 +3,9 @@
 Run: python main.py scenes/material_example.py [--frames 120]
 M toggles 4x MSAA; A toggles SSAO; O selects SSAO in the compose pass or a separate pass. Space toggles orbit; D replaces the opaque shader's default.
 F shows/hides rendering settings.
-The bottom-left pair shares a dictionary; the bottom-right transparent sphere
-adds rim lighting through a Jinja child template. No transparency code is copied.
+The bottom-left pair shares a dictionary; the transparent spheres share a checker
+texture. The bottom-right sphere adds rim lighting through a Jinja child template.
+No transparency code is copied.
 The top-middle sphere uses time-driven displacement in the Jinja material below.
 """
 from pathlib import Path
@@ -19,7 +20,7 @@ from graaal.ECS import ECS
 from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
 from graaal.Math import Camera, Vec3
-from graaal.RenderContext import RenderContext
+from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from graaal.TransparencyData import VERTEX_DTYPE
 from scenes.rendering_settings import RenderingSettings
 
@@ -111,7 +112,16 @@ def run_scene():
 	RenderContext.init_window(1100, 760, "Materials | M: MSAA | A: SSAO | O: SSAO path | D: default | F: rendering | Space: orbit",
 		required_gpu_features=["indirect-first-instance"])
 	world, entities, meshes, shared, opaque = make_world()
-	renderer = MaterialRenderer(meshes=meshes, frame_fields={"time": ("f32", 0.0)})
+	shared["texture_layer"] = 1
+	meshes[2].shader.default_material["texture_layer"] = 1
+	size = 64
+	checks = (np.indices((size, size))//4).sum(axis=0)%2
+	pixels = np.full((2, size, size, 4), 255, dtype=np.uint8)
+	pixels[1, :, :, :3] = np.where(checks[..., None], 48, 255)
+	checker_texture = Texture((size, size, 2), format="rgba8unorm-srgb", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+	RenderContext.device.queue.write_texture({"texture": checker_texture.handle}, pixels,
+		{"bytes_per_row": size*4, "rows_per_image": size}, (size, size, 2))
+	renderer = MaterialRenderer(meshes=meshes, base_textures=checker_texture.view(dimension="2d-array"), frame_fields={"time": ("f32", 0.0)})
 	ao_pass = AmbientOcclusionPass(target_format=renderer.transparency.target_format)
 	aa_pass = AntialiasingPass(target_format=renderer.transparency.target_format)
 	adapter = EcsMaterialAdapter(renderer, world)
