@@ -120,11 +120,7 @@ def get_draw_counts(renderer, passes=None) -> tuple[int, int]:
 	oit = renderer.transparency
 	opaque = sum(batch.shader_id == 0 for batch in batches)
 	transparent = sum(batch.shader_id == 1 for batch in batches)
-	filtered = oit.bilateral_filter.kernel_size != 1
-	draw_calls = opaque + transparent * (1 + int(filtered) + oit.winner_count) + 1
-	if filtered and oit.debug_view in ("final", "reconstruction", "filter_support"):
-		if oit.reconstruction == "fragment":
-			draw_calls += (oit.reconstruction_passes - 1) * oit.sample_count
+	draw_calls = opaque + transparent * (3 + int(oit.mixed_tail)) + 1
 	return len(batches), draw_calls
 
 
@@ -148,5 +144,6 @@ def get_shader_sources(renderer) -> list[str]:
 		shaders.extend(spec.pipeline.shader for spec in shader.passes.values())
 	if isinstance(renderer, MaterialRenderer):
 		oit = renderer.transparency
-		shaders.extend((oit.shading_shader, oit.compose_shader, oit.pair_shader, oit.reconstruct_shader))
+		shaders.extend((oit.shading_shader, oit.nearest_shading_shader, oit.compose_shader))
+		shaders.extend(getattr(oit, name, None) for name in ("band_clear_shader", "kawase_shader"))
 	return list(dict.fromkeys(shader.info.source for shader in shaders if shader is not None))

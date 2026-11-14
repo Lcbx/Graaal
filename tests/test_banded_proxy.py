@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from test_transparency_multiple_winners import factory, read, render
+from transparency_helpers import factory, read, render
 
 
 def matching_proxy(renderer):
@@ -12,7 +12,7 @@ def matching_proxy(renderer):
 @pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("subset", [False, True])
 def test_exact_proxy_correction_survives_sparse_shading(factory, samples, subset):
-	renderer = factory(sample_count=samples, layers=2, alpha=.5, tail_allocation="banded", winner_coupling="complement", banded_proxy=True, banded_subset=subset)
+	renderer = factory(sample_count=samples, layers=2, alpha=.5, banded_proxy=True, banded_subset=subset)
 	matching_proxy(renderer)
 	render(renderer, (43, 29))
 	oit = renderer.transparency
@@ -30,7 +30,7 @@ def test_exact_proxy_correction_survives_sparse_shading(factory, samples, subset
 
 
 def test_signed_residual_is_preserved_through_blur(factory):
-	renderer = factory(layers=2, alpha=.1, tail_allocation="banded", winner_coupling="complement", banded_proxy=True)
+	renderer = factory(layers=2, alpha=.1, banded_proxy=True)
 	matching_proxy(renderer)
 	render(renderer, (128, 128))
 	residual = read(renderer.transparency.winner_color)[..., 2]
@@ -42,7 +42,7 @@ def test_signed_residual_is_preserved_through_blur(factory):
 @pytest.mark.parametrize("proxy", [False, True])
 @pytest.mark.parametrize("subset", [False, True])
 def test_single_sample_tail_keeps_native_nearest_and_transmission(factory, proxy, subset):
-	renderer = factory(sample_count=4, layers=2, alpha=.5, tail_allocation="banded", winner_coupling="complement", banded_proxy=proxy, banded_subset=subset, banded_tail_msaa=False)
+	renderer = factory(sample_count=4, layers=2, alpha=.5, banded_proxy=proxy, banded_subset=subset, banded_tail_msaa=False)
 	matching_proxy(renderer)
 	image = render(renderer, (43, 29))
 	oit = renderer.transparency
@@ -62,7 +62,7 @@ def test_single_sample_tail_keeps_native_nearest_and_transmission(factory, proxy
 @pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("tail_msaa", [False, True])
 def test_thick_tail_uses_sum_normalization_and_sparse_confidence(factory, samples, tail_msaa):
-	renderer = factory(sample_count=samples, layers=4, alpha=.8, tail_allocation="banded", winner_coupling="complement", banded_proxy=True, banded_subset=True, banded_tail_msaa=tail_msaa)
+	renderer = factory(sample_count=samples, layers=4, alpha=.8, banded_proxy=True, banded_subset=True, banded_tail_msaa=tail_msaa)
 	matching_proxy(renderer)
 	render(renderer, (32, 32))
 	oit = renderer.transparency
@@ -87,7 +87,7 @@ def test_proxy_point_cancellation_with_animated_custom_lighting(samples, tail_ms
 	items = [items[0], items[2]]
 	shader = DefaultMaterialShader(transparent=True, source=ANIMATED_SOURCE)
 	for item in items: item.mesh.shader = shader
-	renderer = MaterialRenderer(items, tail_allocation="banded", kawase_passes=0, sample_count=samples,
+	renderer = MaterialRenderer(items, kawase_passes=0, sample_count=samples,
 		banded_proxy=False, banded_tail_msaa=tail_msaa, target_format="rgba8unorm", frame_fields={"time": ("f32", 0.0)})
 	output = Texture((96, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	for seconds in (0., 1.):

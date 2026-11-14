@@ -32,7 +32,7 @@ def draws(renderer_types):
 	renderer.shaders = {
 		0: NS(passes={"main": pass_("opaque"), "prepass": pass_("opaque")}),
 		1: NS(passes={"main": pass_("transparent"), "transmittance": pass_("transparent"),
-			"guide": pass_("transparent"), "second": pass_("transparent")}),
+			"nearest": pass_("transparent"), "bands": pass_("transparent")}),
 	}
 	renderer._cull_shader = shader("cull")
 	return renderer
@@ -40,9 +40,8 @@ def draws(renderer_types):
 
 def material_renderer(renderer_types, **options):
 	_, MaterialRenderer = renderer_types
-	settings = dict(winner_count=2, sample_count=4, reconstruction_passes=3, reconstruction="fragment",
-		debug_view="final", bilateral_filter=NS(kernel_size=5), shading_shader=shader("shade"),
-		compose_shader=shader("compose"), pair_shader=shader("filter"), reconstruct_shader=None)
+	settings = dict(mixed_tail=True, shading_shader=shader("shade"), nearest_shading_shader=shader("nearest"),
+		compose_shader=shader("compose"), band_clear_shader=shader("clear"), kawase_shader=shader("kawase"))
 	settings.update(options)
 	renderer = MaterialRenderer()
 	renderer.draws = draws(renderer_types)
@@ -55,26 +54,24 @@ def test_draw_batches_counts(renderer_types):
 	renderer = draws(renderer_types)
 	assert get_draw_counts(renderer) == (3, 3)
 	assert get_draw_counts(renderer, passes=("prepass", "main")) == (3, 5)
-	assert get_draw_counts(renderer, passes="guide") == (3, 1)
+	assert get_draw_counts(renderer, passes="bands") == (3, 1)
 	assert get_draw_counts(renderer, passes=()) == (3, 0)
 
 
 def test_material_renderer_counts(renderer_types):
 	renderer = material_renderer(renderer_types)
-	# Two opaque, three transparent passes for one transparent batch,
-	# one composition draw, and two filtering stages with four samples each.
-	assert get_draw_counts(renderer) == (3, 15)
+	# Two opaque draws, nearest/transmission/statistics/bands for one transparent
+	# batch, and one composition draw. Kawase uses compute dispatches.
+	assert get_draw_counts(renderer) == (3, 7)
 	assert get_draw_counts(renderer, passes="opaque") == (3, 2)
 	assert get_draw_counts(renderer, passes="transmittance") == (3, 1)
-	assert get_draw_counts(material_renderer(renderer_types, bilateral_filter=NS(kernel_size=1))) == (3, 6)
-	assert get_draw_counts(material_renderer(renderer_types, reconstruction="compute")) == (3, 7)
-	assert get_draw_counts(material_renderer(renderer_types, debug_view="transmittance")) == (3, 7)
+	assert get_draw_counts(material_renderer(renderer_types, mixed_tail=False)) == (3, 6)
 
 
 def test_sources_deduplicated_and_active(renderer_types):
 	assert get_shader_sources(draws(renderer_types)) == ["cull", "opaque", "transparent"]
-	assert get_shader_sources(material_renderer(renderer_types)) == ["cull", "opaque", "transparent", "shade", "compose", "filter"]
-	assert get_shader_sources(material_renderer(renderer_types, reconstruct_shader=shader("reconstruct")))[-1] == "reconstruct"
+	assert get_shader_sources(material_renderer(renderer_types)) == ["cull", "opaque", "transparent", "shade", "nearest", "compose", "clear", "kawase"]
+	assert get_shader_sources(material_renderer(renderer_types, kawase_shader=None))[-1] == "clear"
 
 
 def test_unsupported_input(renderer_types):

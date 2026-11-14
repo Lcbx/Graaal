@@ -63,7 +63,7 @@ def stages(values):
 	"""Group timestamp labels without charging nearest/clear work to tail shading."""
 	return dict(transmittance=values.get("2_transmittance", 0), allocation=values.get("3_banded_tail", 0),
 		statistics=values.get("2_tail_statistics", 0),
-		shading=values.get("4_shade_winner_0", 0), blur=sum(value for key, value in values.items() if key in ("5_kawase_down", "5_kawase_up")),
+		shading=values.get("4_shade_winner", 0), blur=sum(value for key, value in values.items() if key in ("5_kawase_down", "5_kawase_up")),
 		resolve=values.get("5_kawase_finish", 0),
 		composite=values.get("5_reconstruct_compose", 0), clear=values.get("2_clear_bands", 0),
 		nearest=sum(value for key, value in values.items() if key in ("2_nearest_layer", "2_shade_nearest")))
@@ -102,7 +102,7 @@ def run(size=(1280, 720), frames=24, warmup=5, pairs=(1, 2, 3), samples=(1, 4), 
 	transparency_module.Texture = readable
 	try:
 		items, camera, reference, banded, a1, bounds, tail_coverage = make_scene(size)
-		renderer = MaterialRenderer(items, target_format="rgba8unorm", tail_allocation="banded", banded_proxy=False)
+		renderer = MaterialRenderer(items, target_format="rgba8unorm", banded_proxy=False)
 		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT)
 		configs = [(v, s, p) for v in variants for s in samples for p in pairs]
 		measurements, quality, schedule = {}, {}, []

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from graaal.TransparencyPass import BilateralFilter, GrazingFade
+from graaal.TransparencyPass import GrazingFade
 from scenes import transparency_example as scene
 
 
@@ -24,7 +24,7 @@ def test_grazing_fade_accepts_full_angular_range_and_current_defaults():
 
 
 def test_grazing_settings_and_toggle_keep_angles_ordered(monkeypatch):
-	renderer = SimpleNamespace(bilateral_filter=BilateralFilter(), grazing_fade=GrazingFade(False, 70, 85))
+	renderer = SimpleNamespace(grazing_fade=GrazingFade(False, 70, 85))
 	renderer.set_grazing_fade = lambda value: setattr(renderer, "grazing_fade", value)
 	settings = scene.FilterSettings(renderer)
 	monkeypatch.setattr(scene, "transparency", renderer, raising=False)

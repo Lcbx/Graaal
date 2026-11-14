@@ -32,16 +32,14 @@ def test_material_backfaces_default_to_hidden_and_double_sided_is_live(alpha_mod
 		RenderContext.submit(commands.finish())
 		pixels = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 64}, (16, 16, 1))
 		return np.frombuffer(pixels, dtype=np.uint8).reshape(16, 16, 4)[8, 8, :3].copy()
-	for tail in (("banded", "stochastic") if alpha_mode == 2 else ("banded",)):
-		renderer.set_tail_allocation(tail)
-		compiled = renderer.transparency.shader
-		item.mesh = back
-		material.pop("double_sided", None)
-		np.testing.assert_allclose(render(), background, atol=1)
-		material["double_sided"] = True
-		assert render()[0] > 150
-		material["double_sided"] = False
-		np.testing.assert_allclose(render(), background, atol=1)
-		item.mesh = front
-		assert render()[0] > 150
-		assert renderer.transparency.shader is compiled
+	compiled = renderer.transparency.shader
+	item.mesh = back
+	material.pop("double_sided", None)
+	np.testing.assert_allclose(render(), background, atol=1)
+	material["double_sided"] = True
+	assert render()[0] > 150
+	material["double_sided"] = False
+	np.testing.assert_allclose(render(), background, atol=1)
+	item.mesh = front
+	assert render()[0] > 150
+	assert renderer.transparency.shader is compiled

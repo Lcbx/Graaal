@@ -46,6 +46,7 @@ class MaterialRenderer:
 	DrawInstance lists are an optional direct-draw convenience. record() uses frustum
 	culling and caller-owned commands/output; presentation/submission remain external.
 	"""
+
 	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, frame_fields=None, **transparency_options):
 		self.instances = None if instances is None else list(instances)
 		self.meshes = list(dict.fromkeys(meshes if meshes is not None else (i.mesh for i in self.instances or ())))
@@ -97,9 +98,10 @@ class MaterialRenderer:
 	def _register_passes(self):
 		opaque, transparent = self.geometry
 		self.draws.register_shader(0, RenderShader({"opaque": opaque.render_shader["main"]}))
-		passes = dict(transparent.render_shader.passes, guide=transparent.guide)
+		passes = dict(transparent.render_shader.passes)
 		if transparent.nearest is not None: passes["nearest"] = transparent.nearest
 		self.draws.register_shader(1, RenderShader(passes))
+
 
 	@staticmethod
 	def _write(buffer, content):
@@ -155,40 +157,8 @@ class MaterialRenderer:
 	def set_ambient_occlusion_settings(self, settings):
 		if self.transparency.set_ambient_occlusion_settings(settings): self._register_passes()
 
-	def set_exact_nearest(self, enabled):
-		if self.transparency.set_exact_nearest(enabled): self._register_passes()
-
-	def set_tail_allocation(self, mode):
-		if self.transparency.set_tail_allocation(mode): self._register_passes()
-
 	def set_banded_options(self, **options):
 		if self.transparency.set_banded_options(**options): self._register_passes()
-
-	def set_noise_footprint_balancing(self, enabled):
-		if self.transparency.set_noise_footprint_balancing(enabled):
-			self._register_passes()
-
-	def set_winner_count(self, count):
-		if self.transparency.set_winner_count(count):
-			self._register_passes()
-
-	def set_force_single_contributor(self, enabled):
-		if self.transparency.set_force_single_contributor(enabled): self._register_passes()
-
-	def set_winner_mix(self, mode):
-		if self.transparency.set_winner_mix(mode): self._register_passes()
-
-	def set_winner_coupling(self, mode):
-		if self.transparency.set_winner_coupling(mode): self._register_passes()
-
-	def set_reconstruction(self, mode):
-		if self.transparency.set_reconstruction(mode): self._register_passes()
-
-	def set_reconstruction_passes(self, count):
-		if self.transparency.set_reconstruction_passes(count): self._register_passes()
-
-	def set_early_b_rejection(self, enabled):
-		if self.transparency.set_early_b_rejection(enabled): self._register_passes()
 
 	def record(self, commands, size, camera, output, *, frame=None, lighting=None):
 		"""Record a frame, updating any supplied frame and lighting fields."""

@@ -1,5 +1,4 @@
 """Read-back checks of sample coverage, opaque occlusion and live MSAA switches."""
-from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -65,9 +64,8 @@ def test_msaa_resolves_coverage_in_linear_hdr_and_preserves_live_batches(monkeyp
 			usage |= TextureUsage.COPY_SRC
 		return Texture(*args, usage=usage, **kwargs)
 	monkeypatch.setattr(transparency, "Texture", readable_texture)
-	scene.init_scene(sample_count=initial_count, bilateral_filter=scene.BilateralFilter(kernel_size=1), tail_allocation="stochastic")
+	scene.init_scene(sample_count=initial_count)
 	oit = scene.transparency
-	assert (oit.noise_mode, oit.winner_count, oit.winner_mix) == ("uv_blue_lerp", 2, "average")
 	hiz_calls = []
 	original_hiz = scene.HiZCuller.record
 	original_build = scene.hzb.build
@@ -82,32 +80,24 @@ def test_msaa_resolves_coverage_in_linear_hdr_and_preserves_live_batches(monkeyp
 	monkeypatch.setattr(scene.hzb, "build", build_hzb)
 	registered = scene.transparent_batches.data.shaders[0]
 	scene.camera.position, scene.camera.target = scene.Vec3(0, 0, 3), scene.Vec3(0, 0, 0)
-	oit.set_noise_mode("triplanar_correlated")
 	oit.set_noise_scale(1.5)
-	oit.set_noise_footprint_balance(0.5)
-	hierarchy = oit._noise_hierarchy
-	for count, width, kernel in ((initial_count, 48, 1), (5-initial_count, 40, 9), (initial_count, 48, 9)):
+	for count, width in ((initial_count, 48), (5-initial_count, 40), (initial_count, 48)):
 		output = Texture((width, 48), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 		monkeypatch.setattr(RenderContext, "window_dimensions", (width, 48))
 		monkeypatch.setattr(RenderContext, "screen", lambda **kwargs: output.color_attachment())
 		oit.set_sample_count(count)
 		assert not oit.set_sample_count(count)
 		assert oit.noise_scale == 1.5
-		assert oit.noise_footprint_balance == 0.5
-		assert oit.uniforms.content["noise_footprint_balance"] == 0.5
 		assert oit.effective_noise_scale == 1.5/(count**0.5)
 		assert oit.uniforms.content["clip"][..., 2] == oit.effective_noise_scale
 		assert scene.transparent_batches.data.shaders[0] is registered
 		assert scene.transparent_batches.passes.render_shader is registered
-		assert oit._noise_hierarchy is hierarchy
-		assert oit.noise_mode == "triplanar_correlated"
-		oit.set_bilateral_filter(replace(oit.bilateral_filter, kernel_size=kernel))
 		oit.set_debug_view("final")
 		previous_hiz_calls = len(hiz_calls)
 		scene.render_frame()
 		assert oit.uniforms.content["clip"][..., 2] == oit.effective_noise_scale
 		assert len(hiz_calls)-previous_hiz_calls == (2 if count == 1 else 0)
-		winners = _read(oit.winner_color, np.float16, 4, count)
+		winners = _read(oit.nearest_color, np.float16, 4, count)
 		flags = winners[..., 3]
 		assert set(np.unique(flags)) == {0, 1}
 		assert np.all(winners[..., 0] == flags)  # exact red shade, including split payloads
@@ -120,7 +110,7 @@ def test_msaa_resolves_coverage_in_linear_hdr_and_preserves_live_batches(monkeyp
 		np.testing.assert_allclose(_linear(_read(output, np.uint8, 4)[0, ..., :3]), hdr/(1+hdr), atol=0.004)
 		oit.set_debug_view("transmittance")
 		scene.render_frame()
-		# Guide/transmittance must agree with per-sample winner occlusion.
+		# Transmission agrees with per-sample nearest coverage.
 		np.testing.assert_allclose(_linear(_read(output, np.uint8, 4)[0, ..., 0]), 1-coverage, atol=0.004)
 	# Editing the base width while MSAA is active must survive repeated toggles.
 	oit.set_sample_count(4)
@@ -137,15 +127,3 @@ def test_sample_count_validation_precedes_resource_changes(count):
 	oit = object.__new__(transparency.TransparencyPass)
 	with pytest.raises(ValueError, match="sample_count"):
 		oit.set_sample_count(count)
-
-
-@pytest.mark.parametrize("value", [0, 1, None, "yes"])
-def test_footprint_feature_requires_boolean(value):
-	oit = object.__new__(transparency.TransparencyPass)
-	with pytest.raises(ValueError, match="boolean"): oit.set_noise_footprint_balancing(value)
-
-
-@pytest.mark.parametrize("pixels,subdivisions", [(0, 4), (float("nan"), 4), (257, 4), (True, 4), (24, 0), (24, 33), (24, 1.5)])
-def test_anchor_settings_validate_before_uniform_changes(pixels, subdivisions):
-	oit = object.__new__(transparency.TransparencyPass)
-	with pytest.raises(ValueError): oit.set_noise_anchor(pixels, subdivisions)

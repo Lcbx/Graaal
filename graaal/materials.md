@@ -405,7 +405,7 @@ material families.
 | `MeshInstance` | Raster `instances` and deferred `shading_instances` tables | Existing 32-byte packed position/rotation/scale ABI; shared by render and culling |
 | `MaterialVertex` | Vertex-hook return value | Object-space position, normal and UV before instance transformation |
 | `ShadingVertex` | Deferred `vertices` table | Original triangle vertices for winner reconstruction |
-| `BilateralSettings` | `bilateral`, composition uniform | Reconstruction sigmas, kernel and debug mode; changed ranges on edit |
+| `ComposeSettings` | `compose_settings`, composition uniform | Diagnostic view and ambient occlusion toggle |
 | `CameraUniforms` | Culling `camera_params` uniform | Derived view-projection/planes/camera plus culling counts; unchanged cameras skip updates |
 | `ParamsN` | Generated shader-local family value | Typed access to shared fields and instance overrides |
 
@@ -448,12 +448,12 @@ Built-in material passes derive explicit layouts from reflected shader bindings.
 The same group-layout objects own bounded GPU bind-group caches across compatible
 pipelines and across 1x/4x MSAA. Cache keys include buffer handles and bound sizes,
 so growth or resource replacement selects a new bind group; changing contents
-preserves it. Custom shader sets keep the automatic-layout path.
+preserves it.
 
 | Group | Raster geometry | Deferred shading | Composition |
 | --- | --- | --- | --- |
 | 0 | `Frame` + `Lighting` | Same shared group | Same shared group |
-| 1 | Instance/visibility indexing | Winner input/output textures | Color/depth/guide textures and `BilateralSettings` |
+| 1 | Instance/visibility indexing | Nearest/banded payloads and shaded color | Color/depth textures and `ComposeSettings` |
 | 2 | Material tables, metadata, texture array and sampler | Material resources plus vertex/transform tables | Unused |
 | 3 | Pass-specific depth/noise inputs | Unused | Unused |
 

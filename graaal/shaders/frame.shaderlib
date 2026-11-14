@@ -2,15 +2,10 @@
 <Frame> view: mat4x4f;
 <Frame> proj: mat4x4f;
 <Frame> camera_position: vec4f;
-// clip: near, far, surface noise-cell width in pixels, noise mode.
+// clip: near, far, screen noise-cell width in pixels, reserved.
 <Frame> clip: vec4f;
 // Legacy direct-material fade: start degrees, end degrees, enabled, reserved.
 <Frame> grazing: vec4f;
-// UV footprint compromise: 0=max derivative, .5=area, 1=min derivative.
-<Frame> noise_footprint_balance: f32;
-// Anchored blue: coarse target in pixels, fine shift subdivisions, reserved.
-<Frame> noise_anchor: vec4f;
-<Frame> _graaal_key_frame: u32;
 #for name, type_name in PARAMS.get("frame_fields", {}).items()
 {{ field("Frame", name, type_name) }}
 #endfor

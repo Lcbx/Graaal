@@ -7,8 +7,8 @@ from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from graaal.TransparencyData import VERTEX_DTYPE
-from test_transparency_multiple_winners import read, render
-from test_transparency_exact_nearest import encoded
+from transparency_helpers import read, render
+from transparency_helpers import encoded
 
 
 def quad():
@@ -31,10 +31,10 @@ def test_default_is_banded_with_one_pair_and_single_sample_tail():
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	renderer = MaterialRenderer([DrawInstance(MaterialMesh(quad(), unlit()))], sample_count=4, target_format="rgba8unorm")
 	oit = renderer.transparency
-	assert oit.banded_tail and oit.exact_nearest and oit.reconstruction == "kawase"
+	assert np.isfinite(render(renderer, (17, 19))).all()
+	assert oit.nearest_payload is not None and oit.band_payloads is not None
 	assert oit.kawase_passes == 1 and oit.tail_sample_count == 1
 	assert not oit.banded_proxy and not oit.banded_subset
-	assert np.isfinite(render(renderer, (17, 19))).all()
 	assert [entry for entry, *_ in oit.kawase_stages] == ["down", "up", "finish"]
 
 
@@ -127,17 +127,3 @@ def test_ecs_mask_mode_edit_updates_route_and_keeps_surface_identity():
 	assert adapter.sync()
 	assert renderer.metadata.content[0, 2] == identity
 	assert any(batch.shader_id == 1 and batch.mesh_id is not None for batch in renderer.draws.draw_batches)
-
-
-def test_unused_correlated_noise_is_lazy_until_switching_to_stochastic():
-	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-	renderer = MaterialRenderer([DrawInstance(MaterialMesh(quad(), unlit()))], target_format="rgba8unorm")
-	oit = renderer.transparency
-	image = render(renderer, (17, 19))
-	oit.set_noise_mode("triplanar_correlated")
-	assert oit._noise_hierarchy is None and oit._noise_hierarchy_second is None
-	np.testing.assert_array_equal(render(renderer, (17, 19)), image)
-	renderer.set_tail_allocation("stochastic")
-	assert oit._noise_hierarchy is not None
-	assert oit._noise_hierarchy_second is None
-	assert np.isfinite(render(renderer, (17, 19))).all()

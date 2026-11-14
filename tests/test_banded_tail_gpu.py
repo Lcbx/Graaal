@@ -2,124 +2,25 @@
 import numpy as np
 import pytest
 
-from test_transparency_multiple_winners import factory, read, render
-from test_transparency_exact_nearest import encoded
+from transparency_helpers import factory, read, render
+from transparency_helpers import encoded
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
 
 
-@pytest.mark.parametrize("mask", [1, 14])
-def test_min_key_opaque_msaa_coverage_is_per_sample(factory, mask):
-	renderer = factory(sample_count=4, layers=3, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0,
-		frame_fields={"key_frame": ("f32", 2.0)})
-	usage = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
-	color = Texture((32, 32), format="rgba16float", usage=usage, sample_count=4)
-	depth = Texture((32, 32), format="depth32float", usage=usage, sample_count=4)
-	renderer.transparency.set_opaque_inputs(color, depth)
-	shader = Shader(source='''
-<Output> @location(0) color: vec4f;
-<Output> @builtin(frag_depth) depth: f32;
-<Output> @builtin(sample_mask) mask: u32;
-@vertex fn vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-	return vec4f(vec2f(f32((i << 1u) & 2u), f32(i & 2u))*2.0-1.0, 0.0, 1.0);
-}
-@fragment fn fragment() -> Output {
-	return Output(vec4f(0.0, 0.2, 0.3, 1.0), 0.2, MASKu);
-}
-'''.replace("MASK", str(mask)))
-	pipeline = RenderPipeline(shader, cull_mode="none", depth_test="always", sample_count=4)
-	output = Texture((32, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
-	commands = RenderContext.commands()
-	with commands.render_pass(color=color.color_attachment(clear=(0, 0, 0, 1)), depth=depth.depth_attachment(clear=1)) as draw:
-		draw.set_pipeline(pipeline)
-		draw.draw(3)
-	renderer.record(commands, (32, 32), Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 55), output.color_attachment())
-	RenderContext.submit(commands.finish())
-	oit = renderer.transparency
-	optical = np.frombuffer(RenderContext.device.queue.read_buffer(oit.optical.handle), dtype=np.uint32).reshape(32, 32, 4, 5)
-	for sample in range(4):
-		if mask & (1 << sample): np.testing.assert_array_equal(optical[:, :, sample], 0)
-		else: assert np.all(optical[:, :, sample, 4] > 0)
-	assert np.all(read(oit.key_payload_a, np.uint32)[..., 0] > 0)
-	assert float(oit.uniforms.content["key_frame"].flat[0]) == 2.0
 
 
-@pytest.mark.parametrize("samples", [1, 4])
-def test_min_key_tail_winners_and_optical_depth(factory, samples):
-	renderer = factory(sample_count=samples, layers=3, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)
-	image = render(renderer, (64, 64))
-	oit = renderer.transparency
-	assert np.isfinite(image).all()
-	assert oit.band_counts is None and oit.band_payloads is None
-	assert oit.key_payload_a.sample_count == oit.key_payload_b.sample_count == 1
-	assert oit.transmittance.format == "rgba32float" and oit.tail_coverage.format == "r32float"
-	assert oit.nearest_alpha.sample_count == samples
-	assert np.all(read(oit.key_payload_a, np.uint32)[..., 0] >= 2)
-	assert np.all(read(oit.key_payload_b, np.uint32)[..., 0] >= 2)
-	assert np.allclose(read(oit.transmittance, np.float32)[..., :3], 0.25, atol=0.0001)
-	assert np.allclose(read(oit.transmittance, np.float32)[..., 3], 0.25, atol=0.0001)
 
 
-def test_min_key_tail_weighted_winner_frequencies(factory):
-	renderer = factory(layers=4, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)
-	for item, alpha in zip(renderer.instances[1:], (0.5, 0.3, 0.2)):
-		item.material["base_color"] = (1, 1, 1, alpha)
-	counts = np.zeros((2, 3), dtype=np.int64)
-	first_ids = None
-	for _ in range(16):
-		render(renderer, (96, 96))
-		for stream, payload in enumerate((renderer.transparency.key_payload_a, renderer.transparency.key_payload_b)):
-			ids = read(payload, np.uint32)[0, ..., 0]
-			if stream == 0:
-				if first_ids is None: first_ids = ids.copy()
-				else: assert np.mean(first_ids != ids) > 0.1
-			counts[stream] += np.array([np.count_nonzero(ids == instance) for instance in (2, 3, 4)])
-	frequencies = counts / counts.sum(axis=1, keepdims=True)
-	np.testing.assert_allclose(frequencies, ((0.5, 0.3, 0.2), (0.5, 0.3, 0.2)), atol=0.008)
-
-
-def test_min_key_complement_selects_distinct_equal_weight_fragments(factory):
-	renderer = factory(layers=4, alpha=0.5, tail_allocation="min_key", winner_coupling="complement", kawase_passes=0)
-	render(renderer, (128, 128))
-	a = read(renderer.transparency.key_payload_a, np.uint32)[0, ..., 0]
-	b = read(renderer.transparency.key_payload_b, np.uint32)[0, ..., 0]
-	assert np.mean(a != b) > 0.999
-
-
-@pytest.mark.parametrize("samples", [1, 4])
-def test_min_key_single_layer_has_empty_tail(factory, samples):
-	renderer = factory(sample_count=samples, layers=1, alpha=0.3, tail_allocation="min_key", winner_coupling="complement", kawase_passes=2)
-	image = render(renderer, (31, 23))
-	oit = renderer.transparency
-	assert np.isfinite(image).all()
-	np.testing.assert_array_equal(read(oit.key_payload_a, np.uint32), 0)
-	np.testing.assert_array_equal(read(oit.key_payload_b, np.uint32), 0)
-	np.testing.assert_array_equal(read(oit.winner_color), 0)
-	coverage = RenderContext.device.queue.read_texture({"texture": oit.tail_coverage.handle},
-		{"bytes_per_row": 31*4, "rows_per_image": 23}, oit.tail_coverage.size)
-	np.testing.assert_array_equal(np.frombuffer(coverage, dtype=np.float32), 0)
-
-
-def test_min_key_tail_switches_and_resizes(factory):
-	renderer = factory(sample_count=4, layers=3, alpha=0.3, tail_allocation="banded", winner_coupling="complement")
-	for mode, size in (("banded", (32, 24)), ("min_key", (47, 39)), ("stochastic", (25, 19)), ("min_key", (31, 17))):
-		renderer.set_tail_allocation(mode)
-		assert np.isfinite(render(renderer, size)).all()
-		assert (renderer.transparency.key_payload_a is not None) == (mode == "min_key")
-		assert (renderer.transparency.band_counts is not None) == (mode == "banded")
-	for count in (1, 4):
-		renderer.set_sample_count(count)
-		assert np.isfinite(render(renderer, (33, 21))).all()
-		assert renderer.transparency.nearest_alpha.sample_count == count
 
 
 @pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("passes", [0, 1, 3])
 def test_single_layer_stays_exact_without_any_tail(factory, samples, passes):
-	renderer = factory(sample_count=samples, alpha=0.1, tail_allocation="banded", winner_coupling="complement", kawase_passes=passes)
+	renderer = factory(sample_count=samples, alpha=0.1, kawase_passes=passes)
 	image = render(renderer, (31, 23))
 	oit = renderer.transparency
-	assert oit.exact_nearest and oit.reconstruction == "kawase"
+	assert oit.nearest_payload is not None
 	np.testing.assert_array_equal(read(oit.winner_color), 0)
 	np.testing.assert_array_equal(read(oit.reconstruction_color), 0)
 	expected = encoded(np.array([0.1, 0, 0])+0.9*np.array([0.035, 0.05, 0.08]))
@@ -129,7 +30,7 @@ def test_single_layer_stays_exact_without_any_tail(factory, samples, passes):
 @pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("alpha", [0.1, 0.5, 0.8])
 def test_band_totals_payload_marginals_and_denominator(factory, samples, alpha):
-	renderer = factory(sample_count=samples, alpha=alpha, layers=4, tail_allocation="banded", winner_coupling="complement", kawase_passes=0)
+	renderer = factory(sample_count=samples, alpha=alpha, layers=4, kawase_passes=0)
 	render(renderer, (128, 128))
 	oit = renderer.transparency
 	payloads = read(oit.band_payloads, np.uint32)
@@ -149,12 +50,11 @@ def test_band_totals_payload_marginals_and_denominator(factory, samples, alpha):
 			assert abs(np.mean(ids == instance)-alpha/max(1.0, 3*alpha)) < 0.005
 		assert abs(np.mean(ids != 0)-den) < 0.004
 		if den == 1: assert np.all(ids != 0)
-	assert oit.winner is None and oit.selection_depth is None
 
 
 @pytest.mark.parametrize("samples", [1, 4])
 def test_half_alpha_tail_is_constant_and_nearest_is_not_blurred(factory, samples):
-	renderer = factory(sample_count=samples, alpha=0.5, layers=2, tail_allocation="banded", winner_coupling="complement", kawase_passes=0)
+	renderer = factory(sample_count=samples, alpha=0.5, layers=2, kawase_passes=0)
 	image = render(renderer, (43, 29))
 	for passes in (1, 3, 8, 0):
 		renderer.transparency.set_kawase_passes(passes)
@@ -165,8 +65,8 @@ def test_half_alpha_tail_is_constant_and_nearest_is_not_blurred(factory, samples
 	np.testing.assert_allclose(image[0, ..., :3], np.broadcast_to(expected, image[0, ..., :3].shape), atol=1)
 
 
-def test_blur_reduces_sparse_tail_variance_and_resize_switching_clears(factory):
-	renderer = factory(alpha=0.1, layers=2, tail_allocation="banded", winner_coupling="complement", kawase_passes=0)
+def test_blur_reduces_sparse_tail_variance_and_resize_clears(factory):
+	renderer = factory(alpha=0.1, layers=2, kawase_passes=0)
 	render(renderer, (128, 128))
 	oit = renderer.transparency
 	sharp = read(oit.reconstruction_color)[..., 2]
@@ -175,11 +75,10 @@ def test_blur_reduces_sparse_tail_variance_and_resize_switching_clears(factory):
 	blurred = read(oit.reconstruction_color)[..., 2]
 	assert blurred.std() < sharp.std()*0.2
 	assert abs(blurred.mean()-0.1) < 0.005
-	for mode, samples, size in (("stochastic", 4, (31, 23)), ("banded", 4, (63, 47)), ("banded", 1, (19, 17))):
-		renderer.set_tail_allocation(mode)
+	for samples, size in ((4, (31, 23)), (4, (63, 47)), (1, (19, 17))):
 		renderer.set_sample_count(samples)
 		assert np.isfinite(render(renderer, size)).all()
-		assert (oit.band_counts is not None) == (mode == "banded")
+		assert oit.band_counts is not None
 	for item in renderer.instances: item.material["base_color"] = (1, 1, 1, 0)
 	render(renderer, (19, 17))
 	np.testing.assert_array_equal(read(oit.band_payloads, np.uint32), 0)
@@ -190,23 +89,14 @@ def test_blur_reduces_sparse_tail_variance_and_resize_switching_clears(factory):
 @pytest.mark.parametrize("value", [-1, 9, True, 1.5])
 def test_invalid_kawase_counts_are_rejected(factory, value):
 	with pytest.raises(ValueError, match="kawase_passes"):
-		factory(tail_allocation="banded", winner_coupling="complement", kawase_passes=value)
+		factory(kawase_passes=value)
 
-
-def test_incompatible_banded_settings_are_rejected_without_mutation(factory):
-	renderer = factory(tail_allocation="banded", winner_coupling="complement")
-	oit = renderer.transparency
-	for setter, value in ((oit.set_exact_nearest, False), (oit.set_winner_count, 1), (oit.set_winner_mix, "fill"),
-		(oit.set_winner_coupling, "independent"), (oit.set_force_single_contributor, True), (oit.set_early_b_rejection, True),
-		(oit.set_reconstruction, "atrous"), (oit.set_reconstruction_passes, 2), (oit.set_debug_view, "winner_count")):
-		with pytest.raises(ValueError): setter(value)
-	assert oit.exact_nearest and oit.winner_count == 2 and oit.reconstruction == "kawase"
 
 
 @pytest.mark.parametrize("samples", [1, 4])
 @pytest.mark.parametrize("variant", ["baseline", "proxy", "single"])
 def test_external_opaque_depth_blocks_atomic_writes_and_preserves_color(factory, samples, variant):
-	renderer = factory(sample_count=samples, layers=3, tail_allocation="banded", winner_coupling="complement",
+	renderer = factory(sample_count=samples, layers=3,
 		banded_proxy=variant != "baseline", banded_subset=variant == "single", banded_tail_msaa=variant != "single")
 	usage = TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING
 	color = Texture((64, 32), format="rgba16float", usage=usage, sample_count=samples)
@@ -246,7 +136,7 @@ def test_external_opaque_depth_blocks_atomic_writes_and_preserves_color(factory,
 
 @pytest.mark.parametrize("samples", [1, 4])
 def test_coplanar_distinct_fragments_are_not_dropped_by_nearest_exclusion(factory, samples):
-	renderer = factory(sample_count=samples, layers=2, tail_allocation="banded", winner_coupling="complement")
+	renderer = factory(sample_count=samples, layers=2)
 	renderer.instances[1].position = renderer.instances[0].position
 	render(renderer, (32, 32))
 	oit = renderer.transparency
@@ -256,7 +146,7 @@ def test_coplanar_distinct_fragments_are_not_dropped_by_nearest_exclusion(factor
 
 
 def test_rgb_nearest_mix_uses_per_channel_opacity(factory):
-	renderer = factory(layers=2, alpha=0.5, tail_allocation="banded", winner_coupling="complement")
+	renderer = factory(layers=2, alpha=0.5)
 	renderer.instances[0].material["opacity_rgb"] = (1, 0.5, 0.25)
 	image = render(renderer, (32, 32))
 	a = np.array([0.5, 0.25, 0.125])
@@ -266,7 +156,7 @@ def test_rgb_nearest_mix_uses_per_channel_opacity(factory):
 
 @pytest.mark.parametrize("samples", [1, 4])
 def test_contrasting_tail_matches_p_weighting_after_submission_reversal(factory, samples):
-	renderer = factory(sample_count=samples, layers=4, alpha=0.1, tail_allocation="banded", winner_coupling="complement", kawase_passes=0)
+	renderer = factory(sample_count=samples, layers=4, alpha=0.1, kawase_passes=0)
 	p = np.array([0.05, 0.1, 0.2])
 	for item, alpha, color in zip(renderer.instances[1:], p, np.eye(3)):
 		item.material["base_color"] = (1, 1, 1, alpha)

@@ -25,7 +25,7 @@ def run(size=(1280, 720), frames=30, warmup=5, rounds=3, samples=(1, 4)):
 	RenderContext.screen = lambda **kwargs: output.color_attachment()
 	profiler = GpuProfiler(max_passes=128)
 	try:
-		scene.init_scene(sample_count=1, tail_allocation="stochastic")
+		scene.init_scene(sample_count=1)
 		measurements = {(count, mode): [] for count in samples for mode in MODES}
 		baseline = {count: [] for count in samples}
 		order = [(count, mode) for count in samples for mode in ("off", *MODES)]

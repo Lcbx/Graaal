@@ -61,28 +61,6 @@ def test_material_parameter_decoder_matches_packed_lanes():
 	assert "fn library_opacity(" not in shading.source and "fn library_grazing(" not in shading.source
 
 
-@pytest.mark.parametrize("name,expected,missing", [
-	("stochastic_compose.shader", "reconstruct_transparency", "reconstruct_pair"),
-	("stochastic_filter.shader", "reconstruct_pair", "reconstruct_transparency"),
-	("stochastic_profile.shader", "forced_at", "reduce_neighborhood"),
-])
-def test_reconstruction_helpers_are_stage_specific(name, expected, missing):
-	params = {"srgb_surface": False, "sample_count": 1, "winner_count": 2,
-		"winner_mix": "average", "compute_reconstruction": False, "filter_input": False}
-	info = load_shader(name, **params)
-	assert expected in info.functions
-	assert missing not in info.functions
-
-
-@pytest.mark.parametrize("count", (1, 4))
-@pytest.mark.parametrize("pairs", (False, True))
-def test_compute_reconstruction_selects_requested_result(count, pairs):
-	info = load_shader("stochastic_reconstruct.shader", sample_count=count, compute_reconstruction=True,
-		filter_pairs=pairs, tiled_reconstruction=True)
-	assert ("reconstruct_pair" in info.functions) is pairs
-	assert ("reconstruct_transparency" in info.functions) is not pairs
-
-
 def test_utility_compatibility_include_still_exports_macros():
 	path = SHADERS.parents[1] / "scenes" / "shaders" / "simple.shader"
 	loader = Shader.__new__(Shader)
@@ -93,38 +71,32 @@ def test_utility_compatibility_include_still_exports_macros():
 	assert "hash_u32" in info.functions  # legacy include still provides all utilities
 
 
-@pytest.mark.parametrize("sample_count,winner_count,winner_mix,force", [
-	(1, 1, "average", False),
-	(4, 2, "average", True),
-	(1, 3, "fill", False),
-	(4, 2, "fill", True),
-])
-def test_material_shader_variants_expand(sample_count, winner_count, winner_mix, force):
+@pytest.mark.parametrize("sample_count", [1, 4])
+@pytest.mark.parametrize("proxy,subset", [(False, False), (True, False), (True, True)])
+def test_material_shader_variants_expand(sample_count, proxy, subset):
 	instances, _, _ = make_instances()
 	library = MaterialLibrary([instance.mesh.shader for instance in instances])
-	base = {"sample_count": sample_count, "winner_count": min(winner_count, 2),
-		"winner_mix": winner_mix, "force_single_contributor": force}
+	base = dict(sample_count=sample_count, banded_proxy=proxy, banded_subset=subset)
 	geometry = load_shader("stochastic_geometry.shader", material_library=library, **base)
 	shading = load_shader("stochastic_shade.shader", material_library=library, **base)
-	assert "select_winner" in geometry.entry_points
-	assert "shade_winner" in shading.entry_points
-	assert "library_shade" in geometry.functions
-	assert "shade_material" in geometry.functions
+	assert {"select_bands", "nearest_layer", "transmittance"} <= set(geometry.entry_points)
+	assert "shade_bands" in shading.entry_points
+	assert "select_winner" not in geometry.entry_points
 	assert "library_opacity" not in shading.functions
-	compose = load_shader("stochastic_compose.shader", srgb_surface=True, compute_reconstruction=False, **base)
+	nearest = load_shader("stochastic_shade.shader", material_library=library, shade_nearest=True, **base)
+	assert "shade_nearest" in nearest.entry_points and "shade_bands" not in nearest.entry_points
+	compose = load_shader("stochastic_compose.shader", srgb_surface=True, **base)
 	assert "compose" in compose.entry_points
 	assert "linear_to_srgb" not in compose.functions
 
 
 def test_custom_frame_schema_is_shared_across_render_stages():
-    frame_fields = {"time": "f32", "wind": "vec3f", "seed": "u32"}
-    params = dict(frame_fields=frame_fields, srgb_surface=False, sample_count=4,
-        winner_count=2, winner_mix="average", compute_reconstruction=True, filter_input=True,
-        filter_pairs=True, tiled_reconstruction=True)
-    modules = [load_shader(name, **params) for name in (
-        "stochastic_geometry.shader", "stochastic_shade.shader", "stochastic_compose.shader",
-        "stochastic_filter.shader", "stochastic_reconstruct.shader")]
-    dtype = modules[0].uniforms["frame"].dtype
-    assert dtype.names[-3:] == ("time", "wind", "seed")
-    assert all(module.uniforms["frame"].dtype == dtype for module in modules)
-    assert "time" not in load_shader("stochastic_geometry.shader").uniforms["frame"].dtype.names
+	frame_fields = {"time": "f32", "wind": "vec3f", "seed": "u32"}
+	params = dict(frame_fields=frame_fields, srgb_surface=False, sample_count=4,
+		banded_proxy=True)
+	modules = [load_shader(name, **params) for name in (
+		"stochastic_geometry.shader", "stochastic_shade.shader", "stochastic_compose.shader")]
+	dtype = modules[0].uniforms["frame"].dtype
+	assert dtype.names[-3:] == ("time", "wind", "seed")
+	assert all(module.uniforms["frame"].dtype == dtype for module in modules)
+	assert "time" not in load_shader("stochastic_geometry.shader").uniforms["frame"].dtype.names

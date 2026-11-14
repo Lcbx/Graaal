@@ -198,89 +198,90 @@ def test_gpu_only_preserving_reserve_and_opt_in_upload_counters():
 
 
 def test_transparency_external_opaque_inputs_and_transformed_reconstruction(monkeypatch):
-    rc.RenderContext.setup_graphics_backend(True)
-    monkeypatch.setattr(tp, "Texture", lambda *args, usage, **kw:
-        rc.Texture(*args, usage=usage | rc.TextureUsage.COPY_SRC, **kw))
-    size = (32, 32)
-    attachment = rc.TextureUsage.RENDER_ATTACHMENT | rc.TextureUsage.TEXTURE_BINDING
-    opaque = rc.Texture(size, format="rgba16float", usage=attachment)
-    depth = rc.Texture(size, format="depth32float", usage=attachment)
-    texture_usage = rc.TextureUsage.TEXTURE_BINDING | rc.TextureUsage.COPY_DST
-    white = rc.Texture((1, 1, 1), format="rgba8unorm-srgb", usage=texture_usage)
-    noise = rc.Texture((1, 1), format="r32float", usage=texture_usage)
-    queue = rc.RenderContext.device.queue
-    queue.write_texture({"texture": white.handle}, np.full(4, 255, dtype=np.uint8), {"bytes_per_row": 4}, (1, 1, 1))
-    queue.write_texture({"texture": noise.handle}, np.array([0.25], dtype=np.float32), {"bytes_per_row": 4}, (1, 1, 1))
-    vertices = np.zeros(3, dtype=tp.VERTEX_DTYPE)
-    vertices["position"] = [[-1, -1, 0], [1, -1, 0], [0, 1, 0]]
-    normal = np.array([1, 0, 1]) / np.sqrt(2)
-    normals = np.array([[1, 0, 1], [0, 1, 1], [1, 1, 1]], dtype=np.float32)
-    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    vertices["normal"] = normals
-    vertices["barycentric"] = [[1, 0], [0, 1], [0, 0]]
-    stored = np.zeros(3, dtype=tp.SHADING_VERTEX_DTYPE)
-    stored["position"][:, :3], stored["normal"][:, :3] = vertices["position"], vertices["normal"]
-    material = np.zeros(1, dtype=tp.MATERIAL_DTYPE)
-    material["base_color"] = [1, 1, 1, 0.5]
-    material["opacity_rgb"] = 1
-    material["surface"] = [1, 1, 2, 0]
-    material["flags"] = [0, 1, 0, 0]
-    storage = rc.BufferUsage.STORAGE | rc.BufferUsage.COPY_DST
-    material_source = '''fn shade(material: Material, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
-        return vec3f(0.25 + 0.05 * position.x, 0.25 + 0.25 * normal.x, 0.25 + 0.25 * normal.z);
-    }'''
-    oit = tp.TransparencyPass(materials=rc.GpuBuffer(material, storage), base_textures=white.view(dimension="2d-array"),
-        vertices=rc.GpuBuffer(stored, storage), blue_noise=noise, target_format="rgba8unorm",
-        opaque_color=opaque, opaque_depth=depth, material_source=material_source, winner_count=1, tail_allocation="stochastic")
-    instance = np.zeros(1, dtype=MESH_INSTANCE_DTYPE)
-    angle = np.pi / 6
-    scale, translation = np.array([1.2, 0.6, 1.8]), np.array([0.2, 0, 0.1])
-    instance["iPosition"] = translation
-    instance["iScale"] = pack_scale(scale)
-    instance["iRotation"] = pack_quaternion([0, np.sin(angle / 2), 0, np.cos(angle / 2)])
-    instances = rc.GpuBuffer(instance, storage)
-    metadata = rc.GpuBuffer(np.array([[0, 0, 42, 0]], dtype=np.uint32), storage)
-    geometry = oit.create_geometry_passes(metadata, transparent=True, instances=instances)
-    opaque_geometry = oit.create_geometry_passes(metadata, transparent=False, instances=instances)
-    binding = oit.shader.bind_group(1, instances=instances, visible_instances=rc.GpuBuffer(np.zeros(1, dtype=np.uint32), storage))
-    vertex_buffer = rc.GpuBuffer(vertices, rc.BufferUsage.VERTEX | rc.BufferUsage.COPY_DST)
-    oit.resize(size)
-    assert oit.main_color is opaque and oit.depth is depth
-    oit.update_camera(Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 70))
-    commands = rc.RenderContext.commands()
-    raster_color = rc.Texture(size, format="rgba16float", usage=attachment | rc.TextureUsage.COPY_SRC)
-    raster_depth = rc.Texture(size, format="depth32float", usage=attachment)
-    with commands.render_pass(color=raster_color.color_attachment(clear=(0, 0, 0, 1)), depth=raster_depth.depth_attachment(clear=1)) as render:
-        spec = opaque_geometry.render_shader["main"]
-        render.set_pipeline(spec.pipeline)
-        render.set_bind_groups(*spec.bindings, binding)
-        render.set_vertex_buffer(0, vertex_buffer)
-        render.draw(3)
-    # Opaque rendering belongs to another renderer in this workflow.
-    with commands.render_pass(color=opaque.color_attachment(clear=(0, 0, 0.25, 1)), depth=depth.depth_attachment(clear=1)): pass
-    for begin, spec in ((oit.guide_pass, geometry.guide), (oit.transmittance_pass, geometry.render_shader["transmittance"]), (oit.selection_pass, geometry.render_shader["main"])):
-        with begin(commands) as render:
-            render.set_pipeline(spec.pipeline)
-            render.set_bind_groups(*spec.bindings, binding)
-            render.set_vertex_buffer(0, vertex_buffer)
-            render.draw(3)
-    oit.shade_winner(commands, geometry)
-    output = rc.Texture(size, format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT)
-    oit.compose(commands, output.color_attachment())
-    rc.RenderContext.submit(commands.finish())
-    payload, colors = read(oit.winner, np.uint32, 4), read(oit.winner_color, np.float16, 4)
-    mask = payload[:, :, 0] > 0
-    assert np.count_nonzero(mask) > 20
-    xy = np.stack((payload[:, :, 2] & 65535, payload[:, :, 2] >> 16), axis=-1) / 65535
-    bary = np.maximum(np.concatenate((xy, 1-xy.sum(axis=-1, keepdims=True)), axis=-1), 0)
-    bary /= bary.sum(axis=-1, keepdims=True)
-    rotation = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
-    position = (bary @ vertices["position"] * scale) @ rotation.T + translation
-    expected_normal = ((bary @ normals) / scale) @ rotation.T
-    expected_normal /= np.linalg.norm(expected_normal, axis=-1, keepdims=True)
-    face = payload[:, :, 3].copy().view(np.float16).reshape(32, 32, 2)[:, :, 1]
-    expected = np.stack((0.25 + 0.05 * position[:, :, 0],
-        0.25 + 0.25 * expected_normal[:, :, 0] * np.sign(face),
-        0.25 + 0.25 * expected_normal[:, :, 2] * np.sign(face)), axis=-1)
-    np.testing.assert_allclose(colors[mask, :3], expected[mask], atol=0.001)
-    np.testing.assert_allclose(colors[mask, :3], read(raster_color, np.float16, 4)[mask, :3], atol=0.001)
+	rc.RenderContext.setup_graphics_backend(True)
+	monkeypatch.setattr(tp, "Texture", lambda *args, usage, **kw:
+		rc.Texture(*args, usage=usage | rc.TextureUsage.COPY_SRC, **kw))
+	size = (32, 32)
+	attachment = rc.TextureUsage.RENDER_ATTACHMENT | rc.TextureUsage.TEXTURE_BINDING
+	opaque = rc.Texture(size, format="rgba16float", usage=attachment)
+	depth = rc.Texture(size, format="depth32float", usage=attachment)
+	texture_usage = rc.TextureUsage.TEXTURE_BINDING | rc.TextureUsage.COPY_DST
+	white = rc.Texture((1, 1, 1), format="rgba8unorm-srgb", usage=texture_usage)
+	noise = rc.Texture((1, 1), format="r32float", usage=texture_usage)
+	queue = rc.RenderContext.device.queue
+	queue.write_texture({"texture": white.handle}, np.full(4, 255, dtype=np.uint8), {"bytes_per_row": 4}, (1, 1, 1))
+	queue.write_texture({"texture": noise.handle}, np.array([0.25], dtype=np.float32), {"bytes_per_row": 4}, (1, 1, 1))
+	vertices = np.zeros(3, dtype=tp.VERTEX_DTYPE)
+	vertices["position"] = [[-1, -1, 0], [1, -1, 0], [0, 1, 0]]
+	normal = np.array([1, 0, 1]) / np.sqrt(2)
+	normals = np.array([[1, 0, 1], [0, 1, 1], [1, 1, 1]], dtype=np.float32)
+	normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+	vertices["normal"] = normals
+	vertices["barycentric"] = [[1, 0], [0, 1], [0, 0]]
+	stored = np.zeros(3, dtype=tp.SHADING_VERTEX_DTYPE)
+	stored["position"][:, :3], stored["normal"][:, :3] = vertices["position"], vertices["normal"]
+	material = np.zeros(1, dtype=tp.MATERIAL_DTYPE)
+	material["base_color"] = [1, 1, 1, 0.5]
+	material["opacity_rgb"] = 1
+	material["surface"] = [1, 1, 2, 0]
+	material["flags"] = [0, 1, 0, 0]
+	storage = rc.BufferUsage.STORAGE | rc.BufferUsage.COPY_DST
+	material_source = '''fn shade(material: Material, uv: vec2f, position: vec3f, normal: vec3f, lod: f32) -> vec3f {
+		return vec3f(0.25 + 0.05 * position.x, 0.25 + 0.25 * normal.x, 0.25 + 0.25 * normal.z);
+	}'''
+	oit = tp.TransparencyPass(materials=rc.GpuBuffer(material, storage), base_textures=white.view(dimension="2d-array"),
+		vertices=rc.GpuBuffer(stored, storage), blue_noise=noise, target_format="rgba8unorm",
+		opaque_color=opaque, opaque_depth=depth, material_source=material_source)
+	instance = np.zeros(1, dtype=MESH_INSTANCE_DTYPE)
+	angle = np.pi / 6
+	scale, translation = np.array([1.2, 0.6, 1.8]), np.array([0.2, 0, 0.1])
+	instance["iPosition"] = translation
+	instance["iScale"] = pack_scale(scale)
+	instance["iRotation"] = pack_quaternion([0, np.sin(angle / 2), 0, np.cos(angle / 2)])
+	instances = rc.GpuBuffer(instance, storage)
+	metadata = rc.GpuBuffer(np.array([[0, 0, 42, 0]], dtype=np.uint32), storage)
+	geometry = oit.create_geometry_passes(metadata, transparent=True, instances=instances)
+	opaque_geometry = oit.create_geometry_passes(metadata, transparent=False, instances=instances)
+	binding = oit.shader.bind_group(1, instances=instances, visible_instances=rc.GpuBuffer(np.zeros(1, dtype=np.uint32), storage))
+	vertex_buffer = rc.GpuBuffer(vertices, rc.BufferUsage.VERTEX | rc.BufferUsage.COPY_DST)
+	oit.resize(size)
+	assert oit.main_color is opaque and oit.depth is depth
+	oit.update_camera(Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 70))
+	commands = rc.RenderContext.commands()
+	raster_color = rc.Texture(size, format="rgba16float", usage=attachment | rc.TextureUsage.COPY_SRC)
+	raster_depth = rc.Texture(size, format="depth32float", usage=attachment)
+	with commands.render_pass(color=raster_color.color_attachment(clear=(0, 0, 0, 1)), depth=raster_depth.depth_attachment(clear=1)) as render:
+		spec = opaque_geometry.render_shader["main"]
+		render.set_pipeline(spec.pipeline)
+		render.set_bind_groups(*spec.bindings, binding)
+		render.set_vertex_buffer(0, vertex_buffer)
+		render.draw(3)
+	# Opaque rendering belongs to another renderer in this workflow.
+	with commands.render_pass(color=opaque.color_attachment(clear=(0, 0, 0.25, 1)), depth=depth.depth_attachment(clear=1)): pass
+	def draw_transparent(render, name):
+		spec = geometry.nearest if name == "nearest" else geometry.render_shader[name]
+		render.set_pipeline(spec.pipeline)
+		render.set_bind_groups(*spec.bindings, binding)
+		render.set_vertex_buffer(0, vertex_buffer)
+		render.draw(3)
+	from graaal.transparency_utils import record_transparency
+	record_transparency(commands, oit, geometry, draw_transparent)
+	output = rc.Texture(size, format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT)
+	oit.compose(commands, output.color_attachment())
+	rc.RenderContext.submit(commands.finish())
+	payload, colors = read(oit.nearest_payload, np.uint32, 4), read(oit.nearest_color, np.float16, 4)
+	mask = payload[:, :, 0] > 0
+	assert np.count_nonzero(mask) > 20
+	xy = np.stack((payload[:, :, 2] & 65535, payload[:, :, 2] >> 16), axis=-1) / 65535
+	bary = np.maximum(np.concatenate((xy, 1-xy.sum(axis=-1, keepdims=True)), axis=-1), 0)
+	bary /= bary.sum(axis=-1, keepdims=True)
+	rotation = np.array([[np.cos(angle), 0, np.sin(angle)], [0, 1, 0], [-np.sin(angle), 0, np.cos(angle)]])
+	position = (bary @ vertices["position"] * scale) @ rotation.T + translation
+	expected_normal = ((bary @ normals) / scale) @ rotation.T
+	expected_normal /= np.linalg.norm(expected_normal, axis=-1, keepdims=True)
+	face = payload[:, :, 3].copy().view(np.float16).reshape(32, 32, 2)[:, :, 1]
+	expected = np.stack((0.25 + 0.05 * position[:, :, 0],
+		0.25 + 0.25 * expected_normal[:, :, 0] * np.sign(face),
+		0.25 + 0.25 * expected_normal[:, :, 2] * np.sign(face)), axis=-1)
+	np.testing.assert_allclose(colors[mask, :3], expected[mask], atol=0.001)
+	np.testing.assert_allclose(colors[mask, :3], read(raster_color, np.float16, 4)[mask, :3], atol=0.001)

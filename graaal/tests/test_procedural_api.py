@@ -110,23 +110,22 @@ def test_switching_between_arrays_and_ecs_invalidates_order(draws):
 
 
 def frame_state(frame_fields=None):
-    oit = transparency.TransparencyPass.__new__(transparency.TransparencyPass)
-    oit.size = (32, 16)
-    oit.noise_scale = 1.0
-    oit.sample_count = 1
-    oit.noise_mode = "uv_blue_lerp"
-    oit.frame_fields = frame_fields or {}
-    if frame_fields:
-        shader = rc.Shader.__new__(rc.Shader)
-        source, declarations = shader._render_source(None, str(transparency.SHADERS / "stochastic_geometry.shader"), None, None,
-            {"frame_fields": {name: spec[0] for name, spec in frame_fields.items()}})
-        dtype = rc.ShaderSource(source, declarations=declarations).uniforms["frame"].dtype
-        oit.uniforms = NS(content=np.zeros(1, dtype=dtype), dtype=dtype, upload_changed=Mock())
-    else:
-        oit.uniforms = NS(content={}, upload_changed=Mock())
-    lighting_dtype = np.dtype([("light_dir", np.float32, (4,))])
-    oit.lighting_uniforms = NS(content=np.zeros(1, dtype=lighting_dtype), dtype=lighting_dtype, upload_changed=Mock())
-    return oit
+	oit = transparency.TransparencyPass.__new__(transparency.TransparencyPass)
+	oit.size = (32, 16)
+	oit.noise_scale = 1.0
+	oit.sample_count = 1
+	oit.frame_fields = frame_fields or {}
+	if frame_fields:
+		shader = rc.Shader.__new__(rc.Shader)
+		source, declarations = shader._render_source(None, str(transparency.SHADERS / "stochastic_geometry.shader"), None, None,
+			{"frame_fields": {name: spec[0] for name, spec in frame_fields.items()}})
+		dtype = rc.ShaderSource(source, declarations=declarations).uniforms["frame"].dtype
+		oit.uniforms = NS(content=np.zeros(1, dtype=dtype), dtype=dtype, upload_changed=Mock())
+	else:
+		oit.uniforms = NS(content={}, upload_changed=Mock())
+	lighting_dtype = np.dtype([("light_dir", np.float32, (4,))])
+	oit.lighting_uniforms = NS(content=np.zeros(1, dtype=lighting_dtype), dtype=lighting_dtype, upload_changed=Mock())
+	return oit
 
 
 def test_frame_values_need_no_camera_and_preserve_matrix_convention():
@@ -238,21 +237,21 @@ def test_invalid_custom_frame_fields_leave_uniforms_unchanged(updates):
 
 
 def test_custom_frame_schema_rejects_reserved_names_and_malformed_specs():
-    for spec in ({"view": ("f32", 0)}, {"_graaal_key_frame": ("u32", 0)}, {"time": "f32"}, {"other-field": ("f32", 0)}):
-        with pytest.raises((TypeError, ValueError)):
-            transparency.TransparencyPass(materials=None, base_textures=None, vertices=None, frame_fields=spec)
+	for spec in ({"view": ("f32", 0)}, {"clip": ("vec4f", 0)}, {"time": "f32"}, {"other-field": ("f32", 0)}):
+		with pytest.raises((TypeError, ValueError)):
+			transparency.TransparencyPass(materials=None, base_textures=None, vertices=None, frame_fields=spec)
 
 
 @pytest.mark.parametrize("method,args", [
-    ("opaque_pass", (None,)), ("guide_pass", (None,)),
-    ("transmittance_pass", (None,)), ("selection_pass", (None,)),
+    ("opaque_pass", (None,)), ("nearest_pass", (None,)),
+    ("transmittance_pass", (None,)), ("banded_pass", (None,)),
     ("shade_winner", (None, None)), ("compose", (None, None)),
 ])
 def test_passes_explain_missing_targets(method, args):
-    oit = frame_state()
-    oit.size = None
-    with pytest.raises(RuntimeError, match="Resize"):
-        getattr(oit, method)(*args)
+	oit = frame_state()
+	oit.size = None
+	with pytest.raises(RuntimeError, match="Resize"):
+		getattr(oit, method)(*args)
 
 
 def test_cull_camera_uses_explicit_keywords(draws):

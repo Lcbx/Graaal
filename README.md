@@ -48,8 +48,8 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
 | `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
 | `HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
-| [TransparencyPass](graaal/stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/guide_pass/transmittance_pass/selection_pass/shade_winner/compose` records stages. `TransparencyTargets`, `BilateralFilter`, `GrazingFade` configure resources and settings. |
-| `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips; `build_correlated_noise_hierarchy` builds ranked noise levels. These helpers upload and submit GPU work when creating textures. |
+| [TransparencyPass](graaal/stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/nearest_pass/transmittance_pass/banded_pass/shade_winner/compose` records banded transparency with Kawase blur. `TransparencyTargets` and `GrazingFade` configure resources and opacity fade. |
+| `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips. These helpers upload and submit GPU work when creating textures. |
 | [Materials](graaal/materials.md#useful-apis) | `MaterialShader` defines shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables, while renderer Jinja2 templates generate hook dispatch. |
 | `DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
 | `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
@@ -274,16 +274,15 @@ opaque color/depth can be supplied through `opaque_color` and `opaque_depth`;
 they must match the target dimensions and sample count. Otherwise targets are
 allocated internally. Set `target_format` to match the output attachment.
 
-BLEND defaults to exact nearest plus two complementary banded tail winners
+BLEND uses exact nearest plus two complementary banded tail winners
 and one Kawase down/up pair (`kawase_passes=1`). Tail estimation uses 1x;
 `set_sample_count(1 or 4)` selects native sampling for opaque/MASK,
 transmission and exact nearest. The examples expose blur count and diagnostics;
-there is no tail-MSAA UI toggle. Select `tail_allocation="stochastic"` for the
-earlier noise, winner-count and bilateral/confidence filtering options.
+there is no tail-MSAA UI toggle. Proxy residuals and subset shading default off.
 No temporal accumulation is used.
 
 The [transparency guide](graaal/stochastic_transparency.md) covers pass order,
-custom targets, noise choices, shader contracts and limitations. The
+custom targets, screen noise, material hooks and limitations. The
 [material guide](graaal/materials.md) covers dictionary materials and vertex hooks;
 [transparency_example.py](scenes/transparency_example.py) shows a full frame.
 

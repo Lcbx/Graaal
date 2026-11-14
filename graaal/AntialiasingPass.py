@@ -1,11 +1,11 @@
 """Display-space antialiasing as an independent postprocessing pass."""
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from operator import index
 from pathlib import Path
 
 import numpy as np
 
-from .RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
+from .RenderContext import RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,10 @@ class AntialiasingPass:
 	"""
 	def __init__(self, *, target_format=None, settings=None):
 		self.target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
-		self.shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "antialiasing.shader"), params={"srgb_surface": self.target_format.endswith("-srgb")})
-		self.pipelines = {mode: RenderPipeline(self.shader, vertex_entry="fullscreen", fragment_entry=mode, depth_test=None, depth_write=False, cull_mode="none", label=mode) for mode in ("lxaa", "faaa", "ddaa2")}
-		self.uniforms = self.shader.uniform_buffer("aa_settings")
+		self.sample_format = self.target_format.removesuffix("-srgb")
+		self.sampler = Sampler(min_filter="linear", mag_filter="linear", address_mode_u="clamp-to-edge", address_mode_v="clamp-to-edge")
+		self.sampled_color = None
+		self.pipelines = {}
 		self.settings = None
 		self.set_settings(settings if settings is not None else AntialiasingSettings())
 		self.mode = "off"
@@ -50,10 +51,6 @@ class AntialiasingPass:
 		if not isinstance(settings, AntialiasingSettings): raise TypeError("Expected AntialiasingSettings")
 		if settings == self.settings: return False
 		self.settings = settings
-		self.uniforms.content["values"] = (settings.lxaa_edge_threshold, settings.faaa_edge_threshold, 0, 0)
-		self.uniforms.content["flags"] = (int(settings.lxaa_line_check), settings.faaa_quality, int(settings.faaa_show_edges), settings.ddaa2_edge_steps)
-		self.uniforms.content["ddaa2"] = (settings.ddaa2_strength, settings.ddaa2_threshold_min, settings.ddaa2_threshold_max, 0)
-		self.uniforms.upload_changed()
 		return True
 
 	def resize(self, size):
@@ -63,7 +60,9 @@ class AntialiasingPass:
 		except TypeError: raise ValueError("Expected integer antialiasing dimensions") from None
 		if min(size) <= 0: return False
 		if size == self.size: return False
-		self.source = Texture(size, format=self.target_format, usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING, label="antialiasing_source")
+		self.source = Texture(size, format=self.target_format, usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_SRC, label="antialiasing_source")
+		if self.sample_format != self.target_format:
+			self.sampled_color = Texture(size, format=self.sample_format, usage=TextureUsage.COPY_DST | TextureUsage.TEXTURE_BINDING, label="antialiasing_encoded")
 		self.size = size
 		return True
 
@@ -74,11 +73,24 @@ class AntialiasingPass:
 
 	def record(self, commands, output, mode):
 		"""Record LXAA, FAAA or DDAA2 to a single-sample output attachment."""
-		if mode not in self.pipelines: raise ValueError("Antialiasing mode must be lxaa, faaa or ddaa2")
+		if mode not in ("lxaa", "faaa", "ddaa2"): raise ValueError("Antialiasing mode must be lxaa, faaa or ddaa2")
 		if self.source is None: raise RuntimeError("Resize antialiasing targets first")
 		if output.format != self.target_format or output.sample_count != 1: raise ValueError("Antialiasing output must match the target format and be single-sample")
-		bindings = self.shader.bind_group(0, aa_settings=self.uniforms, scene_color=self.source)
+		params = {field.name: getattr(self.settings, field.name) for field in fields(self.settings) if field.name.startswith(mode+"_")}
+		key = (mode, *params.values())
+		if key not in self.pipelines:
+			shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "antialiasing.shader"), params={"srgb_surface": self.target_format.endswith("-srgb"), "mode": mode, **params})
+			pipeline = RenderPipeline(shader, vertex_entry="fullscreen", fragment_entry=mode, depth_test=None, depth_write=False, cull_mode="none", label=mode)
+			if len(self.pipelines) >= 32: self.pipelines.pop(next(iter(self.pipelines)))
+			self.pipelines[key] = (shader, pipeline)
+		shader, pipeline = self.pipelines[key]
+		color = self.source
+		if self.sampled_color is not None:
+			# Copy encoded bytes: the installed wgpu binding cannot create alternate sRGB views.
+			commands.handle.copy_texture_to_texture({"texture": self.source.handle}, {"texture": self.sampled_color.handle}, (*self.size, 1))
+			color = self.sampled_color
+		bindings = shader.bind_group(0, scene_color=color, scene_sampler=self.sampler)
 		with commands.render_pass(color=output, label=mode) as render:
-			render.set_pipeline(self.pipelines[mode])
+			render.set_pipeline(pipeline)
 			render.set_bind_groups(bindings)
 			render.draw(3)

@@ -10,9 +10,8 @@ from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
 from graaal.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
 
 
-@pytest.mark.parametrize("noise_mode", ["uv_blue_lerp", "uv_blue_correlated"])
 @pytest.mark.parametrize("sample_count", [1, 4])
-def test_procedural_transparency_records_into_caller_commands_and_output(monkeypatch, tmp_path, noise_mode, sample_count):
+def test_procedural_transparency_records_into_caller_commands_and_output(monkeypatch, tmp_path, sample_count):
 	RenderContext.setup_graphics_backend(True)
 	# Shader files and includes must resolve without the repository as cwd.
 	monkeypatch.chdir(tmp_path)
@@ -38,7 +37,7 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 	storage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 	oit = TransparencyPass(materials=GpuBuffer(material, storage),
 		base_textures=white.view(dimension="2d-array"), vertices=GpuBuffer(stored, storage),
-		blue_noise=noise, target_format="rgba8unorm", noise_mode=noise_mode, sample_count=sample_count, winner_count=1, tail_allocation="stochastic")
+		blue_noise=noise, target_format="rgba8unorm", sample_count=sample_count)
 	metadata = GpuBuffer(np.array([[0, 0, 42, 0]], dtype=np.uint32), storage)
 	vertex_buffer = GpuBuffer(vertices, BufferUsage.VERTEX | BufferUsage.COPY_DST)
 	instances = GpuBuffer(np.zeros(1, dtype=MESH_INSTANCE_DTYPE), storage)
@@ -59,31 +58,28 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 		oit.resize((width, height))
 		assert oit.size == (width, height)
 		# Idempotent/minimized resize retains valid targets.
-		previous = oit.winner
+		previous = oit.nearest_payload
 		oit.resize((width, height))
 		oit.resize((0, 0))
-		assert oit.winner is previous
+		assert oit.nearest_payload is previous
 		oit.update_camera(camera)
 		commands = RenderContext.commands("procedural_transparency")
 		with oit.opaque_pass(commands, clear=(0, 0, 0, 1)):
 			pass  # This caller has no opaque geometry.
-		for begin, shader_pass in (
-			(oit.guide_pass, geometry.guide),
-			(oit.transmittance_pass, geometry.render_shader['transmittance']),
-			(oit.selection_pass, geometry.render_shader['main']),
-		):
-			with begin(commands) as render:
-				render.set_pipeline(shader_pass.pipeline)
-				render.set_bind_groups(*shader_pass.bindings, instance_bindings)
-				render.set_vertex_buffer(0, vertex_buffer)
-				render.draw(3)
-		oit.shade_winner(commands, geometry)
+		def draw_transparent(render, name):
+			shader_pass = geometry.nearest if name == "nearest" else geometry.render_shader[name]
+			render.set_pipeline(shader_pass.pipeline)
+			render.set_bind_groups(*shader_pass.bindings, instance_bindings)
+			render.set_vertex_buffer(0, vertex_buffer)
+			render.draw(3)
+		from graaal.transparency_utils import record_transparency
+		record_transparency(commands, oit, geometry, draw_transparent)
 		oit.compose(commands, output.color_attachment())
 		submit.assert_not_called()
 		RenderContext.submit(commands.finish())
 		data = queue.read_texture({"texture": output.handle}, {"bytes_per_row": width*4}, (width, height, 1))
 		pixels = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)
-		# Half-opaque red wins everywhere with the supplied constant threshold.
+		# The half-opaque red nearest layer contributes exactly.
 		assert np.all(pixels[:, :, 0] > 100)
 		assert np.all(pixels[:, :, 1:3] < 50)
 		submit.reset_mock()

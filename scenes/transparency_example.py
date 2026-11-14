@@ -2,13 +2,13 @@
 
 Run: python main.py scenes/transparency_example.py [--frames 120]
 Space toggles orbit, scrolling zooms, R reverses transparent submission order.
-1/3/5/9 select 0/1/2/3 Kawase pairs (bilateral kernel sizes in stochastic mode).
-D cycles diagnostic views; N cycles stochastic noise modes; [ / ] adjusts noise scale.
+1/3/5/9 select 0/1/2/3 Kawase pairs.
+D cycles diagnostic views; [ / ] adjusts screen noise scale.
 G toggles grazing-angle opacity fade (angles are adjustable in settings).
 M toggles 4x MSAA; A toggles SSAO; O selects SSAO in the compose pass or a separate pass.
 F shows/hides ImGui settings.
 FPS and average frame time remain visible in the top-right corner.
-Drag settings or Ctrl+click to type; Up/Down and Left/Right also select/edit.
+Drag settings or Ctrl+click to type; Left/Right changes Kawase blur pairs.
 Imports only prepare CPU helpers; graphics are initialized by run_scene().
 """
 
@@ -37,8 +37,8 @@ from graaal.RenderContext import (
 from graaal.TextureProcessing import build_material_texture_array
 from graaal.TransparencyData import load_transparency_scene as load_transparency_data
 from graaal.transparency_utils import record_transparency
-from graaal.TransparencyPass import BilateralFilter, ConfidenceFilter, FILL_NOISE_MODES, GrazingFade, NOISE_MODES, TransparencyPass
-from scenes.rendering_settings import FilterSettings, RenderingSettings, NOISE_LABELS
+from graaal.TransparencyPass import GrazingFade, TransparencyPass
+from scenes.rendering_settings import FilterSettings, RenderingSettings
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
@@ -176,25 +176,12 @@ def on_char(code):
 	elif chr(code).lower() == "r":
 		transparent_batches.data.draw_batches.reverse()
 	elif chr(code) in ("1", "3", "5", "9"):
-		size = int(chr(code))
-		if transparency.banded_tail:
-			transparency.set_kawase_passes((1, 3, 5, 9).index(size))
-			return True
-		transparency.set_bilateral_filter(replace(transparency.bilateral_filter, kernel_size=size))
-		RenderingSettings.sync_debug_view(transparency)
-		print(f"Bilateral filter: {size}x{size}")
+		transparency.set_kawase_passes(("1", "3", "5", "9").index(chr(code)))
 	elif chr(code).lower() == "d":
 		views = RenderingSettings.sync_debug_view(transparency)
 		index = (views.index(transparency.debug_view)+1) % len(views)
 		transparency.set_debug_view(views[index])
 		print(f"View: {RenderingSettings.debug_view_label(transparency, transparency.debug_view)}")
-	elif chr(code).lower() == "n":
-		index = (NOISE_MODES.index(transparency.noise_mode)+1) % len(NOISE_MODES)
-		if transparency.winner_mix == "fill" and NOISE_MODES[index] not in FILL_NOISE_MODES:
-			if transparency.winner_count > 2: transparency.set_winner_count(2)
-			transparency.set_winner_mix("average")
-		transparency.set_noise_mode(NOISE_MODES[index])
-		print(f"Noise: {NOISE_LABELS[index]}")
 	elif chr(code) in ("[", "]"):
 		factor = 2**(-0.25 if chr(code) == "[" else 0.25)
 		transparency.set_noise_scale(max(0.25, min(4.0, transparency.noise_scale*factor)))

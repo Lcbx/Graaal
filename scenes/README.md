@@ -23,7 +23,7 @@ cleans up the context afterward.
 | `draw_batches_example.py` | ECS movement and entity changes, LOD, indirect draws and Hi-Z culling; Space switches camera, scroll zooms. |
 | `direct_draw_example.py` | Direct drawing with instance changes and shadows; scroll zooms. |
 | `prototype.py` | ECS-backed actor/health panels in ImGui. Combat resolution is a placeholder. |
-| `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, transparency modes and diagnostics; see below. |
+| `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. |
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 
@@ -43,7 +43,7 @@ below it. **A** toggles SSAO and **O** switches between its compose and
 separate-pass implementations.
 Both examples start with `TransparencyPass` defaults.
 
-The default **Banded + dual Kawase** mode captures the nearest transparent
+**Banded + dual Kawase** captures the nearest transparent
 layer exactly and uses a complementary banded pair for the remaining tail.
 **Down/up pairs** controls the blur (0–8, default 1). **Proxy residual**
 subtracts a local albedo estimate before blurring to reduce color halos.
@@ -53,44 +53,30 @@ estimation defaults to 1x even when the scene uses MSAA; exact nearest,
 transmittance and opaque/MASK geometry still use the selected native sample count.
 There is no tail-MSAA control in this UI (see `set_banded_options()` for the API).
 
-Select **Stochastic nearest wins** in the panel to compare other options:
+**Grazing fade** controls BLEND opacity toward silhouettes. The low-level pass
+defaults to enabled from 83 to 86 degrees; materials can provide their own
+grazing parameters. **Screen noise cell size** changes the shared tail noise.
 
-| Setting | Usage |
-| --- | --- |
-| **Exact nearest layer** | Enable/disable the exact foremost transparent contribution; required in banded mode. |
-| **Winner draws / mix** | Average supports 1–2 draws, with complemented thresholds by default; Fill supports any positive count with supported noise modes. Reduce the count to 2 or less before switching back to Average. |
-| **Noise mode / grain size** | Compare UV, object-hash, anchored and triplanar noise. UV footprint balancing applies only to UV modes, is enabled by default and has a default balance of **1.0** (0 uses maximum-derivative sizing). |
-| **Filter implementation** | Fragment or compute bilateral (1x1, 3x3, 5x5 or 9x9), a-trous cascade, or confidence pyramid. A 1x1 footprint skips reconstruction. |
-| **Reconstruction passes** | Repeat the bilateral kernel on weighted color/validity pairs. Only fixed bilateral modes use this setting. |
-| **Support budget / cascade passes** | Control smoothing in a-trous reconstruction; the four-pass cascade reaches a maximum radius of 15 pixels. |
-| **Force single contributor** | Optionally force an isolated contributor to be selected; disabled by default. |
-| **Grazing fade** | Fade BLEND opacity toward silhouettes. The low-level pass defaults to enabled from 83° to 86°; material shaders also have per-material grazing parameters. |
-
-Some settings and diagnostic views disappear when the active technique cannot
-use them. Debug views include **final**, **transmittance**, **winner**,
-**reconstruction**, **nearest** and stream-specific views where applicable.
-The **winner** view shows signed residuals when the banded proxy is active.
-The settings panel describes each control on hover.
+Diagnostic views are **final**, **transmittance**, **winner**, **reconstruction**,
+**nearest**, **nearest_mask**, and **tail_transmittance**. The **winner** view
+shows signed residuals when the proxy is active.
 
 | Input | Action in `transparency_example.py` |
 | --- | --- |
 | Space / mouse scroll | Toggle orbit / zoom |
 | R | Reverse transparent draw order |
-| D | Cycle the currently available diagnostic views |
-| N | Cycle noise modes (used by stochastic allocation) |
-| [ / ] | Decrease/increase the stochastic noise-cell size |
+| D | Cycle diagnostic views |
+| [ / ] | Decrease/increase screen noise-cell size |
 | G | Toggle grazing fade |
 | M | Toggle 4x MSAA (starts off) |
-| 1 / 3 / 5 / 9 | In banded mode: select 0 / 1 / 2 / 3 Kawase pairs; in stochastic bilateral mode: select filter size |
+| 1 / 3 / 5 / 9 | Select 0 / 1 / 2 / 3 Kawase pairs |
 | F | Show/hide the settings panel |
-| Arrow keys | Select/edit settings while the panel is visible; Shift makes smaller changes |
-| Home | Reset the banded blur to one pair, or reset stochastic bilateral-filter values |
+| Left / Right | Change blur pairs while the panel is visible |
+| Home | Reset blur to one pair |
 
 No TAA or temporal history is used. MSAA improves opaque/MASK and nearest-layer
-edges, but the 1x banded tail can miss subpixel details. Stochastic modes can
-still show spatial grain and motion shimmer. For controls from Python, use
-`set_tail_allocation()`, `set_kawase_passes()`, `set_banded_options()`,
-`set_winner_count()`, `set_noise_mode()`, `set_reconstruction()` and
+edges, but the 1x tail can miss subpixel details. For Python controls, use
+`set_kawase_passes()`, `set_banded_options()`, `set_noise_scale()` and
 `set_debug_view()` as documented in the [transparency guide](../graaal/stochastic_transparency.md).
 
 The transparency scene loads `resources/small_scene.glb`, with
