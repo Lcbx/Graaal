@@ -56,31 +56,48 @@ fn extract_key(rgb: vec3f) -> vec3f {
 }
 // Project keys onto the strongest local color difference so edge direction and
 // polarity stay consistent through the scalar edge-search algorithms.
-fn key_axis(a: vec3f, b: vec3f, c: vec3f, d: vec3f, e: vec3f, f: vec3f) -> vec3f {
-	let first = a-b;
-	let second = c-d;
-	let third = e-f;
-	var axis = select(second, first, dot(first, first) >= dot(second, second));
-	axis = select(third, axis, dot(axis, axis) >= dot(third, third));
+fn finalize_key_axis(direction: vec3f) -> vec3f {
+	var axis = direction;
 	if dot(axis, axis) < 1e-20 { return vec3f(1.0, 0.0, 0.0); }
 	let magnitude = abs(axis);
 	let dominant = select(select(axis.z, axis.y, magnitude.y >= magnitude.z), axis.x, magnitude.x >= max(magnitude.y, magnitude.z));
 	axis *= select(-1.0, 1.0, dominant >= 0.0);
 	return normalize(axis);
 }
-fn key_value(rgb: vec3f, axis: vec3f) -> f32 { return dot(extract_key(rgb), axis); }
+fn key_axis6(a: vec3f, b: vec3f, c: vec3f, d: vec3f, e: vec3f, f: vec3f) -> vec3f {
+	let first = a-b;
+	let second = c-d;
+	let third = e-f;
+	var axis = select(second, first, dot(first, first) >= dot(second, second));
+	axis = select(third, axis, dot(axis, axis) >= dot(third, third));
+	return finalize_key_axis(axis);
+}
+fn key_axis4(a: vec3f, b: vec3f, c: vec3f, d: vec3f) -> vec3f {
+	let first = a-b;
+	let second = c-d;
+	var axis = select(second, first, dot(first, first) >= dot(second, second));
+	axis = select(vec3f(0.0), axis, dot(axis, axis) >= 0.0);
+	return finalize_key_axis(axis);
+}
+fn project_key(key: vec3f, axis: vec3f) -> f32 { return dot(key, axis); }
+fn key_value(rgb: vec3f, axis: vec3f) -> f32 { return project_key(extract_key(rgb), axis); }
 fn sample_key(uv: vec2f, axis: vec3f) -> f32 { return key_value(sample_color(uv).rgb, axis); }
+fn edge_threshold_scale(sw: vec3f, se: vec3f, ne: vec3f, nw: vec3f) -> f32 {
+	return max(max(sw.r, se.r), max(ne.r, nw.r))*0.5+0.5;
+}
 
 #else
 fn extract_key(rgb: vec3f) -> f32 {	return rgb2luma(rgb); }
-fn key_axis(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> f32 { return 1.0; }
-fn key_value(rgb: vec3f, axis: f32) -> f32 { return extract_key(rgb); }
+fn key_axis6(a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> f32 { return 1.0; }
+fn key_axis4(a: f32, b: f32, c: f32, d: f32) -> f32 { return 1.0; }
+fn project_key(key: f32, axis: f32) -> f32 { return key; }
+fn key_value(rgb: vec3f, axis: f32) -> f32 { return project_key(extract_key(rgb), axis); }
 fn sample_key(uv: vec2f, axis: f32) -> f32 { return key_value(sample_color(uv).rgb, axis); }
+fn edge_threshold_scale(sw: f32, se: f32, ne: f32, nw: f32) -> f32 {
+	return max(max(sw, se), max(ne, nw))*0.5+0.5;
+}
 #endif
 
-fn edge_threshold_scale(sw: vec3f, se: vec3f, ne: vec3f, nw: vec3f) -> f32 {
-	return max(max(rgb2luma(sw), rgb2luma(se)), max(rgb2luma(ne), rgb2luma(nw)))*0.5+0.5;
-}
 
 @vertex
 fn fullscreen(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
@@ -98,15 +115,19 @@ fn lxaa(@builtin(position) position: vec4f) -> @location(0) vec4f {
 	let se_color = texel(pixel+vec2i(1, 1)).rgb;
 	let ne_color = texel(pixel+vec2i(1, -1)).rgb;
 	let nw_color = texel(pixel+vec2i(-1, -1)).rgb;
-	let axis = key_axis(extract_key(sw_color), extract_key(ne_color), extract_key(se_color), extract_key(nw_color), extract_key(texel(pixel).rgb), extract_key(texel(pixel).rgb));
+	let sw_key = extract_key(sw_color);
+	let ne_key = extract_key(ne_color);
+	let se_key = extract_key(se_color);
+	let nw_key = extract_key(nw_color);
+	let axis = key_axis4(sw_key, ne_key, se_key, nw_key);
 	// Estimate the edge direction from diagonal luminance differences.
-	var a = vec4f(key_value(sw_color, axis), key_value(se_color, axis), key_value(ne_color, axis), key_value(nw_color, axis));
+	var a = vec4f(project_key(sw_key, axis), project_key(se_key, axis), project_key(ne_key, axis), project_key(nw_key, axis));
 	let gradient = vec2f(a.x-a.z, a.y-a.w);
 	let direction = vec2f(gradient.x+gradient.y, gradient.x-gradient.y);
 	let magnitude = abs(direction);
 	let maximum = max(max(a.x, a.y), max(a.z, a.w));
 	let minimum_luma = min(min(a.x, a.y), min(a.z, a.w));
-	let threshold = {{ PARAMS.lxaa_edge_threshold }}*edge_threshold_scale(sw_color, se_color, ne_color, nw_color);
+	let threshold = {{ PARAMS.lxaa_edge_threshold }}* edge_threshold_scale(sw_key, se_key, ne_key, nw_key);
 	let center = texel(pixel);
 #if PARAMS.show_edges
 	if abs(magnitude.x-magnitude.y) < threshold { return output_color(vec4f(vec3f(rgb2luma(center.rgb)*0.9), center.a)); }
@@ -154,16 +175,20 @@ fn faaa(@builtin(position) position: vec4f) -> @location(0) vec4f {
 	let se_color = texel(pixel+vec2i(1, 1)).rgb;
 	let ne_color = texel(pixel+vec2i(1, -1)).rgb;
 	let nw_color = texel(pixel+vec2i(-1, -1)).rgb;
-	let axis = key_axis(extract_key(sw_color), extract_key(ne_color), extract_key(se_color), extract_key(nw_color), extract_key(texel(pixel).rgb), extract_key(texel(pixel).rgb));
-	let center = texel(pixel);
+	let sw_key = extract_key(sw_color);
+	let ne_key = extract_key(ne_color);
+	let se_key = extract_key(se_color);
+	let nw_key = extract_key(nw_color);
+	let axis = key_axis4(sw_key, ne_key, se_key, nw_key);
 	// Detect edge orientation and reject low-contrast pixels.
-	let sw = key_value(sw_color, axis);
-	let se = key_value(se_color, axis);
-	let ne = key_value(ne_color, axis);
-	let nw = key_value(nw_color, axis);
+	let sw = project_key(sw_key, axis);
+	let se = project_key(se_key, axis);
+	let ne = project_key(ne_key, axis);
+	let nw = project_key(nw_key, axis);
 	let gradient = vec2f(sw-ne, se-nw);
 	let direction = abs(vec2f(gradient.x+gradient.y, gradient.x-gradient.y));
-	let threshold = (10.0-{{ PARAMS.faaa_edge_threshold }})*0.0625*edge_threshold_scale(sw_color, se_color, ne_color, nw_color);
+	let threshold = (10.0-{{ PARAMS.faaa_edge_threshold }})*0.0625*edge_threshold_scale(sw_key, se_key, ne_key, nw_key);
+	let center = texel(pixel);
 #if PARAMS.show_edges
 	if abs(direction.x-direction.y) < threshold { return output_color(vec4f(vec3f(rgb2luma(center.rgb)*0.9), center.a)); }
 	return output_color(vec4f(0.0, 1.0, 0.0, center.a));
@@ -231,27 +256,25 @@ fn ddaa2(@builtin(position) position: vec4f) -> @location(0) vec4<f32> {
 
 	let texCoord = position.xy/vec2f(textureDimensions(scene_color));
 	let pixel = vec2i(position.xy);
-	let centerKey = extract_key(texel(pixel).rgb);
-	let axis = key_axis(centerKey, extract_key(texel(pixel+vec2i(1, 0)).rgb), centerKey, extract_key(texel(pixel+vec2i(-1, 0)).rgb), extract_key(texel(pixel+vec2i(0, 1)).rgb), extract_key(texel(pixel+vec2i(0, -1)).rgb));
+	// Sample the center pixel
+	let centerSample = texel(pixel);
+	let centerKey = extract_key(centerSample.rgb);
+	let northKey = extract_key(texel(pixel+vec2i(0, 1)).rgb);
+	let eastKey = extract_key(texel(pixel+vec2i(1, 0)).rgb);
+	let southKey = extract_key(texel(pixel+vec2i(0, -1)).rgb);
+	let westKey = extract_key(texel(pixel+vec2i(-1, 0)).rgb);
+	let axis = key_axis6(centerKey, eastKey, centerKey, westKey, northKey, southKey);
 
 	let resolution = vec2f(textureDimensions(scene_color));
 	let pixelStep = 1.0 / resolution.xy;
 
-	// Sample the center pixel
-	let centerSample = sample_color(texCoord);
-	let lumaCenter = key_value(centerSample.rgb, axis);
+	let lumaCenter = project_key(centerKey, axis);
 
 	// Luma at the four direct neighbors of the current fragment.
-	let lumaN = key_value(sample_color_offset(texCoord, vec2i(0, 1)).rgb, axis);
-	let lumaE = key_value(sample_color_offset(texCoord, vec2i(1, 0)).rgb, axis);
-	let lumaS = key_value(sample_color_offset(texCoord, vec2i(0, -1)).rgb, axis);
-	let lumaW = key_value(sample_color_offset(texCoord, vec2i(-1, 0)).rgb, axis);
-
-	// Query the 4 remaining corners lumas.
-	let lumaNW = key_value(sample_color_offset(texCoord, vec2i(-1, 1)).rgb, axis);
-	let lumaNE = key_value(sample_color_offset(texCoord, vec2i(1, 1)).rgb, axis);
-	let lumaSW = key_value(sample_color_offset(texCoord, vec2i(-1, -1)).rgb, axis);
-	let lumaSE = key_value(sample_color_offset(texCoord, vec2i(1, -1)).rgb, axis);
+	let lumaN = project_key(northKey, axis);
+	let lumaE = project_key(eastKey, axis);
+	let lumaS = project_key(southKey, axis);
+	let lumaW = project_key(westKey, axis);
 
 	// Compute the range
 	let lumaMin = min(lumaCenter, min(min(lumaS, lumaN), min(lumaW, lumaE)));
@@ -266,6 +289,12 @@ fn ddaa2(@builtin(position) position: vec4f) -> @location(0) vec4<f32> {
 	if (lumaRange < max({{ PARAMS.ddaa2_threshold_min }}, lumaMax * {{ PARAMS.ddaa2_threshold_max }})) {
 		return output_color(centerSample);
 	}
+
+	// Query the 4 remaining corners lumas.
+	let lumaNW = key_value(texel(pixel+vec2i(-1, 1)).rgb, axis);
+	let lumaNE = key_value(texel(pixel+vec2i(1, 1)).rgb, axis);
+	let lumaSW = key_value(texel(pixel+vec2i(-1, -1)).rgb, axis);
+	let lumaSE = key_value(texel(pixel+vec2i(1, -1)).rgb, axis);
 
 	// Combine the four edges lumas (using intermediary variables for future computations with the same values).
 	let lumaSUp = lumaS + lumaN;
@@ -401,172 +430,30 @@ fn ddaa2(@builtin(position) position: vec4f) -> @location(0) vec4<f32> {
 
 		let max_distance = {{ ddaa2_edge_steps * 3 }}.0;
 
-		// Step 1 (3 steps, offset 3)
-#if ddaa2_edge_steps >= 2
-		if (distance1 > 900.0) {
+#for i in range(1, ddaa2_edge_steps)
+		// Step {{ i }} (3 steps, offset {{ i * 3 }})
+#for endpoint in (1, 2)
+#set direction = "-" if endpoint == 1 else "+"
+#set offset_sign = "-" if endpoint == 1 else ""
+		if (distance{{ endpoint }} > 900.0) {
 			if isHorizontal {
-				let currentUv1 = currentUv - vec2f(5.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
+				let currentUv{{ endpoint }} = currentUv {{ direction }} vec2f({{ i * 3 + 2 }}.0, 0.0) * pixelStep;
+				lumaEnd_0 = key_value(sample_color_offset(currentUv{{ endpoint }}, {{ offset_sign }}vec2i(-1, 0)).rgb, axis) - lumaLocalAverage;
+				lumaEnd_1 = key_value(sample_color_offset(currentUv{{ endpoint }}, {{ offset_sign }}vec2i(0, 0)).rgb, axis) - lumaLocalAverage;
+				lumaEnd_2 = key_value(sample_color_offset(currentUv{{ endpoint }}, {{ offset_sign }}vec2i(1, 0)).rgb, axis) - lumaLocalAverage;
 			} else {
-				let currentUv1 = currentUv - vec2f(0.0, 5.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
+				let currentUv{{ endpoint }} = currentUv {{ direction }} vec2f(0.0, {{ i * 3 + 2 }}.0) * pixelStep;
+				lumaEnd_0 = key_value(sample_color_offset(currentUv{{ endpoint }}, {{ offset_sign }}vec2i(0, -1)).rgb, axis) - lumaLocalAverage;
+				lumaEnd_1 = key_value(sample_color_offset(currentUv{{ endpoint }}, {{ offset_sign }}vec2i(0, 0)).rgb, axis) - lumaLocalAverage;
+				lumaEnd_2 = key_value(sample_color_offset(currentUv{{ endpoint }}, {{ offset_sign }}vec2i(0, 1)).rgb, axis) - lumaLocalAverage;
 			}
-			lumaEnd1 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance1 = 6.0; lumaEnd1 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance1 = 5.0; lumaEnd1 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance1 = 4.0; lumaEnd1 = lumaEnd_0; }
+			lumaEnd{{ endpoint }} = lumaEnd_2;
+			if (abs(lumaEnd_2) >= gradientScaled) { distance{{ endpoint }} = {{ i * 3 + 3 }}.0; lumaEnd{{ endpoint }} = lumaEnd_2; }
+			if (abs(lumaEnd_1) >= gradientScaled) { distance{{ endpoint }} = {{ i * 3 + 2 }}.0; lumaEnd{{ endpoint }} = lumaEnd_1; }
+			if (abs(lumaEnd_0) >= gradientScaled) { distance{{ endpoint }} = {{ i * 3 + 1 }}.0; lumaEnd{{ endpoint }} = lumaEnd_0; }
 		}
-#endif
-#if ddaa2_edge_steps >= 2
-		if (distance2 > 900.0) {
-			if isHorizontal {
-				let currentUv2 = currentUv + vec2f(5.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-			} else {
-				let currentUv2 = currentUv + vec2f(0.0, 5.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-			}
-			lumaEnd2 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance2 = 6.0; lumaEnd2 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance2 = 5.0; lumaEnd2 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance2 = 4.0; lumaEnd2 = lumaEnd_0; }
-		}
-#endif
-
-		// Step 2 (3 steps, offset 6)
-#if ddaa2_edge_steps >= 3
-		if (distance1 > 900.0) {
-			if isHorizontal {
-				let currentUv1 = currentUv - vec2f(8.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-			} else {
-				let currentUv1 = currentUv - vec2f(0.0, 8.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-			}
-			lumaEnd1 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance1 = 9.0; lumaEnd1 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance1 = 8.0; lumaEnd1 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance1 = 7.0; lumaEnd1 = lumaEnd_0; }
-
-		}
-#endif
-#if ddaa2_edge_steps >= 3
-		if (distance2 > 900.0) {
-			if isHorizontal {
-				let currentUv2 = currentUv + vec2f(8.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-			} else {
-				let currentUv2 = currentUv + vec2f(0.0, 8.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-			}
-			lumaEnd2 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance2 = 9.0; lumaEnd2 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance2 = 8.0; lumaEnd2 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance2 = 7.0; lumaEnd2 = lumaEnd_0; }
-		}
-#endif
-
-		// Step 3 (3 steps, offset 9)
-#if ddaa2_edge_steps >= 4
-		if (distance1 > 900.0) {
-			if isHorizontal {
-				let currentUv1 = currentUv - vec2f(11.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-			} else {
-				let currentUv1 = currentUv - vec2f(0.0, 11.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-			}
-			lumaEnd1 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance1 = 12.0; lumaEnd1 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance1 = 11.0; lumaEnd1 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance1 = 10.0; lumaEnd1 = lumaEnd_0; }
-
-		}
-#endif
-#if ddaa2_edge_steps >= 4
-		if (distance2 > 900.0) {
-			if isHorizontal {
-				let currentUv2 = currentUv + vec2f(11.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-			} else {
-				let currentUv2 = currentUv + vec2f(0.0, 11.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-			}
-			lumaEnd2 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance2 = 12.0; lumaEnd2 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance2 = 11.0; lumaEnd2 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance2 = 10.0; lumaEnd2 = lumaEnd_0; }
-
-		}
-#endif
-
-		// Step 4 (3 steps, offset 12)
-#if ddaa2_edge_steps >= 5
-		if (distance1 > 900.0) {
-			if isHorizontal {
-				let currentUv1 = currentUv - vec2f(14.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-			} else {
-				let currentUv1 = currentUv - vec2f(0.0, 14.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv1, -vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv1, -vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv1, -vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-			}
-			lumaEnd1 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance1 = 15.0; lumaEnd1 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance1 = 14.0; lumaEnd1 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance1 = 13.0; lumaEnd1 = lumaEnd_0; }
-
-		}
-#endif
-#if ddaa2_edge_steps >= 5
-		if (distance2 > 900.0) {
-			if isHorizontal {
-				let currentUv2 = currentUv + vec2f(14.0, 0.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i( -1, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i( 0, 0)).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i( 1, 0)).rgb, axis) - lumaLocalAverage;
-
-			} else {
-				let currentUv2 = currentUv + vec2f(0.0, 14.0) * pixelStep;
-				lumaEnd_0 = key_value(sample_color_offset(currentUv2, vec2i(0, -1 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_1 = key_value(sample_color_offset(currentUv2, vec2i(0, 0 )).rgb, axis) - lumaLocalAverage;
-				lumaEnd_2 = key_value(sample_color_offset(currentUv2, vec2i(0, 1 )).rgb, axis) - lumaLocalAverage;
-
-			}
-			lumaEnd2 = lumaEnd_2;
-			if (abs(lumaEnd_2) >= gradientScaled) { distance2 = 15.0; lumaEnd2 = lumaEnd_2; }
-			if (abs(lumaEnd_1) >= gradientScaled) { distance2 = 14.0; lumaEnd2 = lumaEnd_1; }
-			if (abs(lumaEnd_0) >= gradientScaled) { distance2 = 13.0; lumaEnd2 = lumaEnd_0; }
-
-		}
-#endif
+#endfor
+#endfor
 
 		// Clip the distance (if we did not find the end, we assume it's one pixel further)
 		distance1 = min(distance1, max_distance + 1.0);

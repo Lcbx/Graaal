@@ -164,9 +164,10 @@ def test_antialiasing_filters_encoded_rgb_for_both_output_formats(mode):
 	assert np.max(np.abs(results[0]-results[1])) <= 1
 
 
-def test_specialized_edge_search_settings():
+@pytest.mark.parametrize("hybrid_luma_chroma", [False, True])
+def test_specialized_edge_search_settings(hybrid_luma_chroma):
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm")
+	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=hybrid_luma_chroma))
 	aa.resize((16, 16))
 	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	image = np.full((16, 16, 4), 255, dtype=np.uint8)
@@ -182,6 +183,38 @@ def test_specialized_edge_search_settings():
 			data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 64, "rows_per_image": 16}, (16, 16, 1))
 			pixels = np.frombuffer(data, dtype=np.uint8).reshape(16, 16, 4)
 			assert np.any((pixels[:, :, 0] > 0) & (pixels[:, :, 0] < 255))
+
+
+@pytest.mark.parametrize("hybrid_luma_chroma", [False, True])
+@pytest.mark.parametrize("ddaa2_edge_steps", [0, 1, 5])
+def test_ddaa2_manual_filter_matches_hardware_filter(hybrid_luma_chroma, ddaa2_edge_steps):
+	RenderContext.setup_graphics_backend(True)
+	size = (31, 23)
+	x, y = np.meshgrid(np.arange(size[0]), np.arange(size[1]))
+	palette = np.array(((0, 0, 0), (255, 255, 255), (255, 0, 0), (0, 80, 255)), dtype=np.uint8)
+	indices = np.where(x > y * size[0] / size[1], 2, 3)
+	indices[:, size[0] // 2] = 1
+	indices[:7, :10] = np.random.default_rng(7).integers(0, 4, (7, 10))
+	image = np.empty((size[1], size[0], 4), dtype=np.uint8)
+	image[:, :, :3] = palette[indices]
+	image[:, :, 3] = np.random.default_rng(8).integers(0, 256, (size[1], size[0]), dtype=np.uint8)
+	results = []
+	for manual_filter in (False, True):
+		aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=hybrid_luma_chroma, ddaa2_edge_steps=ddaa2_edge_steps))
+		# Exercise both filtering paths on the same texture format, regardless of device features.
+		aa.manual_filter = manual_filter
+		aa.resize(size)
+		aa.source = Texture(size, format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+		RenderContext.device.queue.write_texture({"texture": aa.source.handle}, image, {"bytes_per_row": size[0]*4}, (*size, 1))
+		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
+		commands = RenderContext.commands("ddaa2_filter_comparison")
+		aa.record(commands, output.color_attachment(), "ddaa2")
+		RenderContext.submit(commands.finish())
+		data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": size[0]*4, "rows_per_image": size[1]}, (*size, 1))
+		pixels = np.frombuffer(data, dtype=np.uint8).reshape(size[1], size[0], 4)
+		assert np.array_equal(pixels[:, :, 3], image[:, :, 3])
+		results.append(pixels.astype(np.int16))
+	assert np.max(np.abs(results[0]-results[1])) <= 1
 
 
 def test_ddaa2_disabled_diffusion_and_search_preserve_image():
