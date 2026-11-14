@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .RenderContext import RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
+from .RenderContext import BindGroupLayout, PipelineLayout, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage, wgpu
 
 
 @dataclass(frozen=True)
@@ -14,17 +14,17 @@ class AntialiasingSettings:
 	lxaa_line_check: bool = True
 	faaa_edge_threshold: float = 5.0
 	faaa_quality: int = 5
-	faaa_show_edges: bool = False
 	ddaa2_strength: float = 3.0
 	ddaa2_threshold_min: float = 0.0625
 	ddaa2_threshold_max: float = 0.166
 	ddaa2_edge_steps: int = 5
+	show_edges: bool = False
 
 	def __post_init__(self):
 		if not np.isfinite(self.lxaa_edge_threshold) or not 0 <= self.lxaa_edge_threshold <= 1: raise ValueError("LXAA threshold must be between 0 and 1")
 		if not np.isfinite(self.faaa_edge_threshold) or not 1 <= self.faaa_edge_threshold <= 9: raise ValueError("FAAA threshold must be between 1 and 9")
 		if type(self.faaa_quality) is not int or not 1 <= self.faaa_quality <= 9: raise ValueError("FAAA quality must be an integer between 1 and 9")
-		if type(self.lxaa_line_check) is not bool or type(self.faaa_show_edges) is not bool: raise ValueError("AA switches must be boolean")
+		if type(self.lxaa_line_check) is not bool or type(self.show_edges) is not bool: raise ValueError("AA switches must be boolean")
 		if not np.isfinite(self.ddaa2_strength) or not 0 <= self.ddaa2_strength <= 10: raise ValueError("DDAA2 strength must be between 0 and 10")
 		if not all(np.isfinite(value) and 0 <= value <= 1 for value in (self.ddaa2_threshold_min, self.ddaa2_threshold_max)): raise ValueError("DDAA2 thresholds must be between 0 and 1")
 		if type(self.ddaa2_edge_steps) is not int or not 0 <= self.ddaa2_edge_steps <= 5: raise ValueError("DDAA2 edge steps must be an integer between 0 and 5")
@@ -38,7 +38,12 @@ class AntialiasingPass:
 	def __init__(self, *, target_format=None, settings=None):
 		self.target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
 		self.sample_format = self.target_format.removesuffix("-srgb")
-		self.sampler = Sampler(min_filter="linear", mag_filter="linear", address_mode_u="clamp-to-edge", address_mode_v="clamp-to-edge")
+		self.manual_filter = self.sample_format == "rgba32float" and "float32-filterable" not in RenderContext.device.features
+		self.sampler = None if self.manual_filter else Sampler(min_filter="linear", mag_filter="linear", address_mode_u="clamp-to-edge", address_mode_v="clamp-to-edge")
+		self.layout = "auto"
+		if self.manual_filter:
+			color_binding = dict(binding=0, visibility=wgpu.ShaderStage.FRAGMENT, texture=dict(sample_type="unfilterable-float", view_dimension="2d", multisampled=False))
+			self.layout = PipelineLayout([BindGroupLayout([color_binding])])
 		self.sampled_color = None
 		self.pipelines = {}
 		self.settings = None
@@ -77,10 +82,11 @@ class AntialiasingPass:
 		if self.source is None: raise RuntimeError("Resize antialiasing targets first")
 		if output.format != self.target_format or output.sample_count != 1: raise ValueError("Antialiasing output must match the target format and be single-sample")
 		params = {field.name: getattr(self.settings, field.name) for field in fields(self.settings) if field.name.startswith(mode+"_")}
+		params["show_edges"] = self.settings.show_edges
 		key = (mode, *params.values())
 		if key not in self.pipelines:
-			shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "antialiasing.shader"), params={"srgb_surface": self.target_format.endswith("-srgb"), "mode": mode, **params})
-			pipeline = RenderPipeline(shader, vertex_entry="fullscreen", fragment_entry=mode, depth_test=None, depth_write=False, cull_mode="none", label=mode)
+			shader = Shader(filepath=str(Path(__file__).with_name("shaders") / "antialiasing.shader"), params={"srgb_surface": self.target_format.endswith("-srgb"), "manual_filter": self.manual_filter, "mode": mode, **params})
+			pipeline = RenderPipeline(shader, vertex_entry="fullscreen", fragment_entry=mode, depth_test=None, depth_write=False, cull_mode="none", layout=self.layout, label=mode)
 			if len(self.pipelines) >= 32: self.pipelines.pop(next(iter(self.pipelines)))
 			self.pipelines[key] = (shader, pipeline)
 		shader, pipeline = self.pipelines[key]
@@ -89,7 +95,7 @@ class AntialiasingPass:
 			# Copy encoded bytes: the installed wgpu binding cannot create alternate sRGB views.
 			commands.handle.copy_texture_to_texture({"texture": self.source.handle}, {"texture": self.sampled_color.handle}, (*self.size, 1))
 			color = self.sampled_color
-		bindings = shader.bind_group(0, scene_color=color, scene_sampler=self.sampler)
+		bindings = shader.bind_group(0, scene_color=color) if self.manual_filter else shader.bind_group(0, scene_color=color, scene_sampler=self.sampler)
 		with commands.render_pass(color=output, label=mode) as render:
 			render.set_pipeline(pipeline)
 			render.set_bind_groups(bindings)

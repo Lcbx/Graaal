@@ -155,6 +155,8 @@ class RenderingSettings:
 		if changed: self.set_aa_mode(modes[index])
 		if self.aa_pass is not None and self.aa_mode in ("lxaa", "faaa", "ddaa2"):
 			options = self.aa_pass.settings
+			changed, value = imgui.checkbox("Show AA edges", options.show_edges)
+			if changed: options = replace(options, show_edges=value)
 			if self.aa_mode == "lxaa":
 				changed, value = imgui.slider_float("LXAA edge threshold", options.lxaa_edge_threshold, 0.0, 1.0, "%.3f")
 				if changed: options = replace(options, lxaa_edge_threshold=value)
@@ -165,8 +167,6 @@ class RenderingSettings:
 				if changed: options = replace(options, faaa_edge_threshold=value)
 				changed, value = imgui.slider_int("FAAA quality", options.faaa_quality, 1, 9)
 				if changed: options = replace(options, faaa_quality=value)
-				changed, value = imgui.checkbox("FAAA show edges", options.faaa_show_edges)
-				if changed: options = replace(options, faaa_show_edges=value)
 			else:
 				changed, value = imgui.slider_float("DDAA2 diffusion strength", options.ddaa2_strength, 0.0, 10.0, "%.2f")
 				if changed: options = replace(options, ddaa2_strength=value)

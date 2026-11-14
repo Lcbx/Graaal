@@ -1,8 +1,8 @@
 # Antialiasing
 
-`AntialiasingPass` applies LXAA or FAAA to a single-sample color target.
-`AntialiasingSettings` sets the LXAA edge threshold and line check, or the
-FAAA edge threshold, quality (1–9), and edge display.
+`AntialiasingPass` applies LXAA, FAAA or DDAA2 to a single-sample color target.
+`AntialiasingSettings` controls each algorithm. Set `show_edges=True` to
+display detected edges in green.
 
 ```python
 from graaal.AntialiasingPass import AntialiasingPass, AntialiasingSettings
@@ -11,7 +11,7 @@ aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(
 aa.resize((width, height))
 scene_output = aa.color_attachment()
 # Render the scene to scene_output, then record the antialiasing pass.
-aa.record(commands, output, "faaa")  # "lxaa" is also available
+aa.record(commands, output, "faaa")  # "lxaa" and "ddaa2" are also available
 ```
 
 Call `set_settings(settings)` to change the parameters and `resize(size)` when

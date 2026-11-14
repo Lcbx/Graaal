@@ -31,10 +31,61 @@ def test_antialiasing_preserves_flat_color_and_processes_edges(mode, format):
 	assert np.any((result[:, :, 0] > 0) & (result[:, :, 0] < 255))
 
 
+@pytest.mark.parametrize("mode", ["lxaa", "faaa", "ddaa2"])
+def test_antialiasing_unfilterable_float_target(mode):
+	RenderContext.setup_graphics_backend(True)
+	if "float32-filterable" in RenderContext.device.features: pytest.skip("Device supports float32 filtering")
+	aa = AntialiasingPass(target_format="rgba32float")
+	size = (32, 32)
+	aa.resize(size)
+	aa.source = Texture(size, format="rgba32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+	image = np.zeros((32, 32, 4), dtype=np.float32)
+	image[:, :, 3] = 1
+	image[:, :, :3] = (np.arange(32)[None, :] <= np.arange(32)[:, None])[:, :, None]
+	RenderContext.device.queue.write_texture({"texture": aa.source.handle}, image, {"bytes_per_row": 512}, (*size, 1))
+	output = Texture(size, format="rgba32float", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
+	commands = RenderContext.commands("antialiasing_float_test")
+	aa.record(commands, output.color_attachment(), mode)
+	RenderContext.submit(commands.finish())
+	data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 512, "rows_per_image": 32}, (*size, 1))
+	result = np.frombuffer(data, dtype=np.float32).reshape(32, 32, 4)
+	assert np.allclose(result[:, :, 3], 1)
+	assert np.any((result[:, :, 0] > 0) & (result[:, :, 0] < 1))
+
+
 def test_antialiasing_settings_validation():
 	settings = AntialiasingSettings()
-	for values in ({"lxaa_edge_threshold": -1}, {"faaa_edge_threshold": 10}, {"faaa_quality": 0}, {"faaa_show_edges": 1}, {"ddaa2_strength": -1}, {"ddaa2_threshold_min": float("nan")}, {"ddaa2_edge_steps": 6}):
+	for values in ({"lxaa_edge_threshold": -1}, {"faaa_edge_threshold": 10}, {"faaa_quality": 0}, {"show_edges": 1}, {"ddaa2_strength": -1}, {"ddaa2_threshold_min": float("nan")}, {"ddaa2_edge_steps": 6}):
 		with pytest.raises(ValueError): replace(settings, **values)
+
+
+@pytest.mark.parametrize("mode", ["lxaa", "faaa", "ddaa2"])
+def test_antialiasing_edge_display(mode):
+	RenderContext.setup_graphics_backend(True)
+	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(show_edges=True))
+	aa.resize((16, 16))
+	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
+	image = np.zeros((16, 16, 4), dtype=np.uint8)
+	image[:, :, 3] = 137
+	image[:, :, :3] = np.where((np.arange(16)[None, :] <= np.arange(16)[:, None])[:, :, None], 255, 64)
+	RenderContext.device.queue.write_texture({"texture": aa.source.handle}, image, {"bytes_per_row": 64}, (16, 16, 1))
+	output = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
+	commands = RenderContext.commands("aa_edges")
+	aa.record(commands, output.color_attachment(), mode)
+	RenderContext.submit(commands.finish())
+	data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 64, "rows_per_image": 16}, (16, 16, 1))
+	pixels = np.frombuffer(data, dtype=np.uint8).reshape(16, 16, 4)
+	assert np.any(np.all(pixels[:, :, :3] == (0, 255, 0), axis=2))
+	assert np.all(np.abs(pixels[1, 14, :3].astype(int)-115) <= 1)
+	assert np.all(pixels[:, :, 3] == 137)
+	aa.set_settings(replace(aa.settings, show_edges=False))
+	commands = RenderContext.commands("aa_edges_disabled")
+	aa.record(commands, output.color_attachment(), mode)
+	RenderContext.submit(commands.finish())
+	data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 64, "rows_per_image": 16}, (16, 16, 1))
+	pixels = np.frombuffer(data, dtype=np.uint8).reshape(16, 16, 4)
+	assert np.all(pixels[1, 14, :3] == 64)
+	assert not np.any(np.all(pixels[:, :, :3] == (0, 255, 0), axis=2))
 
 
 @pytest.mark.parametrize("mode", ["lxaa", "faaa", "ddaa2"])
@@ -106,7 +157,7 @@ def test_faaa_edge_display_and_quality_settings():
 	RenderContext.device.queue.write_texture({"texture": aa.source.handle}, image, {"bytes_per_row": 64}, (16, 16, 1))
 	output = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	for quality in range(1, 10):
-		aa.set_settings(replace(aa.settings, faaa_quality=quality, faaa_show_edges=True))
+		aa.set_settings(replace(aa.settings, faaa_quality=quality, show_edges=True))
 		commands = RenderContext.commands("faaa_edges")
 		aa.record(commands, output.color_attachment(), "faaa")
 		RenderContext.submit(commands.finish())
