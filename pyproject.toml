@@ -24,4 +24,4 @@ package-dir = {graaal = "graaal"}
 graaal = ["shaders/*.shader", "shaders/*.shaderlib", "shaders/*_LICENSE.txt", "data/*.otf", "data/blue_noise/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "graaal/tests"]
+testpaths = ["tests"]

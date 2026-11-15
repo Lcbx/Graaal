@@ -1,10 +1,13 @@
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 def test_cpu_library_imports_need_no_optional_dependencies_or_path_mutation(tmp_path):
-    result = subprocess.run([sys.executable, "-c", '''
+	env = os.environ.copy()
+	env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+	result = subprocess.run([sys.executable, "-c", '''
 import sys
 import importlib.abc
 import numpy
@@ -31,17 +34,17 @@ layout = draw_compiler.compile_destinations(2, grouping.batches,
     {10: draw_layout.LodGroup((1,), ())}, meshes, {3: True})
 assert layout.arrays['main_draw_cmd']['first_index'].tolist() == [4]
 assert layout.main_count == 2 and layout.prepass_count == 2
-'''], cwd=tmp_path, text=True, capture_output=True)
-    assert result.returncode == 0, result.stderr
+'''], cwd=tmp_path, text=True, capture_output=True, env=env)
+	assert result.returncode == 0, result.stderr
 
 
 def test_scene_imports_do_not_initialize_glfw_or_gpu():
-    result = subprocess.run([sys.executable, "-c", '''
+	result = subprocess.run([sys.executable, "-c", '''
 import glfw, wgpu
 def forbidden(*args, **kwargs): raise AssertionError('graphics initialization during import')
 glfw.init = forbidden
 wgpu.gpu.request_adapter_sync = forbidden
 from scenes import transparency_example, draw_batches_example, direct_draw_example, prototype, msaa_example, material_example
 assert all(callable(scene.run_scene) for scene in (transparency_example, draw_batches_example, direct_draw_example, prototype, msaa_example, material_example))
-'''], cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True)
-    assert result.returncode == 0, result.stderr
+'''], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
+	assert result.returncode == 0, result.stderr

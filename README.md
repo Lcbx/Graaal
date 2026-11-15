@@ -310,6 +310,6 @@ Enable counters with `RenderContext.enable_statistics()` and inspect them throug
 grouping, and visibility; arenas report active/capacity bytes. Counters do not
 measure GPU execution time or synchronize the GPU.
 
-From the repository root run `python -m pytest tests graaal/tests -p no:cacheprovider`.
+From the repository root run `python -m pytest tests -p no:cacheprovider`.
 Tests cover CPU-only imports, mutation/lifetimes, multiple views, explicit layouts,
 MSAA, custom materials, and offscreen GPU readback.

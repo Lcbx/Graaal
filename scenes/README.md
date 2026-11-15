@@ -91,7 +91,7 @@ For untracked in-place edits to ECS object fields, call `touch()` so dependent
 readers can observe them. Run the import, scene-state and cache tests with:
 
 ```powershell
-python -m pytest tests/test_scenes.py tests/test_scene_caches.py graaal/tests/test_library_boundaries.py -q -p no:cacheprovider
+python -m pytest tests/test_scenes.py tests/test_scene_caches.py tests/test_library_boundaries.py -q -p no:cacheprovider
 ```
 
 See [benchmarks](benchmarks/README.md) for CLI usage of diagnostic scripts.
