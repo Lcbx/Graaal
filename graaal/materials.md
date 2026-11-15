@@ -20,6 +20,28 @@ The top-middle sphere uses a procedural striped shader written in the Python
 script; its stripes and time-driven vertex displacement have live controls for
 frequency, color, displacement amplitude and speed, plus an animation pause.
 
+## Implementation and verification
+
+- **Entry points:** [Materials.py](Materials.py) packs CPU-side dictionary
+  values; [DefaultMaterial.py](DefaultMaterial.py) defines the built-in lit
+  schema; [MaterialRenderer.py](MaterialRenderer.py) records GPU work;
+  [EcsMaterials.py](EcsMaterials.py) handles ECS updates.
+- **Invariants:** Nested dictionary edits require `touch_materials()`;
+  ECS writes advance field versions. Preserve stable, distinct `surface_id`
+  values across repacking and reorder metadata with `draws.instance_order`.
+  See [editing dictionaries](#editing-dictionaries) and
+  [resource lifetime](#resource-lifetime-and-direct-array-use).
+- **Example:** [material_example.py](../scenes/material_example.py).
+- **Tests:** [material packing](../tests/test_materials.py),
+  [ECS integration](../tests/test_ecs_materials.py), and
+  [material rendering/culling](../tests/test_material_culling.py).
+
+```sh
+python -m pytest tests/test_materials.py tests/test_ecs_materials.py tests/test_material_culling.py -q
+```
+
+Some rendering tests require the optional WGPU dependencies and GPU backend.
+
 ## Useful APIs
 
 This non-exhaustive map covers the material modules. Import from
@@ -35,7 +57,7 @@ This non-exhaustive map covers the material modules. Import from
 | `EcsMaterials` | `MaterialInstance` stores mesh/material references and overrides; `MaterialTransform` stores numeric transforms. `EcsMaterialAdapter.sync` extracts changed ECS data; `touch_materials(*dicts)` marks nested edits for repacking. |
 
 The default adapter uses `TransparencyPass` for rendering and `DrawBatches` for
-grouping/culling. See the [engine API overview](../README.md#modules-and-useful-apis)
+grouping/culling. See the [engine API overview](README.md#modules-and-useful-apis)
 for lower-level resources and commands.
 
 ## ECS usage

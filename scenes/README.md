@@ -28,7 +28,7 @@ cleans up the context afterward.
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 
 These files are runnable examples rather than a stable scene API. For reusable
-components, see the [engine guide](../README.md), [ECS reference](../graaal/ECS_API.md),
+components, see the [engine guide](../graaal/README.md), [ECS reference](../graaal/ECS_API.md),
 [material guide](../graaal/materials.md), and
 [transparency guide](../graaal/stochastic_transparency.md).
 
@@ -93,5 +93,12 @@ readers can observe them. Run the import, scene-state and cache tests with:
 ```powershell
 python -m pytest tests/test_scenes.py tests/test_scene_caches.py tests/test_library_boundaries.py -q -p no:cacheprovider
 ```
+
+For subsystem regressions, use [ECS tests](../graaal/ECS_API.md),
+[material tests](../graaal/materials.md#implementation-and-verification), and
+[transparency tests](../graaal/stochastic_transparency.md#implementation-and-verification).
+An installed-package CPU smoke test is `python -m graaal`; an offscreen GPU
+smoke test is `python -m graaal --offscreen --frames 1` (requires a working
+WGPU backend). Import tests do not verify the visual output of a scene.
 
 See [benchmarks](benchmarks/README.md) for CLI usage of diagnostic scripts.

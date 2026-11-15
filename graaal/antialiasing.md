@@ -1,5 +1,11 @@
 # Antialiasing
 
+Implementation: [AntialiasingPass.py](AntialiasingPass.py). Example controls:
+[rendering_settings.py](../scenes/rendering_settings.py). Regression tests:
+[test_antialiasing.py](../tests/test_antialiasing.py). Run from the repository
+root with `python -m pytest tests/test_antialiasing.py -q` (GPU backend required
+for rendering tests).
+
 `AntialiasingPass` applies LXAA, FAAA or DDAA2 to a single-sample color target.
 `AntialiasingSettings` controls each algorithm. Set `show_edges=True` to
 display detected edges in green.

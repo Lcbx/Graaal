@@ -6,6 +6,29 @@ The caller supplies geometry, materials, camera values, targets and commands.
 [MaterialRenderer](materials.md) records these stages for dictionary materials;
 the [interactive scene](../scenes/transparency_example.py) shows direct use.
 
+## Implementation and verification
+
+- **Entry points:** [TransparencyPass.py](TransparencyPass.py) owns the pass
+  resources and recording methods; [transparency_utils.py](transparency_utils.py)
+  wires the transparent stages; [TransparencyData.py](TransparencyData.py)
+  supplies input layouts.
+- **Invariants:** Resize/update camera inputs before recording, preserve the
+  [recording order](#recording), and keep geometry metadata and deferred inputs
+  in the same packed instance order. Caller-owned targets must satisfy the
+  [geometry and target contracts](#geometry-and-targets). This pipeline uses
+  no temporal accumulation.
+- **Example:** [transparency_example.py](../scenes/transparency_example.py).
+- **Tests:** [pass recording](../tests/test_transparency_pass.py),
+  [nearest winner](../tests/test_transparency_exact_nearest.py),
+  [MSAA](../tests/test_transparency_msaa.py), and
+  [banded tail](../tests/test_banded_tail.py).
+
+```sh
+python -m pytest tests/test_transparency_pass.py tests/test_transparency_exact_nearest.py tests/test_transparency_msaa.py tests/test_banded_tail.py -q
+```
+
+Rendering tests require a working WGPU backend.
+
 ## Useful APIs
 
 Import from `graaal.TransparencyPass`. Initialize RenderContext before creating

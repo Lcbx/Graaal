@@ -4,7 +4,7 @@ This guide covers the application-facing API. Python examples can be executed in
 document order; later examples use the reusable setup below and reset their world
 explicitly. Run after installing the package with `pip install -e .` from the repository root.
 
-Related documents: [engine guide](../README.md) and
+Related documents: [engine guide](README.md) and
 [benchmarks](../scenes/benchmarks/README.md).
 
 - [Quick start: named batches and writes](#named-batches-and-explicit-writes)
@@ -25,6 +25,21 @@ Related documents: [engine guide](../README.md) and
 - [Scheduling](#scheduling)
 - [Diagnostics reference](#diagnostics-reference)
 - [API inventory and errors](#api-inventory-and-error-reference)
+
+For code changes, use the [entity lifecycle](#entity-lifecycle) and
+[selections](#selections-and-row-lifetimes) sections for row validity;
+[structural queries](#structural-queries-and-joins) for query invalidation;
+[version tokens](#version-tokens-and-caches) for mutation notification; and
+[scheduling](#scheduling) for execution ordering. Implementation entry points
+are `ECS.py`, `ecs_schema.py`, `ecs_types.py`, `ecs_commands.py`, and
+`ecs_schedule.py`. Relevant regression tests are
+[`test_ecs_main.py`](../tests/test_ecs_main.py),
+[`test_ecs_queries.py`](../tests/test_ecs_queries.py), and
+[`test_ecs_schedule.py`](../tests/test_ecs_schedule.py). Run the focused tests:
+
+```sh
+python -m pytest tests/test_ecs_main.py tests/test_ecs_queries.py tests/test_ecs_schedule.py -q
+```
 
 Import the public API from `graaal.ECS`.
 
@@ -131,7 +146,7 @@ Fields are touched on exit even after exceptions; writes are not rolled back.
 Exported views must not escape the scope. Compact multicomponent holes first.
 Independent component stores still require joins/gathers to align their rows.
 
-See [the engine guide](../README.md#arrays-and-ordinary-systems) for a complete
+See [the engine guide](README.md#arrays-and-ordinary-systems) for a complete
 shaped-field example.
 
 ## Inspection and allocation control
