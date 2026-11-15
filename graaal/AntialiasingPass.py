@@ -1,36 +1,27 @@
 """Display-space antialiasing as an independent postprocessing pass."""
-from dataclasses import dataclass, fields
+from dataclasses import fields
 from operator import index
 from pathlib import Path
 
 import numpy as np
 
 from .RenderContext import BindGroupLayout, PipelineLayout, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage, wgpu
+from .settings_validation import checked_dataclass, float_range, int_range
 
 
-@dataclass(frozen=True)
+@checked_dataclass(frozen=True)
 class AntialiasingSettings:
-	lxaa_edge_threshold: float = 0.375
+	lxaa_edge_threshold: float_range(0, 1) = 0.375
 	lxaa_line_check: bool = True
-	faaa_edge_threshold: float = 5.0
-	faaa_quality: int = 5
-	ddaa2_strength: float = 3.0
-	ddaa2_threshold_min: float = 0.0625
-	ddaa2_threshold_max: float = 0.166
-	ddaa2_edge_steps: int = 5
+	faaa_edge_threshold: float_range(1, 9) = 5.0
+	faaa_quality: int_range(1, 9) = 5
+	ddaa2_strength: float_range(0, 10) = 3.0
+	ddaa2_threshold_min: float_range(0, 1) = 0.0625
+	ddaa2_threshold_max: float_range(0, 1) = 0.166
+	ddaa2_edge_steps: int_range(0, 5) = 5
 	show_edges: bool = False
 	hybrid_luma_chroma: bool = False
-	chroma_weight: float = 0.5
-
-	def __post_init__(self):
-		if not np.isfinite(self.lxaa_edge_threshold) or not 0 <= self.lxaa_edge_threshold <= 1: raise ValueError("LXAA threshold must be between 0 and 1")
-		if not np.isfinite(self.faaa_edge_threshold) or not 1 <= self.faaa_edge_threshold <= 9: raise ValueError("FAAA threshold must be between 1 and 9")
-		if type(self.faaa_quality) is not int or not 1 <= self.faaa_quality <= 9: raise ValueError("FAAA quality must be an integer between 1 and 9")
-		if any(type(value) is not bool for value in (self.lxaa_line_check, self.show_edges, self.hybrid_luma_chroma)): raise ValueError("AA switches must be boolean")
-		if not np.isfinite(self.chroma_weight) or not 0 <= self.chroma_weight <= 5: raise ValueError("Chroma weight must be between 0 and 5")
-		if not np.isfinite(self.ddaa2_strength) or not 0 <= self.ddaa2_strength <= 10: raise ValueError("DDAA2 strength must be between 0 and 10")
-		if not all(np.isfinite(value) and 0 <= value <= 1 for value in (self.ddaa2_threshold_min, self.ddaa2_threshold_max)): raise ValueError("DDAA2 thresholds must be between 0 and 1")
-		if type(self.ddaa2_edge_steps) is not int or not 0 <= self.ddaa2_edge_steps <= 5: raise ValueError("DDAA2 edge steps must be an integer between 0 and 5")
+	chroma_weight: float_range(0, 5) = 0.5
 
 
 class AntialiasingPass:

@@ -15,6 +15,7 @@ from .AmbientOcclusionPass import AmbientOcclusionSettings
 from .DrawBatches import RenderShader, ShaderPass
 from .RenderContext import BindGroup, BufferUsage, GpuBuffer, ComputePipeline, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
 from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+from .settings_validation import checked_dataclass, float_range
 
 
 SHADERS = Path(__file__).with_name("shaders")
@@ -22,19 +23,15 @@ DEBUG_VIEWS = ("final", "transmittance", "winner", "reconstruction", "nearest", 
 MSAA_SAMPLE_COUNTS = (1, 4)
 
 
-@dataclass(frozen=True)
+@checked_dataclass(frozen=True)
 class GrazingFade:
 	"""Opacity fade by angle from the geometric normal: 0 face-on, 90 edge-on."""
 	enabled: bool = True
-	start_angle: float = 83.0
-	end_angle: float = 86.0
+	start_angle: float_range(0, 90) = 83.0
+	end_angle: float_range(0, 90) = 86.0
 
 	def __post_init__(self):
-		if not isinstance(self.enabled, bool):
-			raise ValueError("Grazing fade enabled must be a boolean")
-		if not (np.isfinite(self.start_angle) and np.isfinite(self.end_angle)
-			and 0 <= self.start_angle < self.end_angle <= 90
-			and np.float32(self.start_angle) < np.float32(self.end_angle)):
+		if not (self.start_angle < self.end_angle and np.float32(self.start_angle) < np.float32(self.end_angle)):
 			raise ValueError("Grazing fade angles must satisfy 0 <= start_angle < end_angle <= 90 degrees")
 
 

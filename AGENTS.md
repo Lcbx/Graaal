@@ -13,6 +13,7 @@ see README.md for details. Python IS installed in this environment.
 ## Code style
 - Indent with tabs, never spaces.
 - Keep existing comments and variable names unless the task requires changing them.
+- add concise comments when they help readability. do not enumerate steps (ex ```# 1. first step```) 
 - Prefer composition over inheritance.
 - Prefer procedural code over OOP.
 - Use functional style for small expressions (comprehensions, short lambdas, `map`).

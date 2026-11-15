@@ -1,33 +1,26 @@
 """Screen-space ambient occlusion as an independent depth-aware pass."""
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 from operator import index
 from pathlib import Path
 
 import numpy as np
 
 from .RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
+from .settings_validation import checked_dataclass, float_range, int_range
 
 
 SHADERS = Path(__file__).with_name("shaders")
 
 
-@dataclass(frozen=True)
+@checked_dataclass(frozen=True)
 class AmbientOcclusionSettings:
 	"""Sampling and strength controls for screen-space ambient occlusion."""
-	radius: float = 0.25
-	sample_count: int = 8
-	turns: float = 5.0
-	bias: float = 0.05
-	falloff: float = 1.0
-	strength: float = 3.0
-
-	def __post_init__(self):
-		if type(self.sample_count) is not int or not 1 <= self.sample_count <= 64:
-			raise ValueError("AO sample_count must be an integer from 1 to 64")
-		for name in ("radius", "turns", "bias", "falloff", "strength"):
-			value = getattr(self, name)
-			if not np.isfinite(value) or value < 0:
-				raise ValueError(f"AO {name} must be finite and nonnegative")
+	radius: float_range() = 0.25
+	sample_count: int_range(1, 64) = 8
+	turns: float_range() = 5.0
+	bias: float_range() = 0.05
+	falloff: float_range() = 1.0
+	strength: float_range() = 3.0
 
 
 class AmbientOcclusionPass:

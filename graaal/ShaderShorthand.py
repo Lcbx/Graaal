@@ -19,12 +19,14 @@ _BINDING = re.compile(
 	rf"(?P<name>{_IDENTIFIER})[ \t]*:[ \t]*(?P<type>[^;\n]+?)[ \t]*;[ \t]*(?P<comment>//[^\n]*)?$"
 )
 _ATTRIBUTE = re.compile(r"@(?P<name>location|builtin|interpolate|align|size)\((?P<value>[^()]*)\)[ \t]*")
+# Skip comments, strings and existing Jinja syntax while finding shorthand calls.
 _PROTECTED = re.compile(r'//[^\n]*|/\*.*?\*/|\{\{.*?\}\}|\{%.*?%\}|\{\#.*?\#\}|^[ \t]*\#[^\n]*|"(?:\\.|[^"\\])*"', re.DOTALL | re.MULTILINE)
 _SAMPLE_LOAD = re.compile(_PROTECTED.pattern+r"|\bsample_texture_load\s*\(", re.DOTALL | re.MULTILINE)
 _TEMPLATE_START = re.compile(r"\b(?:array|atomic|ptr|vec[234]|mat[234]x[234]|bitcast|texture_\w+)\s*<")
 
 
 def _template_argument(environment, argument):
+	# Preserve embedded {{ expressions }} while passing WGSL text as a Jinja string.
 	parts, expression = [], []
 	for _, kind, value in environment.lex(argument):
 		if kind == "data": parts.append(repr(value))
@@ -39,6 +41,7 @@ def _sample_texture_loads(source, environment):
 	while match := _SAMPLE_LOAD.search(source, position):
 		position = match.end()
 		if not match.group().startswith("sample_texture_load"): continue
+		# Only commas at the call's outer level separate arguments.
 		arguments, stack, argument_start = [], [")"], position
 		while stack and position < len(source):
 			protected = _PROTECTED.match(source, position)
@@ -47,6 +50,7 @@ def _sample_texture_loads(source, environment):
 				continue
 			template = _TEMPLATE_START.match(source, position)
 			if template:
+				# WGSL constructor commas inside <...> belong to the type.
 				stack.append(">")
 				position = template.end()
 				continue
@@ -79,6 +83,7 @@ def _sample_texture_loads(source, environment):
 
 class ShaderShorthand(Extension):
 	def preprocess(self, source, name, filename=None):
+		# Rewrite calls first; declaration lines are then handled one at a time.
 		source, sample_textures = _sample_texture_loads(source, self.environment)
 		result = []
 		for line in source.splitlines(keepends=True):
@@ -115,6 +120,7 @@ class ShaderShorthand(Extension):
 				elif kind == "sample_texture":
 					if access not in (None, "layered"): raise ValueError("sample_texture layout must be layered or omitted")
 					if match["type"] not in ("f32", "i32", "u32", "depth"): raise ValueError("Invalid sample_texture type")
+					# The macro chooses a WGSL texture type from the shader's sample count.
 					type_name = f"sample_texture_type({match['type']!r}, layered={'true' if access else 'false'})"
 					sample_textures = True
 				elif access is not None:
@@ -126,5 +132,6 @@ class ShaderShorthand(Extension):
 				raise ValueError(f"Invalid WGSL shorthand declaration: {body.strip()}")
 			result.append(line)
 		if sample_textures:
+			# Import only when a sampled texture declaration or load needs the macros.
 			result.insert(0, '#from "utils_texture.shaderlib" import sample_texture_type, sample_texture_load with context\n')
 		return "".join(result)
