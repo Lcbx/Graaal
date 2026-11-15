@@ -5,6 +5,8 @@ Create after init_window(), render after the scene, and close before cleanup().
 """
 
 from contextlib import contextmanager
+from enum import Enum
+import json
 
 import glfw
 from pathlib import Path
@@ -27,6 +29,9 @@ class ImGui:
 		previous = imgui.get_current_context()
 		self._imgui_context = imgui.create_context()
 		self.font = None
+		self._show_theme_editor = False
+		self._style_path = "imgui_style.json"
+		self._style_message = ""
 
 		try:
 			imgui.set_current_context(self._imgui_context)
@@ -55,7 +60,78 @@ class ImGui:
 
 	def set_theme(self, name: str):
 		from imgui_bundle import hello_imgui
-		hello_imgui.apply_theme(hello_imgui.ImGuiTheme_[name])
+		with self._activate():
+			self._tweaked_theme = hello_imgui.ImGuiTweakedTheme()
+			self._tweaked_theme.theme = hello_imgui.ImGuiTheme_[name]
+			self._apply_theme()
+
+	def _apply_theme(self):
+		from imgui_bundle import hello_imgui
+		hello_imgui.apply_tweaked_theme(self._tweaked_theme)
+
+	def save_style(self, path: Path):
+		"""Save the active ImGuiStyle, including manual color edits, as JSON."""
+		with self._activate():
+			style = self.imgui.get_style()
+			fields = {}
+			for name in dir(style):
+				if name.startswith("_"):
+					continue
+				value = getattr(style, name)
+				if isinstance(value, Enum):
+					fields[name] = int(value)
+				elif isinstance(value, (bool, int, float)):
+					fields[name] = value
+				elif isinstance(value, self.imgui.ImVec2):
+					fields[name] = [value.x, value.y]
+			colors = {}
+			for idx in range(int(self.imgui.Col_.count)):
+				color = style.color_(idx)
+				colors[str(idx)] = [color.x, color.y, color.z, color.w]
+		Path(path).write_text(json.dumps({"fields": fields, "colors": colors}, indent=2) + "\n", encoding="utf-8")
+
+	def load_style(self, path: Path):
+		"""Restore an exported ImGuiStyle to this ImGui context."""
+		data = json.loads(Path(path).read_text(encoding="utf-8"))
+		with self._activate():
+			style = self.imgui.get_style()
+			for name, value in data["fields"].items():
+				current = getattr(style, name)
+				if isinstance(current, Enum):
+					value = type(current)(value)
+				elif isinstance(current, self.imgui.ImVec2):
+					value = self.imgui.ImVec2(*value)
+				setattr(style, name, value)
+			for idx, color in data["colors"].items():
+				style.set_color_(int(idx), color)
+
+	def _draw_theme_editor(self):
+		if not self._show_theme_editor:
+			return
+		from imgui_bundle import hello_imgui
+		visible, self._show_theme_editor = self.imgui.begin("Theme Editor", self._show_theme_editor)
+		try:
+			if visible:
+				if hello_imgui.show_theme_tweak_gui(self._tweaked_theme):
+					self._apply_theme()
+				self.imgui.separator()
+				_, self._style_path = self.imgui.input_text("Style path", self._style_path)
+				if self.imgui.button("Save style"):
+					try:
+						self.save_style(Path(self._style_path))
+						self._style_message = f"Saved {self._style_path}"
+					except OSError as e:
+						self._style_message = str(e)
+				self.imgui.same_line()
+				if self.imgui.button("Load style"):
+					try:
+						self.load_style(Path(self._style_path))
+						self._style_message = f"Loaded {self._style_path}"
+					except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+						self._style_message = str(e)
+				self.imgui.text(self._style_message)
+		finally:
+			self.imgui.end()
 
 	def set_font(self,font_path:Path):
 		if font_path.exists():
@@ -138,6 +214,7 @@ class ImGui:
 			self.imgui.new_frame()
 			try:
 				draw()
+				self._draw_theme_editor()
 			finally:
 				self.imgui.render()
 			commands = self.context.commands("imgui")
@@ -147,6 +224,10 @@ class ImGui:
 
 	def _on_key(self, key, scancode, action, mods):
 		with self._activate():
+			if key == glfw.KEY_F10:
+				if action == glfw.PRESS:
+					self._show_theme_editor = not self._show_theme_editor
+				return True
 			for flag, name, left, right in (
 				(glfw.MOD_CONTROL, "mod_ctrl", glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL),
 				(glfw.MOD_SHIFT, "mod_shift", glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT),

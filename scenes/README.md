@@ -23,7 +23,7 @@ cleans up the context afterward.
 | `draw_batches_example.py` | ECS movement and entity changes, LOD, indirect draws and Hi-Z culling; Space switches camera, scroll zooms. |
 | `direct_draw_example.py` | Direct drawing with instance changes and shadows; scroll zooms. |
 | `prototype.py` | ECS-backed actor/health panels in ImGui. Combat resolution is a placeholder. |
-| `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. |
+| `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. F opens settings; P opens the performance profiler. |
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 
@@ -40,7 +40,9 @@ In `transparency_example.py`, the ImGui settings panel is visible at startup.
 handles keyboard editing of visible controls. The top section selects MSAA,
 LXAA, FAAA, DDAA2, or no antialiasing, and controls SSAO; transparency controls are
 below it. **A** toggles SSAO and **O** switches between its compose and
-separate-pass implementations.
+separate-pass implementations. `example_overlay.py` connects **M**, **A**, **O**,
+**P**, and **F** in both scenes. **P** toggles the profiler and starts monitored
+submissions; GPU timings appear when the device supports timestamp queries.
 Both examples start with `TransparencyPass` defaults.
 
 **Banded + dual Kawase** captures the nearest transparent
@@ -69,6 +71,7 @@ shows signed residuals when the proxy is active.
 | [ / ] | Decrease/increase screen noise-cell size |
 | G | Toggle grazing fade |
 | M | Toggle 4x MSAA (starts off) |
+| P | Show/hide the performance profiler |
 | 1 / 3 / 5 / 9 | Select 0 / 1 / 2 / 3 Kawase pairs |
 | F | Show/hide the settings panel |
 | Left / Right | Change blur pairs while the panel is visible |

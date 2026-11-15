@@ -1,13 +1,16 @@
 """Keyboard settings and range validation without creating a GPU device."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import glfw
 
 from graaal.TransparencyPass import DEBUG_VIEWS
+from graaal.RenderContext import RenderContext
 from scenes.rendering_settings import FilterSettings
 from scenes import transparency_example as scene
+from scenes.example_overlay import ExampleOverlay
 
 
 def make_renderer(**overrides):
@@ -45,11 +48,46 @@ def test_transparency_msaa_shortcut_updates_antialiasing_mode(monkeypatch):
 	monkeypatch.setattr(scene, "msaa_enabled", False)
 	panel = FilterSettings(renderer, on_msaa_changed=scene.set_msaa_enabled, aa_pass=aa)
 	monkeypatch.setattr(scene, "settings", panel, raising=False)
+	monkeypatch.setattr(scene, "overlay", scene.ExampleOverlay(panel), raising=False)
 	panel.set_aa_mode("ddaa2")
 	scene.on_char(ord("m"))
 	assert renderer.sample_count == 4 and panel.aa_mode == aa.mode == "msaa"
 	scene.on_char(ord("m"))
 	assert renderer.sample_count == 1 and panel.aa_mode == aa.mode == "off"
+
+
+def test_example_overlay_shortcuts_share_settings_and_profiler():
+	renderer = make_renderer(sample_count=1)
+	renderer.set_sample_count = lambda count: setattr(renderer, "sample_count", count)
+	settings = FilterSettings(renderer, visible=False)
+	method = ["compose"]
+	overlay = ExampleOverlay(settings, get_ao_method=lambda: method[0], set_ao_method=lambda value: method.__setitem__(0, value))
+	assert overlay.handle_char(ord("m")) and renderer.sample_count == 4
+	assert overlay.handle_char(ord("a")) and settings.ssao_enabled
+	assert overlay.handle_char(ord("o")) and method[0] == "pass"
+	assert overlay.handle_char(ord("p")) and overlay.profiler.visible
+	assert overlay.handle_key(glfw.KEY_F, 0, glfw.PRESS, 0) and settings.visible
+	assert not overlay.handle_char(ord("z"))
+
+
+def test_example_overlay_collects_reports_only_while_profiler_is_visible(monkeypatch):
+	settings = FilterSettings(make_renderer(sample_count=1), visible=False)
+	overlay = ExampleOverlay(settings)
+	plain = SimpleNamespace(finish=Mock(return_value="plain"))
+	monitored = SimpleNamespace(finish=Mock(return_value="monitored"))
+	monkeypatch.setattr(RenderContext, "commands", Mock(return_value=plain))
+	monkeypatch.setattr(RenderContext, "submit", Mock())
+	overlay.monitor = SimpleNamespace(commands=Mock(return_value=monitored), submit=Mock(return_value={"commands": []}))
+	overlay.profiler.update = Mock()
+	assert overlay.commands("scene") is plain
+	overlay.submit(plain)
+	RenderContext.submit.assert_called_once_with("plain")
+	overlay.monitor.submit.assert_not_called()
+	overlay.handle_char(ord("p"))
+	assert overlay.commands("scene") is monitored
+	overlay.submit(monitored)
+	overlay.monitor.submit.assert_called_once_with("monitored")
+	overlay.profiler.update.assert_called_once_with({"commands": []})
 
 
 

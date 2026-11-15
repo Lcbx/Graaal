@@ -14,8 +14,6 @@ from math import cos, sin
 import numpy as np
 
 from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.Diagnostics import RenderMonitor
-from graaal.diagnostics_visualizer import DiagnosticsVisualizer
 from graaal.AmbientOcclusionPass import AmbientOcclusionPass
 from graaal.AntialiasingPass import AntialiasingPass
 from graaal.ECS import ECS
@@ -24,6 +22,7 @@ from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
 from graaal.Math import Camera, Vec3
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from graaal.TransparencyData import VERTEX_DTYPE
+from scenes.example_overlay import ExampleOverlay
 from scenes.rendering_settings import RenderingSettings
 
 
@@ -143,29 +142,23 @@ def run_scene():
 		renderer.transparency.set_ambient_occlusion(enabled and ao_method == "compose")
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
 		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
-	monitor = RenderMonitor(renderer=renderer)
-	visualizer = DiagnosticsVisualizer(visible=False, position=(370, 12))
+	def set_ao_method(method):
+		nonlocal ao_method
+		ao_method = method
+		renderer.transparency.set_ambient_occlusion(ao_enabled and method == "compose")
+	overlay = ExampleOverlay(settings, renderer=renderer, get_ao_method=lambda: ao_method,
+		set_ao_method=set_ao_method, profiler_position=(370, 12))
 	def set_alternate_color(enabled):
 		nonlocal alternate
 		alternate = enabled
 		opaque.default_material = {"base_color": (0.6, 0.1, 0.8, 1) if alternate else (0.8, 0.2, 0.08, 1)}
 		adapter.touch_materials(opaque.default_material)
 	def on_char(code):
-		nonlocal orbit, msaa_enabled, ao_enabled, ao_method
-		if chr(code).lower() == "m":
-			settings.set_msaa_enabled(not msaa_enabled)
-			print(f"MSAA: {renderer.transparency.sample_count}x")
-		elif chr(code).lower() == "a":
-			settings.set_ssao_enabled(not ao_enabled)
-			print(f"SSAO: {ao_enabled}")
-		elif chr(code).lower() == "o":
-			ao_method = "pass" if ao_method == "compose" else "compose"
-			renderer.transparency.set_ambient_occlusion(ao_enabled and ao_method == "compose")
-			print(f"SSAO path: {ao_method}")
-		elif chr(code) == " ": orbit = not orbit
+		nonlocal orbit
+		if overlay.handle_char(code): return True
+		if chr(code) == " ": orbit = not orbit
 		elif chr(code).lower() == "d":
 			set_alternate_color(not alternate)
-		elif chr(code).lower() == "p": visualizer.visible = not visualizer.visible
 		return True
 	def draw_controls():
 		nonlocal animate
@@ -225,10 +218,9 @@ def run_scene():
 					adapter.touch_materials(striped)
 			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; A: SSAO; O: SSAO path; F: rendering settings; P: profiler; Space: orbit.")
 		finally: imgui.end()
-		settings.draw()
-		visualizer.draw()
+		overlay.draw()
 	RenderContext.subscribe_event("char", on_char)
-	RenderContext.subscribe_event("key", settings.handle_key)
+	RenderContext.subscribe_event("key", overlay.handle_key)
 	try:
 		with ImGui() as gui:
 			while RenderContext.window_loop():
@@ -237,7 +229,7 @@ def run_scene():
 				if animate: animation_time += RenderContext.frame_time
 				camera.position = Vec3(9*sin(angle), 1.3, 9*cos(angle))
 				adapter.sync()
-				commands = monitor.commands("material_example") if visualizer.visible else RenderContext.commands("material_example")
+				commands = overlay.commands("material_example")
 				output = RenderContext.screen()
 				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 					aa_pass.resize(RenderContext.window_dimensions)
@@ -253,12 +245,11 @@ def run_scene():
 					ao_pass.record(commands, renderer.transparency.depth, aa_output)
 				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 					aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
-				if visualizer.visible: visualizer.update(monitor.submit(commands.finish()))
-				else: RenderContext.submit(commands.finish())
+				overlay.submit(commands)
 				gui.render(draw_controls)
 	finally:
 		RenderContext.event_handlers["char"].remove(on_char)
-		RenderContext.event_handlers["key"].remove(settings.handle_key)
+		RenderContext.event_handlers["key"].remove(overlay.handle_key)
 
 
 if __name__ == "__main__":

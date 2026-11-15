@@ -5,7 +5,6 @@ Estimates assume the current engine architecture; items with open design questio
 
 ## Small — investigation, fixes, and local changes
 
-- [x] Make UI use neon black (`#121313` hex RGB).
 - Check that alpha mask textures use a low-precision format for alpha.
 - Grazing fade is not taken into account for alpha mask (use dithering).
 - Ensure nearest material is not recorded in the stochastic banded tail.

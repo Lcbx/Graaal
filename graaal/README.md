@@ -351,6 +351,11 @@ add `--frames N` for a bounded run. Imports do not create windows or devices.
 
 Create `ImGui` after initializing a window and close it before context cleanup.
 It overlays the current surface and forwards uncaptured input to application handlers.
+Press **F10** to toggle the Hello ImGui theme editor. Its **Save style** and **Load style**
+buttons write/read a JSON snapshot of the active `ImGuiStyle` (including manual
+color edits) at the chosen path, relative to the current working directory.
+The same operations are available as `gui.save_style(Path("theme.json"))` and
+`gui.load_style(Path("theme.json"))`; saving does not alter the default theme.
 `GCManager` is an optional idle-time collection policy; its budget estimates spare
 time rather than capping a collection pause. `close()` restores process settings.
 

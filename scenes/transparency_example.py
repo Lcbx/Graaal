@@ -7,6 +7,7 @@ D cycles diagnostic views; [ / ] adjusts screen noise scale.
 G toggles grazing-angle opacity fade (angles are adjustable in settings).
 M toggles 4x MSAA; A toggles SSAO; O selects SSAO in the compose pass or a separate pass.
 F shows/hides ImGui settings.
+P shows/hides the performance profiler.
 FPS and average frame time remain visible in the top-right corner.
 Drag settings or Ctrl+click to type; Left/Right changes Kawase blur pairs.
 Imports only prepare CPU helpers; graphics are initialized by run_scene().
@@ -38,6 +39,7 @@ from graaal.TextureProcessing import build_material_texture_array
 from graaal.TransparencyData import load_transparency_scene as load_transparency_data
 from graaal.transparency_utils import record_transparency
 from graaal.TransparencyPass import GrazingFade, TransparencyPass
+from scenes.example_overlay import ExampleOverlay
 from scenes.rendering_settings import FilterSettings, RenderingSettings
 
 
@@ -104,6 +106,7 @@ distance = 0.0
 msaa_enabled = False
 ao_enabled = False
 ao_method = "compose"
+overlay = None
 
 
 def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_options):
@@ -171,6 +174,7 @@ def scroll_callback(x, y):
 
 def on_char(code):
 	global orbit
+	if overlay is not None and overlay.handle_char(code): return True
 	if chr(code) == " ":
 		orbit = not orbit
 	elif chr(code).lower() == "r":
@@ -190,26 +194,17 @@ def on_char(code):
 		options = transparency.grazing_fade
 		transparency.set_grazing_fade(replace(options, enabled=not options.enabled))
 		print(f"Grazing fade: {not options.enabled}, {options.start_angle:g} to {options.end_angle:g} degrees")
-	elif chr(code).lower() == "m":
-		settings.set_msaa_enabled(not msaa_enabled)
-		print(f"MSAA: {transparency.sample_count}x")
-	elif chr(code).lower() == "a":
-		settings.set_ssao_enabled(not ao_enabled)
-		print(f"SSAO: {ao_enabled}")
-	elif chr(code).lower() == "o":
-		set_ao_method("pass" if ao_method == "compose" else "compose")
-		print(f"SSAO path: {ao_method}")
 	return True
 
 
-def render_frame(*, profiler=None):
+def render_frame(*, profiler=None, overlay=None):
 	"""Record frustum culling, opaque depth, Hi-Z culling, and transparency."""
 	width, height = RenderContext.window_dimensions
 	if width <= 0 or height <= 0:
 		return False
 	transparency.resize((width, height))
 	view_projection = transparency.update_camera(camera)
-	commands = RenderContext.commands("stochastic_renderer")
+	commands = overlay.commands("stochastic_renderer") if overlay is not None else RenderContext.commands("stochastic_renderer")
 	if profiler is not None: commands = profiler.wrap(commands)
 	for geometry in (opaque_batches, transparent_batches):
 		geometry.prepare(commands, camera, view_projection)
@@ -246,34 +241,36 @@ def render_frame(*, profiler=None):
 		ao_pass.record(commands, transparency.depth, aa_output)
 	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 		aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
-	RenderContext.submit(commands.finish())
+	if overlay is not None: overlay.submit(commands)
+	else: RenderContext.submit(commands.finish())
 	return True
 
 
 def run_scene():
-	global settings, angle
+	global settings, overlay, angle
 	from graaal.ImGui import ImGui
 
-	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | A: SSAO | O: SSAO path | F: rendering settings | D: debug | Space: orbit",
-		required_gpu_features=["indirect-first-instance"])
+	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | A: SSAO | O: SSAO path | F: settings | P: profiler | D: debug | Space: orbit",
+		required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
 	init_scene()
 	settings = RenderingSettings(transparency, on_msaa_changed=set_msaa_enabled,
 		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
+	overlay = ExampleOverlay(settings, get_ao_method=lambda: ao_method, set_ao_method=set_ao_method)
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 	RenderContext.event_handlers["char"].append(on_char)
-	RenderContext.event_handlers["key"].append(settings.handle_key)
+	RenderContext.event_handlers["key"].append(overlay.handle_key)
 	try:
 		with ImGui() as gui:
 			while RenderContext.window_loop():
 				if orbit:
 					angle += RenderContext.frame_time * 0.2
 				camera.position = Vec3(center + distance * np.array([cos(angle), 0.5, sin(angle)]))
-				if render_frame():
-					gui.render(settings.draw)
+				if render_frame(overlay=overlay):
+					gui.render(overlay.draw)
 	finally:
 		RenderContext.event_handlers["mouse_scroll"].remove(scroll_callback)
 		RenderContext.event_handlers["char"].remove(on_char)
-		RenderContext.event_handlers["key"].remove(settings.handle_key)
+		RenderContext.event_handlers["key"].remove(overlay.handle_key)
 
 if __name__ == "__main__":
 	run_scene()

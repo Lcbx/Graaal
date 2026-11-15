@@ -1,5 +1,6 @@
 """Input/lifecycle regressions and real offscreen ImGui rendering."""
 from contextlib import contextmanager
+import json
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 
@@ -7,7 +8,7 @@ import glfw
 import numpy as np
 import pytest
 import wgpu
-from imgui_bundle import imgui
+from imgui_bundle import imgui, hello_imgui
 import wgpu.utils.imgui as backend_module
 
 from graaal.ImGui import ImGui
@@ -55,6 +56,49 @@ def test_black_theme_uses_neon_black_background(ui):
 		gui.set_theme("black_is_black")
 		color = imgui.get_style_color_vec4(imgui.Col_.window_bg)
 		assert (color.x, color.y, color.z, color.w) == pytest.approx((0x12/255, 0x13/255, 0x13/255, 1.0))
+
+
+def test_f10_toggles_theme_editor(ui, monkeypatch):
+	gui, _, _, outer = ui
+	show_theme = Mock(return_value=False)
+	monkeypatch.setattr(hello_imgui, "show_theme_tweak_gui", show_theme)
+	assert gui._on_key(glfw.KEY_F10, 0, glfw.PRESS, 0)
+	assert gui._show_theme_editor
+	gui.render(lambda: None)
+	show_theme.assert_called_once_with(gui._tweaked_theme)
+	assert imgui.get_current_context() == outer
+	assert gui._on_key(glfw.KEY_F10, 0, glfw.PRESS, 0)
+	assert not gui._show_theme_editor
+	gui.render(lambda: None)
+	show_theme.assert_called_once()
+
+
+def test_imgui_style_json_roundtrip_preserves_manual_edits(ui, tmp_path):
+	gui, _, _, outer = ui
+	path = tmp_path / "style.json"
+	with gui._activate():
+		style = imgui.get_style()
+		style.window_rounding = 9.0
+		style.window_padding = imgui.ImVec2(13.0, 7.0)
+		style.set_color_(imgui.Col_.window_bg, (0.8, 0.3, 0.2, 1.0))
+	gui.save_style(path)
+	data = json.loads(path.read_text())
+	assert data["fields"]["window_rounding"] == pytest.approx(9.0)
+	assert data["fields"]["window_padding"] == [13.0, 7.0]
+	assert data["colors"][str(int(imgui.Col_.window_bg))] == pytest.approx([0.8, 0.3, 0.2, 1.0])
+	with gui._activate():
+		style = imgui.get_style()
+		style.window_rounding = 0.0
+		style.window_padding = imgui.ImVec2(0, 0)
+		style.set_color_(imgui.Col_.window_bg, (0, 0, 0, 0))
+	gui.load_style(path)
+	with gui._activate():
+		style = imgui.get_style()
+		assert style.window_rounding == pytest.approx(9.0)
+		assert (style.window_padding.x, style.window_padding.y) == pytest.approx((13, 7))
+		color = style.color_(int(imgui.Col_.window_bg))
+		assert (color.x, color.y, color.z, color.w) == pytest.approx((0.8, 0.3, 0.2, 1.0))
+	assert imgui.get_current_context() == outer
 
 
 def test_input_captures_before_scene_handlers_and_restores_context(ui):
