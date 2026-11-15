@@ -2,7 +2,7 @@
 
 Run: python main.py scenes/material_example.py [--frames 120]
 M toggles 4x MSAA; A toggles SSAO; O selects SSAO in the compose pass or a separate pass. Space toggles orbit; D replaces the opaque shader's default.
-F shows/hides rendering settings.
+F shows/hides rendering settings; P shows/hides the performance profiler.
 The bottom-left pair shares a dictionary; the transparent spheres share a checker
 texture. The bottom-right sphere adds rim lighting through a Jinja child template.
 No transparency code is copied.
@@ -14,6 +14,8 @@ from math import cos, sin
 import numpy as np
 
 from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.Diagnostics import RenderMonitor
+from graaal.diagnostics_visualizer import DiagnosticsVisualizer
 from graaal.AmbientOcclusionPass import AmbientOcclusionPass
 from graaal.AntialiasingPass import AntialiasingPass
 from graaal.ECS import ECS
@@ -109,8 +111,8 @@ def run_scene():
 	from graaal.ImGui import ImGui
 	from imgui_bundle import imgui
 
-	RenderContext.init_window(1100, 760, "Materials | M: MSAA | A: SSAO | O: SSAO path | D: default | F: rendering | Space: orbit",
-		required_gpu_features=["indirect-first-instance"])
+	RenderContext.init_window(1100, 760, "Materials | M: MSAA | A: SSAO | O: SSAO path | D: default | F: rendering | P: profiler | Space: orbit",
+		required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
 	world, entities, meshes, shared, opaque = make_world()
 	shared["texture_layer"] = 1
 	meshes[2].shader.default_material["texture_layer"] = 1
@@ -141,6 +143,8 @@ def run_scene():
 		renderer.transparency.set_ambient_occlusion(enabled and ao_method == "compose")
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
 		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
+	monitor = RenderMonitor(renderer=renderer)
+	visualizer = DiagnosticsVisualizer(visible=False, position=(370, 12))
 	def set_alternate_color(enabled):
 		nonlocal alternate
 		alternate = enabled
@@ -161,6 +165,7 @@ def run_scene():
 		elif chr(code) == " ": orbit = not orbit
 		elif chr(code).lower() == "d":
 			set_alternate_color(not alternate)
+		elif chr(code).lower() == "p": visualizer.visible = not visualizer.visible
 		return True
 	def draw_controls():
 		nonlocal animate
@@ -218,9 +223,10 @@ def run_scene():
 				if changed:
 					striped[name] = value
 					adapter.touch_materials(striped)
-			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; A: SSAO; O: SSAO path; F: rendering settings; Space: orbit.")
+			imgui.text_wrapped("D changes only the top-left default. Top-right has an explicit green material. Bottom-right adds inherited rim lighting. M: MSAA; A: SSAO; O: SSAO path; F: rendering settings; P: profiler; Space: orbit.")
 		finally: imgui.end()
 		settings.draw()
+		visualizer.draw()
 	RenderContext.subscribe_event("char", on_char)
 	RenderContext.subscribe_event("key", settings.handle_key)
 	try:
@@ -231,7 +237,7 @@ def run_scene():
 				if animate: animation_time += RenderContext.frame_time
 				camera.position = Vec3(9*sin(angle), 1.3, 9*cos(angle))
 				adapter.sync()
-				commands = RenderContext.commands("material_example")
+				commands = monitor.commands("material_example") if visualizer.visible else RenderContext.commands("material_example")
 				output = RenderContext.screen()
 				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 					aa_pass.resize(RenderContext.window_dimensions)
@@ -247,7 +253,8 @@ def run_scene():
 					ao_pass.record(commands, renderer.transparency.depth, aa_output)
 				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 					aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
-				RenderContext.submit(commands.finish())
+				if visualizer.visible: visualizer.update(monitor.submit(commands.finish()))
+				else: RenderContext.submit(commands.finish())
 				gui.render(draw_controls)
 	finally:
 		RenderContext.event_handlers["char"].remove(on_char)

@@ -1,10 +1,11 @@
 """CPU-only render diagnostics tests."""
 import sys
 from types import SimpleNamespace as NS
+from unittest.mock import Mock
 
 import pytest
 
-from graaal.Diagnostics import get_draw_counts, get_shader_sources
+from graaal.Diagnostics import RenderMonitor, get_draw_counts, get_shader_sources, inspect_render_memory
 
 
 @pytest.fixture
@@ -82,3 +83,103 @@ def test_unsupported_input(renderer_types):
 	# Attribute-compatible objects are not accepted unless they have the right type.
 	with pytest.raises(TypeError, match="DrawBatches or MaterialRenderer"):
 		get_draw_counts(NS(draw_batches=[], shaders={}))
+
+
+def test_render_monitor_records_submitted_work_without_gpu_timestamps(monkeypatch, renderer_types):
+	from graaal.RenderContext import RenderContext
+
+	class Scope:
+		def __enter__(self): return self
+		def __exit__(self, *args): pass
+		def draw(self, count): pass
+		def dispatch(self, count): pass
+
+	class Commands:
+		def render_pass(self, **kwargs): return Scope()
+		def compute_pass(self, **kwargs): return Scope()
+		def finish(self, label=None): return object()
+
+	monkeypatch.setattr(RenderContext, "device", NS(features=()), raising=False)
+	monkeypatch.setattr(RenderContext, "commands", lambda label=None: Commands())
+	monkeypatch.setattr(RenderContext, "submit", Mock())
+	monitor = RenderMonitor(renderer=draws(renderer_types), log=False)
+	cmd = monitor.commands("frame")
+	with cmd.render_pass(label="opaque") as render:
+		render.draw(3)
+	with cmd.compute_pass(label="cull") as compute:
+		compute.dispatch(4)
+	buffer = cmd.finish()
+	with pytest.raises(ValueError, match="Submit each"):
+		monitor.submit(object())
+	report = monitor.submit(buffer)
+	assert RenderContext.submit.call_args.args == (buffer,)
+	assert [entry["label"] for entry in report["commands"][0]["passes"]] == ["opaque", "cull"]
+	assert [entry["calls"][0]["operation"] for entry in report["commands"][0]["passes"]] == ["draw", "dispatch"]
+	assert report["encoded_draw_calls"] == report["encoded_dispatches"] == 1
+	assert report["draw_batches"] == report["predicted_draw_calls"] == 3
+	assert report["commands"][0]["passes"][0]["gpu_ms"] is None
+	assert report["commands"][0]["encode_ms"] >= 0
+	assert report["cpu_submit_ms"] >= 0
+	assert not report["gpu_timing_available"]
+	assert monitor.last_report is report
+	assert isinstance(inspect_render_memory()["resources"], list)
+
+
+def test_render_monitor_keeps_gpu_samples_for_repeated_pass_labels(monkeypatch):
+	from graaal import GpuProfiler as gp
+	from graaal.RenderContext import RenderContext
+
+	class Profiler:
+		def __init__(self, max_passes):
+			self.last_frame_ms = 3.0
+			self.last_samples = [1.0, 2.0]
+			self.closed = False
+		def wrap(self, commands): return commands
+		def read(self): pass
+		def close(self): self.closed = True
+
+	class Scope:
+		def __enter__(self): return self
+		def __exit__(self, *args): pass
+
+	class Commands:
+		def render_pass(self, **kwargs): return Scope()
+		def finish(self, label=None): return object()
+
+	monkeypatch.setattr(gp, "GpuProfiler", Profiler)
+	monkeypatch.setattr(RenderContext, "device", NS(features=("timestamp-query",)), raising=False)
+	monkeypatch.setattr(RenderContext, "commands", lambda label=None: Commands())
+	monkeypatch.setattr(RenderContext, "submit", Mock())
+	monitor = RenderMonitor()
+	cmd = monitor.commands("frame")
+	with cmd.render_pass(label="same"): pass
+	with cmd.render_pass(label="same"): pass
+	report = monitor.submit(cmd.finish())
+	assert [entry["gpu_ms"] for entry in report["commands"][0]["passes"]] == [1.0, 2.0]
+	assert report["commands"][0]["gpu_span_ms"] == 3.0
+
+
+def test_render_memory_counts_buffer_capacity_and_texture_mips(monkeypatch):
+	import numpy as np
+	from graaal.Diagnostics import _resource_name
+	from graaal.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
+
+	device = NS(create_buffer=lambda **kwargs: NS(size=kwargs["size"]), create_texture=lambda **kwargs: NS())
+	monkeypatch.setattr(RenderContext, "device", device, raising=False)
+	buffer = GpuBuffer(np.zeros(4, dtype=np.uint32), BufferUsage.COPY_DST, upload=False, label="tracked_bytes")
+	texture = Texture((4, 4), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING,
+		mip_level_count=3, label="tracked_color")
+	resources = inspect_render_memory()["resources"]
+	buffer_row = next(row for row in resources if row["name"] == f"tracked_bytes@{id(buffer):x}")
+	texture_row = next(row for row in resources if row["name"] == f"tracked_color@{id(texture):x}")
+	assert buffer_row["gpu_bytes"] == buffer_row["cpu_mirror_bytes"] == 16
+	assert texture_row["gpu_bytes"] == (16 + 4 + 1) * 4
+	assert buffer_row["name"] == _resource_name(buffer)
+	assert texture_row["name"] == _resource_name(texture)
+	with pytest.raises(ValueError) as invalid:
+		GpuBuffer(None, BufferUsage.COPY_DST, dtype=None, count=1)
+	assert invalid.value is not None
+	assert inspect_render_memory()["resources"]
+	buffer.close()
+	texture.close()
+	assert all(row["name"] not in (buffer_row["name"], texture_row["name"]) for row in inspect_render_memory()["resources"])

@@ -18,6 +18,7 @@ class GpuProfiler:
 		self.labels = []
 		self.recording = self.pending = self.closed = False
 		self.last_frame_ms = None
+		self.last_samples = []
 
 	def _check(self):
 		if self.closed or self.device is not RenderContext.device or self.generation != RenderContext.device_generation:
@@ -48,11 +49,14 @@ class GpuProfiler:
 		if not self.pending: raise RuntimeError("Finish and submit a profiled frame before reading")
 		result = {}
 		self.last_frame_ms = 0.0
+		self.last_samples = []
 		if self.labels:
 			values = np.frombuffer(self.device.queue.read_buffer(self.results.handle, size=16*len(self.labels)), np.uint64)
 			self.last_frame_ms = float(values[-1]-values[0])/1e6
 			for index, label in enumerate(self.labels):
-				result[label] = result.get(label, 0.0)+float(values[2*index+1]-values[2*index])/1e6
+				elapsed = float(values[2*index+1]-values[2*index])/1e6
+				self.last_samples.append(elapsed)
+				result[label] = result.get(label, 0.0)+elapsed
 		self.pending = False
 		return result
 

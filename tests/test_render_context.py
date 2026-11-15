@@ -8,6 +8,15 @@ import pytest
 from graaal import RenderContext as rc
 
 
+def test_optional_gpu_features_are_enabled_only_when_supported(monkeypatch):
+	context = rc._RenderContext()
+	adapter = NS(features={"indirect-first-instance", "timestamp-query"}, request_device_sync=Mock(return_value=object()))
+	monkeypatch.setattr(rc.wgpu.gpu, "request_adapter_sync", lambda **kwargs: adapter)
+	context.setup_graphics_backend(True, required_features=("indirect-first-instance",),
+		optional_features=("timestamp-query", "unsupported"))
+	assert adapter.request_device_sync.call_args.kwargs["required_features"] == ("indirect-first-instance", "timestamp-query")
+
+
 def test_read_only_depth_descriptor_omits_load_store_operations():
 	view = object()
 	descriptor = rc.DepthAttachment(view, "depth32float", read_only=True).descriptor()

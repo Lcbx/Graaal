@@ -24,7 +24,7 @@ cleans up the context afterward.
 | `direct_draw_example.py` | Direct drawing with instance changes and shadows; scroll zooms. |
 | `prototype.py` | ECS-backed actor/health panels in ImGui. Combat resolution is a placeholder. |
 | `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. |
-| `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings. |
+| `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 
 These files are runnable examples rather than a stable scene API. For reusable

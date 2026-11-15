@@ -5,6 +5,7 @@ import gc
 import os
 import re
 import time
+import weakref
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ class _RenderContext:
 		self.device_generation = 0
 		self._mesh_arena = None
 		self._statistics = None
+		self._tracked_resources = weakref.WeakSet()
 		self.presentation_format: str
 
 		self.window: Any = None
@@ -70,13 +72,15 @@ class _RenderContext:
 		highpower_gpu: bool = True,
 		target_fps: int = 0,
 		required_gpu_features: Sequence[str] = (),
-		custom_gc:bool=True
+		custom_gc:bool=True,
+		optional_gpu_features: Sequence[str] = (),
 	) -> None:
 		"""Init a window and wgpu rendering context.
 
 		:param highpower_gpu: use the high performance gpu if there are multiple
 		:param target_fps: -1 is limitless, 0 is vsync, other values is fps limit
 		:param required_gpu_features: wgpu features requested                                                                
+		:param optional_gpu_features: requested only when supported by the selected adapter
 		:param custom_gc: run the gc during idle time
 		"""
 		if target_fps < -1:
@@ -89,12 +93,12 @@ class _RenderContext:
 		atexit.unregister(self.cleanup)
 		atexit.register(self.cleanup)
 		try:
-			self._init_window(w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc)
+			self._init_window(w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc, optional_gpu_features)
 		except BaseException:
 			self.cleanup()
 			raise
 
-	def _init_window(self, w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc):
+	def _init_window(self, w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc, optional_gpu_features):
 
 		glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
 
@@ -116,22 +120,25 @@ class _RenderContext:
 			raise RuntimeError("GLFW window creation failed")
 		self.setup_callbacks()
 
-		self.setup_graphics(vsync=vsync, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features)
+		self.setup_graphics(vsync=vsync, highpower_gpu=highpower_gpu, required_gpu_features=required_gpu_features,
+			optional_gpu_features=optional_gpu_features)
 		if custom_gc:
 			self._gc_manager = GCManager()
 			self.event_handlers["idle"].append(self._gc_manager)
 
 		self.frame_start = get_time()
 
-	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features: Sequence[str] = ()) -> None:
+	def setup_graphics(self, *, vsync: bool, highpower_gpu: bool, required_gpu_features: Sequence[str] = (),
+		optional_gpu_features: Sequence[str] = ()) -> None:
 		"""Setup gpu compute & render surface."""
 		present_info = get_glfw_present_info(self.window, vsync=vsync)
 		self.canvas = wgpu.gpu.get_canvas_context(present_info)
-		self.setup_graphics_backend(highpower_gpu, required_gpu_features)
+		self.setup_graphics_backend(highpower_gpu, required_gpu_features, optional_gpu_features)
 		self.presentation_format = self.canvas.get_preferred_format(self.adapter)
 		self.canvas.configure(device=self.device, format=self.presentation_format)
 
-	def setup_graphics_backend(self, highpower_gpu: bool, required_features: Sequence[str] = ()) -> None:
+	def setup_graphics_backend(self, highpower_gpu: bool, required_features: Sequence[str] = (),
+		optional_features: Sequence[str] = ()) -> None:
 		"""Setup gpu compute, not necessarily with canvas output. Used notably for tests."""
 		request_params = {
 			"power_preference": "high-performance" if highpower_gpu else "low-power"
@@ -140,8 +147,10 @@ class _RenderContext:
 			request_params["canvas"] = self.canvas
 		self.reset_mesh_arena()
 		self.adapter = wgpu.gpu.request_adapter_sync(**request_params)
-		self.device = self.adapter.request_device_sync(required_features=required_features)
+		features = tuple(dict.fromkeys((*required_features, *(feature for feature in optional_features if feature in self.adapter.features))))
+		self.device = self.adapter.request_device_sync(required_features=features)
 		self.device_generation += 1
+		self._tracked_resources.clear()
 
 	def setup_callbacks(self) -> None:
 		glfw.set_key_callback(self.window, self.setup_glfw_event("key"))
@@ -212,6 +221,7 @@ class _RenderContext:
 
 	def cleanup(self) -> None:
 		self.device_generation += 1
+		self._tracked_resources.clear()
 		canvas, self.canvas = self.canvas, None
 		window, self.window = self.window, None
 		initialized, self._glfw_initialized = self._glfw_initialized, False
@@ -437,6 +447,9 @@ class _OwnedResource:
 		self._device_generation = RenderContext.device_generation
 		RenderContext.record_stat(f"created.{type(self).__name__}")
 
+	def _track_resource(self):
+		RenderContext._tracked_resources.add(self)
+
 	def _check_device(self):
 		# Metadata-only pipeline specifications bind lazily on first GPU use.
 		if not hasattr(self, "_device"): self._capture_device()
@@ -448,6 +461,7 @@ class _OwnedResource:
 	def close(self):
 		# Release wrapper ownership without destroying in-flight WGPU handles.
 		self._closed = True
+		RenderContext._tracked_resources.discard(self)
 		for name in ("handle", "module", "_variant"):
 			self.__dict__.pop(name, None)
 		if "_content" in self.__dict__: self._content = None
@@ -981,6 +995,7 @@ class GpuBuffer(_OwnedResource):
 				size=max(4, _round_up(4, self.binding_size)),
 				usage=self.usage,
 			)
+		self._track_resource()
 
 	@property
 	def content(self): return self._content
@@ -1210,6 +1225,9 @@ class Texture(_OwnedResource):
 		self.size = size
 		self.format = format
 		self.usage = usage
+		self.label = label
+		self.mip_level_count = mip_level_count
+		self.dimension = dimension
 		self.sample_count = sample_count
 		self._view: TextureView | None = None
 		self.handle = self._check_device().create_texture(
@@ -1221,6 +1239,11 @@ class Texture(_OwnedResource):
 			mip_level_count=mip_level_count,
 			sample_count=sample_count,
 		)
+		self._track_resource()
+
+	def close(self):
+		self._view = None
+		super().close()
 
 	@property
 	def binding(self) -> wgpu.GPUTextureView:

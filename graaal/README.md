@@ -84,7 +84,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `TransparencyData` | `load_transparency_scene` returns primitives, material records and images; `VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, `MATERIAL_DTYPE` define the rendering ABI. |
 | `DrawList` | `DrawList.build(lod_ids, shader_ids)` returns `.order` and `SourceBatch` ranges for CPU grouping. |
 | `Geometry` | `make_cube_mesh` creates a GPU mesh when called; importing the module needs no graphics backend. |
-| `Diagnostics` | `WatchTimer` times scopes; `WatchTimer.capture` formats reports; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. |
+| `Diagnostics` | `RenderMonitor` logs submitted commands, passes, draw/dispatch calls and resources; `inspect_render_memory` reports process and tracked resource memory. `WatchTimer` times CPU scopes; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. |
 | `utils` | `cache_last` caches an instance method's most recent keyed call; `higher_pow2` returns the next strictly greater power of two. |
 
 | Rendering module | Useful APIs and purpose |
@@ -103,6 +103,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
 | `EcsMaterials` | `MaterialInstance` and `MaterialTransform` are components; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
 | `ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
+| `diagnostics_visualizer` | `DiagnosticsVisualizer.update(report)` keeps bounded performance history; `draw()` shows passes, commands, and resource memory inside an ImGui frame. |
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without
 graphics dependencies. Asset decoders load their optional dependencies when called.
@@ -357,6 +358,58 @@ Enable counters with `RenderContext.enable_statistics()` and inspect them throug
 `inspect_resources()`. Counters cover resource creation, uploads, cache behavior,
 grouping, and visibility; arenas report active/capacity bytes. Counters do not
 measure GPU execution time or synchronize the GPU.
+
+For a submission report, use `RenderMonitor` around caller-owned commands:
+
+```python
+from graaal.Diagnostics import RenderMonitor
+
+monitor = RenderMonitor(renderer=draws, log=True)
+commands = monitor.commands("frame")
+with commands.render_pass(color=output.color_attachment(), label="main") as render:
+	draws.draw(render, visibility)
+report = monitor.submit(commands.finish())
+```
+
+To inspect reports on screen, feed them to the standalone ImGui widget:
+
+```python
+from graaal.diagnostics_visualizer import DiagnosticsVisualizer
+
+visualizer = DiagnosticsVisualizer()
+visualizer.update(report)
+gui.render(visualizer.draw)
+```
+
+The widget shows CPU recording and GPU pass timings, a timing history, encoded
+draw/dispatch counts, CPU and tracked GPU memory, and expandable command and
+resource details. It imports ImGui only in `draw()` and does not own the monitor.
+The materials scene toggles recording and this widget with **P**.
+
+The report contains ordered command buffers, named render/compute passes, encoded
+draw and dispatch calls, resources used through engine bindings and attachments,
+draw batch counts, and memory. `log=True` writes the same JSON report through
+`graaal.Diagnostics` at INFO level. Pass `renderer=DrawBatches` or
+`renderer=MaterialRenderer` to include predicted batch/draw counts.
+
+Request `timestamp-query` in `setup_graphics_backend(optional_features=...)` or
+`init_window(optional_gpu_features=...)` for GPU pass milliseconds when the
+selected adapter supports it; use the corresponding required feature argument
+to fail if it is unavailable. GPU timestamps
+are read after `submit()` and synchronize the queue. `gpu_span_ms` covers the
+first to last measured pass boundary in each command buffer; it does not include
+copies outside passes. Individual draw/dispatch calls only have CPU encoding
+times because pass timestamps cannot isolate them. CPU pass and command times
+measure recording, while `cpu_submit_ms` measures the queue submission call.
+
+`inspect_render_memory()` reports process RSS through `psutil` or native Windows/Linux
+process counters, current
+Python traced bytes when `tracemalloc` is already running, and CPU mirrors of
+engine buffers. `gpu_tracked_bytes` sums engine buffer capacities and estimated
+texture payloads. It excludes driver padding, transient allocations, the window
+surface, the default raw depth texture, and resources created directly with wgpu.
+Replaced buffer handles retained for submitted work are outside this estimate.
+The GPU does not expose a portable device-wide used-memory counter here.
 
 From the repository root run `python -m pytest tests -p no:cacheprovider`.
 Tests cover CPU-only imports, mutation/lifetimes, multiple views, explicit layouts,

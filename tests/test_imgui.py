@@ -46,6 +46,17 @@ def ui(monkeypatch):
 		imgui.destroy_context(outer)
 
 
+def test_black_theme_uses_neon_black_background(ui):
+	gui, _, _, _ = ui
+	with gui._activate():
+		for color_name in ("window_bg", "popup_bg"):
+			color = imgui.get_style_color_vec4(getattr(imgui.Col_, color_name))
+			assert (color.x, color.y, color.z, color.w) == pytest.approx((0x12/255, 0x13/255, 0x13/255, 1.0))
+		gui.set_theme("black_is_black")
+		color = imgui.get_style_color_vec4(imgui.Col_.window_bg)
+		assert (color.x, color.y, color.z, color.w) == pytest.approx((0x12/255, 0x13/255, 0x13/255, 1.0))
+
+
 def test_input_captures_before_scene_handlers_and_restores_context(ui):
 	gui, _, _, outer = ui
 	io = NS(add_key_event=Mock(), add_input_character=Mock(), add_mouse_wheel_event=Mock(),
