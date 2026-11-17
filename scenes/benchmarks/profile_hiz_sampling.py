@@ -72,6 +72,7 @@ def run(count=20000, size=512, frames=24, warmup=4, rounds=3, seed=42, variants=
 		raise ValueError("Expected positive count/frames/rounds and a power-of-two size >= 2")
 	RenderContext.setup_graphics_backend(True, required_features=("timestamp-query",))
 	profiler = GpuProfiler(max_passes=3)
+	frustum_culler, hiz_culler = FrustumCuller(), HiZCuller()
 	try:
 		visibility, texture = make_scene(count, size, seed)
 		configs = list(dict.fromkeys(((0, 4), *variants)))
@@ -86,8 +87,8 @@ def run(count=20000, size=512, frames=24, warmup=4, rounds=3, seed=42, variants=
 				for frame in range(warmup + repeats):
 					commands = profiler.wrap(RenderContext.commands("hiz_sampling"))
 					visibility._stage = None
-					FrustumCuller().record(commands, visibility, camera_position=(0, 0, 0), view_projection=np.eye(4, dtype=np.float32))
-					HiZCuller().record(commands, visibility, hzb_view=texture.view(), mip_bias=bias, samples=samples)
+					frustum_culler.record(commands, visibility, camera_position=(0, 0, 0), view_projection=np.eye(4, dtype=np.float32))
+					hiz_culler.record(commands, visibility, hzb_view=texture.view(), mip_bias=bias, samples=samples)
 					RenderContext.submit(commands.finish())
 					passes = profiler.read()
 					if frame >= warmup: measurements[(bias, samples)].append(passes["cull_hiz"])

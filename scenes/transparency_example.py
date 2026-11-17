@@ -37,7 +37,7 @@ from graaal.RenderContext import (
 )
 from graaal.TextureProcessing import build_material_texture_array
 from graaal.TransparencyData import load_transparency_scene as load_transparency_data
-from graaal.transparency_utils import record_transparency
+from graaal.TransparencyPass import record_transparency
 from graaal.TransparencyPass import GrazingFade, TransparencyPass
 from scenes.example_overlay import ExampleOverlay
 from graaal.render_resolution import ResolutionPresenter
@@ -47,6 +47,8 @@ from graaal.rendering_settings import FilterSettings, RenderingSettings
 PATH = Path(__file__).parent / "resources/small_scene.glb"
 BLUE_NOISE_PATH = DEFAULT_BLUE_NOISE_PATH
 TEXTURE_SIZE = 512
+frustum_culler = FrustumCuller()
+hiz_culler = HiZCuller()
 
 
 def load_transparency_scene(path):
@@ -85,7 +87,7 @@ class GeometryBatches:
 		self.metadata.write(metadata)
 
 	def prepare(self, commands, camera, view_projection):
-		FrustumCuller().record(commands, self.visibility, camera_position=camera.position,
+		frustum_culler.record(commands, self.visibility, camera_position=camera.position,
 			view_projection=view_projection, fovy_deg=camera.fovy_deg)
 
 	def draw(self, render, stage, **options):
@@ -220,7 +222,7 @@ def render_frame(*, profiler=None, overlay=None, render_size=None, presenter=Non
 			opaque_batches.draw(render, "prepass", pass_override=opaque_batches.depth_pass)
 		hzb.build(commands)
 		for geometry in (opaque_batches, transparent_batches):
-			HiZCuller().record(commands, geometry.visibility, hzb_view=hzb.view)
+			hiz_culler.record(commands, geometry.visibility, hzb_view=hzb.view)
 	# Pixel-center depth cannot conservatively occlude all MSAA samples. At 4x,
 	# draw both lists directly from the frustum visibility prepared above.
 	with transparency.opaque_pass(commands) as render:

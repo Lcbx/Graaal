@@ -10,10 +10,9 @@ from .Materials import MaterialBinding, MaterialLibrary, MaterialShader
 from .EcsMaterials import MaterialInstance, MaterialTransform, EcsMaterialAdapter
 from .RenderContext import BufferUsage, GpuBuffer, Mesh, RenderContext, Texture, TextureUsage
 from .TransparencyData import VERTEX_DTYPE, SHADING_VERTEX_DTYPE, MATERIAL_DTYPE
+from .TransparencyPass import TransparencyPass, record_transparency
 
 _DRAW_IDS = count(1)
-from .TransparencyPass import TransparencyPass
-from .transparency_utils import record_transparency
 
 
 @dataclass(eq=False)
@@ -55,6 +54,7 @@ class MaterialRenderer:
 		self.library = MaterialLibrary([mesh.shader for mesh in self.meshes] + list(shaders)
 			+ [i.shader for i in self.instances or () if i.shader is not None])
 		self.draws = DrawBatches(MESH_INSTANCE_DTYPE)
+		self.culler = FrustumCuller()
 		vertices, self.offsets = [], []
 		for index, mesh in enumerate(self.meshes):
 			source = mesh.vertices if mesh.indices is None else mesh.vertices[mesh.indices]
@@ -161,21 +161,24 @@ class MaterialRenderer:
 		if self.transparency.set_banded_options(**options): self._register_passes()
 
 	def record(self, commands, size, camera, output, *, frame=None, lighting=None):
-		"""Record a frame, updating any supplied frame and lighting fields."""
-		self.sync()
-		oit = self.transparency
-		if size[0] <= 0 or size[1] <= 0: return
-		oit.resize(size)
-		vp = oit.update_camera(camera, frame=frame, lighting=lighting)
-		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp,
-			fovy_deg=camera.fovy_deg if camera.perspective else 90.0)
-		external = oit.has_external_opaque_inputs
-		if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in self.draws.draw_batches):
-			# Existing scene color and occlusion depth belong to the caller. Local
-			# opaque geometry adds to those targets using their current contents.
-			with oit.opaque_pass(commands, load=external) as render:
-				self.draws.draw(render, self.visibility, "opaque")
-		def draw_transparent(render, name):
-			self.draws.draw(render, self.visibility, name)
-		record_transparency(commands, oit, self.geometry[1], draw_transparent)
-		oit.compose(commands, output)
+		"""Record the default frame sequence; callers may record the stages themselves."""
+		record_material_frame(self, commands, size, camera, output, frame=frame, lighting=lighting)
+
+
+def record_material_frame(renderer, commands, size, camera, output, *, frame=None, lighting=None, culler=None):
+	"""Record the default material frame; culler may override the renderer's culler."""
+	renderer.sync()
+	oit = renderer.transparency
+	if size[0] <= 0 or size[1] <= 0: return
+	oit.resize(size)
+	vp = oit.update_camera(camera, frame=frame, lighting=lighting)
+	(culler if culler is not None else renderer.culler).record(commands, renderer.visibility, camera_position=camera.position, view_projection=vp,
+		fovy_deg=camera.fovy_deg if camera.perspective else 90.0)
+	external = oit.has_external_opaque_inputs
+	if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in renderer.draws.draw_batches):
+		with oit.opaque_pass(commands, load=external) as render:
+			renderer.draws.draw(render, renderer.visibility, "opaque")
+	def draw_transparent(render, name):
+		renderer.draws.draw(render, renderer.visibility, name)
+	record_transparency(commands, oit, renderer.geometry[1], draw_transparent)
+	oit.compose(commands, output)

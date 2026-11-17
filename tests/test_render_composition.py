@@ -264,7 +264,7 @@ def test_transparency_external_opaque_inputs_and_transformed_reconstruction(monk
 		render.set_bind_groups(*spec.bindings, binding)
 		render.set_vertex_buffer(0, vertex_buffer)
 		render.draw(3)
-	from graaal.transparency_utils import record_transparency
+	from graaal.TransparencyPass import record_transparency
 	record_transparency(commands, oit, geometry, draw_transparent)
 	output = rc.Texture(size, format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT)
 	oit.compose(commands, output.color_attachment())

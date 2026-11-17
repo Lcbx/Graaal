@@ -7,7 +7,7 @@ import numpy as np
 from .draw_resources import _DrawResources
 from .draw_culling import _CullingState, default_cull_shader
 from .draw_layout import INDIRECT_DTYPE
-from .RenderContext import BindGroup, BufferUsage, GpuBuffer, RenderPipeline
+from .RenderContext import BindGroup, BufferUsage, GpuBuffer, RenderContext, RenderPipeline
 
 
 @dataclass
@@ -102,7 +102,6 @@ class DrawBatches:
 		self.shaders[shader_id] = shader
 
 	def sync(self, lod_ids, shader_ids, *, labels=None):
-		from .RenderContext import RenderContext
 		lod_ids, shader_ids = np.asarray(lod_ids), np.asarray(shader_ids)
 		if lod_ids.ndim != 1 or shader_ids.ndim != 1: raise ValueError("Expected one-dimensional grouping keys")
 		labels = np.arange(len(lod_ids), dtype=np.uint64) if labels is None else np.asarray(labels)
@@ -118,7 +117,6 @@ class DrawBatches:
 	def create_visibility(self, *, cull_shader=None): return Visibility(self, cull_shader=cull_shader)
 
 	def draw(self, render, visibility, pass_name="main", *, pass_override=None, instance_binding=None):
-		from .RenderContext import RenderContext
 		visibility.check(self)
 		if self.draw_batches: RenderContext.require_features(("indirect-first-instance",))
 		commands = visibility.commands
@@ -202,7 +200,6 @@ class Visibility:
 
 	def all_visible(self, *, lod=0):
 		"""CPU/direct path: select one LoD per source group without running a culler."""
-		from .RenderContext import RenderContext
 		RenderContext.record_stat("direct_visibility_calls")
 		self.sync()
 		commands = self._view.buffers["main_draw_cmd"].content.copy()
@@ -225,7 +222,6 @@ class Visibility:
 class FrustumCuller:
 	def record(self, commands, visibility, *, camera_position, view_projection, fovy_deg=90.0):
 		"""Use vertical FoV for LoD; 90 degrees preserves registered switch distances."""
-		from .RenderContext import RenderContext
 		RenderContext.record_stat("frustum_visibility_calls")
 		if visibility._stage == "main": visibility._token = None
 		visibility.sync()
@@ -240,7 +236,6 @@ class FrustumCuller:
 
 class HiZCuller:
 	def record(self, commands, visibility, *, hzb_view):
-		from .RenderContext import RenderContext
 		RenderContext.record_stat("hiz_visibility_calls")
 		visibility.check(visibility.draws)
 		if visibility._stage != "prepass": raise RuntimeError("Record frustum visibility before Hi-Z culling")

@@ -14,6 +14,7 @@ from math import cos, sin
 import numpy as np
 
 from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.DrawBatches import FrustumCuller
 from graaal.AmbientOcclusionPass import AmbientOcclusionPass
 from graaal.AntialiasingPass import AntialiasingPass
 from graaal.ECS import ECS
@@ -25,6 +26,7 @@ from graaal.TransparencyData import VERTEX_DTYPE
 from scenes.example_overlay import ExampleOverlay
 from graaal.render_resolution import ResolutionPresenter
 from graaal.rendering_settings import RenderingSettings
+from graaal.TransparencyPass import record_transparency
 
 
 STRIPED_SHADER = '''
@@ -110,6 +112,7 @@ def make_world():
 def run_scene():
 	from graaal.ImGui import ImGui
 	from imgui_bundle import imgui
+	frustum_culler = FrustumCuller()
 
 	RenderContext.init_window(1100, 760, "Materials | M: MSAA | A: SSAO | O: SSAO path | D: default | F: rendering | P: profiler | Space: orbit",
 		required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
@@ -245,8 +248,16 @@ def run_scene():
 				if ao_enabled and ao_method == "pass":
 					ao_pass.resize(render_size)
 					output = ao_pass.color_attachment()
-				renderer.record(commands, render_size, camera, output,
-					frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
+				oit = renderer.transparency
+				oit.resize(render_size)
+				vp = oit.update_camera(camera, frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
+				frustum_culler.record(commands, renderer.visibility, camera_position=camera.position, view_projection=vp, fovy_deg=camera.fovy_deg)
+				with oit.opaque_pass(commands) as render:
+					renderer.draws.draw(render, renderer.visibility, "opaque")
+				def draw_transparent(render, name):
+					renderer.draws.draw(render, renderer.visibility, name)
+				record_transparency(commands, oit, renderer.geometry[1], draw_transparent)
+				oit.compose(commands, output)
 				if ao_enabled and ao_method == "pass":
 					ao_pass.update_camera(camera, sample_count=renderer.transparency.sample_count)
 					ao_pass.record(commands, renderer.transparency.depth, aa_output)

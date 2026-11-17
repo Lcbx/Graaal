@@ -15,6 +15,8 @@ from .AmbientOcclusionPass import AmbientOcclusionSettings
 from .DrawBatches import RenderShader, ShaderPass
 from .RenderContext import BindGroup, BufferUsage, GpuBuffer, ComputePipeline, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
 from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+from .TextureProcessing import get_default_blue_noise
+from .material_layout import material_pipeline_layout
 from .settings_validation import checked_dataclass, float_range
 
 
@@ -115,7 +117,6 @@ class TransparencyPass:
 			self.lighting_uniforms.content["light_dir"] = (0.4, 0.8, 0.3, 0)
 			self.lighting_uniforms.upload_changed()
 		if blue_noise is None:
-			from .TextureProcessing import get_default_blue_noise
 			blue_noise = get_default_blue_noise()
 		self.noise = blue_noise
 		self._transparent_geometries = []
@@ -161,7 +162,6 @@ class TransparencyPass:
 	def _pipeline_layout(self, shader, *entries):
 		key = (shader, entries)
 		if key not in self._pipeline_layouts:
-			from .material_layout import material_pipeline_layout
 			self._pipeline_layouts[key] = material_pipeline_layout(shader, entries, self._layout_cache)
 		return self._pipeline_layouts[key]
 
@@ -649,3 +649,18 @@ class TransparencyPass:
 			render.set_pipeline(self.compose_pipeline)
 			render.set_bind_groups(*((self.compose_frame,) if self.compose_frame is not None else ()), self.compose_resources)
 			render.draw(3)
+
+
+def record_transparency(commands, transparency, geometry, draw):
+	"""Record banded transparency using draw(render, pass_name)."""
+	with transparency.nearest_pass(commands) as render:
+		draw(render, "nearest")
+	transparency.shade_nearest(commands, geometry)
+	with transparency.transmittance_pass(commands) as render:
+		draw(render, "transmittance")
+	if transparency.mixed_tail:
+		with transparency.tail_statistics_pass(commands) as render:
+			draw(render, "tail_statistics")
+	with transparency.banded_pass(commands) as render:
+		draw(render, "bands")
+	transparency.shade_winner(commands, geometry)

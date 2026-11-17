@@ -72,7 +72,7 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 			render.set_bind_groups(*shader_pass.bindings, instance_bindings)
 			render.set_vertex_buffer(0, vertex_buffer)
 			render.draw(3)
-		from graaal.transparency_utils import record_transparency
+		from graaal.TransparencyPass import record_transparency
 		record_transparency(commands, oit, geometry, draw_transparent)
 		oit.compose(commands, output.color_attachment())
 		submit.assert_not_called()

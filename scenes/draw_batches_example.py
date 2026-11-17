@@ -15,6 +15,8 @@ from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8
 from graaal.Math import Camera, Vec3, Vec4
 from graaal.RenderContext import Mesh, RenderContext, Shader, get_time
 
+frustum_culler = FrustumCuller()
+hiz_culler = HiZCuller()
 
 @component
 class Transform:
@@ -151,7 +153,7 @@ def render_system(world, culling_camera, rendering_camera):
 	cmd = RenderContext.commands("frame_commands")
 
 	# --- Step 1: Frustum Culling Pass ---
-	FrustumCuller().record(cmd, render_visibility, camera_position=culling_camera.position, view_projection=vp,
+	frustum_culler.record(cmd, render_visibility, camera_position=culling_camera.position, view_projection=vp,
 		fovy_deg=culling_camera.fovy_deg if culling_camera.perspective else 90.0)
 
 	# --- Step 2: Depth Prepass ---
@@ -162,7 +164,7 @@ def render_system(world, culling_camera, rendering_camera):
 	hzb.build(cmd)
 
 	# --- Step 4: Hi-Z Occlusion Culling Pass ---
-	HiZCuller().record(cmd, render_visibility, hzb_view=hzb.view)
+	hiz_culler.record(cmd, render_visibility, hzb_view=hzb.view)
 
 	# --- Step 5: Main Render Pass ---
 	depth = hzb.depth_texture.depth_attachment(clear=None if rendering_camera is culling_camera else 1.0)

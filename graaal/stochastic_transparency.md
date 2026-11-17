@@ -9,8 +9,7 @@ the [interactive scene](../scenes/transparency_example.py) shows direct use.
 ## Implementation and verification
 
 - **Entry points:** [TransparencyPass.py](TransparencyPass.py) owns the pass
-  resources and recording methods; [transparency_utils.py](transparency_utils.py)
-  wires the transparent stages; [TransparencyData.py](TransparencyData.py)
+  resources, recording methods and helper; [TransparencyData.py](TransparencyData.py)
   supplies input layouts.
 - **Invariants:** Resize/update camera inputs before recording, preserve the
   [recording order](#recording), and keep geometry metadata and deferred inputs
@@ -95,7 +94,7 @@ transparency.shade_winner(commands, geometry)
 transparency.compose(commands, output)
 ```
 
-Alternatively, `graaal.transparency_utils.record_transparency(commands,
+Alternatively, `graaal.TransparencyPass.record_transparency(commands,
 transparency, geometry, draw)` records the transparent stages with a
 `draw(render, pass_name)` callback. The callback uses `geometry.nearest` for
 `"nearest"` and the named geometry pass otherwise. Composition and submission

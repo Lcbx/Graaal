@@ -60,6 +60,14 @@ The default adapter uses `TransparencyPass` for rendering and `DrawBatches` for
 grouping/culling. See the [engine API overview](README.md#modules-and-useful-apis)
 for lower-level resources and commands.
 
+`record()` uses the `MaterialRenderer.record_material_frame()` default sequence
+with a culler owned by each renderer. To choose culling and pass order, record the stages explicitly as in
+[material_example.py](../scenes/material_example.py). Sync the material inputs
+before preparing visibility; regrouping invalidates previously prepared visibility.
+The transparent stages share the adapter's packed geometry and metadata address
+space. The caller must record them in the order described in the
+[transparency guide](stochastic_transparency.md#recording).
+
 ## ECS usage
 
 This integration excerpt assumes an initialized RenderContext device with
