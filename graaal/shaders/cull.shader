@@ -32,7 +32,7 @@
 <CameraUniforms> workgroup_count: u32;
 <CameraUniforms> batch_count: u32;
 <CameraUniforms> command_count: u32;
-<CameraUniforms> padding: u32;
+<CameraUniforms> lod_scale_sq: f32;
 <CameraUniforms> camera_position: vec4f;
 
 storage<0, 0, read> instances: array<MeshInstance>;
@@ -42,6 +42,7 @@ storage<0, 3, read> mesh_metadata: array<MeshMetadata>;
 storage<0, 4, read_write> batches: array<CullParams>;
 storage<0, 5, read> workgroups: array<CullWorkgroup>;
 storage<0, 6, read_write> prepass_visible_instances: array<u32>;
+// Switch distances are squared on the CPU; FoV scaling is squared per view.
 storage<0, 7, read> lod_distances: array<f32>;
 
 uniform<1, 0> camera_params: CameraUniforms;
@@ -85,10 +86,12 @@ fn cull_frustum(@builtin(workgroup_id) group_id: vec3u, @builtin(num_workgroups)
 	}
 
 	if visible {
-		let distance = length(center_ws - camera_params.camera_position.xyz);
+		let offset = center_ws - camera_params.camera_position.xyz;
+		let distance_sq = dot(offset, offset);
 		var lod = 0u;
 		for (var i = 1u; i < metadata.lod_count; i += 1u) {
-			if distance < lod_distances[metadata.lod_offset + i] { break; }
+			let threshold_sq = lod_distances[metadata.lod_offset + i] * camera_params.lod_scale_sq;
+			if distance_sq < threshold_sq { break; }
 			lod = i;
 		}
 		let command_id = batches[batch_id].command_offset + lod;

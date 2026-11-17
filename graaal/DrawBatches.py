@@ -223,14 +223,15 @@ class Visibility:
 
 
 class FrustumCuller:
-	def record(self, commands, visibility, *, camera_position, view_projection):
+	def record(self, commands, visibility, *, camera_position, view_projection, fovy_deg=90.0):
+		"""Use vertical FoV for LoD; 90 degrees preserves registered switch distances."""
 		from .RenderContext import RenderContext
 		RenderContext.record_stat("frustum_visibility_calls")
 		if visibility._stage == "main": visibility._token = None
 		visibility.sync()
 		view = visibility._view
 		view.refresh_bindings(None)
-		view.update_cull_camera(camera_position, view_projection)
+		view.update_cull_camera(camera_position, view_projection, fovy_deg)
 		view.reset_draw_counts(commands)
 		view.cull_instances(commands, "frustum")
 		visibility._stage = "prepass"

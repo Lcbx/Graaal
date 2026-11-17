@@ -142,7 +142,7 @@ def run_scene():
 		nonlocal ao_enabled
 		ao_enabled = enabled
 		renderer.transparency.set_ambient_occlusion(enabled and ao_method == "compose")
-	settings = RenderingSettings(renderer, visible=False, position=(370, 12),
+	settings = RenderingSettings(renderer, visible=False, position=(370, 12), camera=camera,
 		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
 	def set_ao_method(method):
 		nonlocal ao_method

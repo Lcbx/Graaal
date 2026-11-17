@@ -151,7 +151,8 @@ def render_system(world, culling_camera, rendering_camera):
 	cmd = RenderContext.commands("frame_commands")
 
 	# --- Step 1: Frustum Culling Pass ---
-	FrustumCuller().record(cmd, render_visibility, camera_position=culling_camera.position, view_projection=vp)
+	FrustumCuller().record(cmd, render_visibility, camera_position=culling_camera.position, view_projection=vp,
+		fovy_deg=culling_camera.fovy_deg if culling_camera.perspective else 90.0)
 
 	# --- Step 2: Depth Prepass ---
 	with cmd.render_pass(color=(), depth=hzb.depth_texture.depth_attachment(clear=1.0), label="depth_prepass") as rp:

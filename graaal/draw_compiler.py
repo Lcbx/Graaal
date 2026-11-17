@@ -85,7 +85,7 @@ def compile_destinations(instance_count, batches, lod_groups, meshes, shader_pre
 	return CompiledLayout(
 		arrays={
 			"mesh_metadata": metadata,
-			"lod_distances": np.asarray(distances, dtype="<f4"),
+			"lod_distances": np.square(np.asarray(distances, dtype="<f4")),
 			"batches": params,
 			"prepass_draw_cmd": np.asarray(prepass_commands, dtype=INDIRECT_DTYPE),
 			"main_draw_cmd": np.asarray(commands, dtype=INDIRECT_DTYPE),

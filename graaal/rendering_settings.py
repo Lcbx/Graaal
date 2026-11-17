@@ -1,6 +1,6 @@
 """Optional ImGui rendering and transparency controls.
 
-Pass a TransparencyPass or MaterialRenderer to RenderingSettings, register
+Pass a TransparencyPass or MaterialRenderer and optional camera to RenderingSettings, register
 handle_key with the key event, and call draw inside the ImGui frame. Optional
 callbacks connect the MSAA and SSAO toggles to scene-specific rendering paths.
 F toggles visibility; visible=False starts with the settings hidden.
@@ -41,9 +41,10 @@ class RenderingSettings:
 	"""Live rendering controls for a TransparencyPass or MaterialRenderer."""
 
 	def __init__(self, renderer, *, visible=True, position=(12, 12), on_msaa_changed=None,
-		on_ssao_changed=None, ssao_enabled=False, ao_pass=None, aa_pass=None):
+		on_ssao_changed=None, ssao_enabled=False, ao_pass=None, aa_pass=None, camera=None):
 		self.controls = renderer
 		self.renderer = getattr(renderer, "transparency", renderer)
+		self.camera = camera
 		self.visible = visible
 		self.position = position
 		self.resolution_percent = 100
@@ -162,6 +163,9 @@ class RenderingSettings:
 		changed, value = imgui.slider_int("Rendering resolution (%)", self.resolution_percent, 25, 100)
 		_item_tooltip("Render the scene at a percentage of the window framebuffer, then sample it into the unchanged window size. The interface stays sharp.")
 		if changed: self.set_resolution_percent(value)
+		if self.camera is not None:
+			changed, value = imgui.slider_float("FoV (degrees)", self.camera.fovy_deg, 20.0, 120.0, "%.0f")
+			if changed: self.camera.fovy_deg = value
 		modes = ("off", "msaa", "lxaa", "faaa", "ddaa2") if self.aa_pass is not None else ("off", "msaa")
 		changed, index = imgui.combo("Antialiasing (M)", modes.index(self.aa_mode), ("Off", "MSAA 4x", "LXAA", "FAAA", "DDAA2")[:len(modes)])
 		_item_tooltip("4x samples opaque/MASK geometry, transmission and the exact nearest layer. Tail estimation defaults to 1x. Linear HDR is resolved before tone mapping.")

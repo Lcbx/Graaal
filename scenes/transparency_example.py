@@ -86,7 +86,7 @@ class GeometryBatches:
 
 	def prepare(self, commands, camera, view_projection):
 		FrustumCuller().record(commands, self.visibility, camera_position=camera.position,
-			view_projection=view_projection)
+			view_projection=view_projection, fovy_deg=camera.fovy_deg)
 
 	def draw(self, render, stage, **options):
 		self.data.draw(render, self.visibility, stage, **options)
@@ -261,7 +261,7 @@ def run_scene():
 		required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
 	init_scene()
 	presenter = ResolutionPresenter(target_format=transparency.target_format)
-	settings = RenderingSettings(transparency, on_msaa_changed=set_msaa_enabled,
+	settings = RenderingSettings(transparency, camera=camera, on_msaa_changed=set_msaa_enabled,
 		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
 	overlay = ExampleOverlay(settings, get_ao_method=lambda: ao_method, set_ao_method=set_ao_method)
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)

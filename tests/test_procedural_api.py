@@ -295,6 +295,32 @@ def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypa
     assert hzb.resize((8, 8))
 
 
+def test_gpu_lod_selection_tracks_vertical_fov(monkeypatch):
+	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+
+	rc.RenderContext.setup_graphics_backend(True)
+	monkeypatch.setattr(batches, "GpuBuffer", lambda content, usage, **kw:
+		rc.GpuBuffer(content, usage | rc.BufferUsage.COPY_SRC, **kw))
+	draws = batches.DrawBatches(MESH_INSTANCE_DTYPE)
+	for mesh_id in (1, 2):
+		draws.register_mesh(mesh_id, NS(index_count=3, index_range=(0, 3), vertex_range=(0, 3)),
+			bounds=([0, 0, 0], [0.1, 0.1, 0.1]))
+	draws.register_lod_group(10, (1, 2), (6.0,))
+	draws._resources.register_shader(0)
+	draws.sync([10], [0])
+	draws.write_instance_fields(iPosition=(0, 0, 0.5), iTint=0,
+		iRotation=pack_quaternion([0, 0, 0, 1]), iScale=pack_scale([1, 1, 1]))
+	visibility = draws.create_visibility()
+	for fovy_deg, expected in ((60, [1, 0]), (90, [0, 1]), (120, [0, 1])):
+		commands = rc.RenderContext.commands("lod_culling")
+		batches.FrustumCuller().record(commands, visibility, camera_position=(0, 0, -7.5),
+			view_projection=np.eye(4), fovy_deg=fovy_deg)
+		rc.RenderContext.submit(commands.finish())
+		raw = rc.RenderContext.device.queue.read_buffer(visibility.commands.handle)
+		indirect = np.frombuffer(raw, dtype=batches.INDIRECT_DTYPE, count=2)
+		np.testing.assert_array_equal(indirect["instance_count"], expected)
+
+
 def test_resize_reports_unchanged_and_minimized_targets():
     oit = frame_state()
     assert oit.resize((32, 16)) is False

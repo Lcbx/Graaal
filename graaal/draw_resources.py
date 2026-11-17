@@ -90,11 +90,12 @@ class _DrawResources:
 			self.buffers[name] = buffer_type(np.zeros(1, dtype=dtype), usage, upload=False, label=name)
 
 	def register_lod_group(self, group_id: int, lod_ids: Sequence[MeshId], distances: Sequence[float] = ()) -> None:
-		"""MeshRef.lod_ids names a group. Distances are increasing world-space switch distances.
+		"""MeshRef.lod_ids names a group. Distances are increasing world-space switch distances at 90-degree vertical FoV.
 
 		Supply one fewer distance than meshes; equality selects the coarser LoD.
 		None meshId renders nothing in that LoD range; at least one mesh must be non-None.
 		Distances are measured from the culling camera to the transformed group bounds center.
+		The GPU buffer stores their squares in float32 for culling.
 		All variants must use the same local coordinate system and compatible shaders.
 		Example: register_lod_group(10, (100, 101, None), (30.0, 100.0)).
 		"""
@@ -105,6 +106,12 @@ class _DrawResources:
 		values = np.asarray(distances, dtype=np.float32)
 		if not np.all(np.isfinite(values)) or np.any(values <= 0) or np.any(np.diff(values) <= 0):
 			raise ValueError("LoD distances must be finite, positive and strictly increasing in float32")
+		squared = np.square(values.astype(np.float64))
+		limits = np.finfo(np.float32)
+		if not np.all(np.isfinite(squared)) or np.any(squared > limits.max) or np.any(squared < limits.smallest_subnormal):
+			raise ValueError("Squared LoD distances must be finite, positive and strictly increasing in float32")
+		if np.any(np.diff(squared.astype(np.float32)) <= 0):
+			raise ValueError("Squared LoD distances must be finite, positive and strictly increasing in float32")
 		if all(mesh_id is None for mesh_id in lod_ids):
 			raise ValueError("Expected at least one non-None mesh for group bounds")
 		for mesh_id in lod_ids:
@@ -332,7 +339,7 @@ class _DrawResources:
 			offset = int(metadata["lod_offset"]) + 1
 			distances = self.lod_groups[group_id].distances
 			if distances:
-				buffer.content[offset:offset + len(distances)] = distances
+				buffer.content[offset:offset + len(distances)] = np.square(np.asarray(distances, dtype=np.float32))
 				buffer.upload_range(offset, len(distances))
 		self._dirty_lod_distances.clear()
 

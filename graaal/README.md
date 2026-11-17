@@ -157,7 +157,7 @@ Initialize RenderContext first and request `indirect-first-instance` through
 `init_window(..., required_gpu_features=[...])` or
 `setup_graphics_backend(..., required_features=[...])` when using indirect draws.
 The following recording example assumes a compatible `mesh`, `pipeline`,
-`input_instances`, camera values, and output texture already exist. Configure the
+`input_instances`, camera values (`eye`, `view_projection`, `fovy_deg`), and output texture already exist. Configure the
 pipeline for the target attachments; this example uses a color-only pass.
 
 ```python
@@ -174,7 +174,7 @@ draws.write_instances(input_instances[draws.instance_order])
 main_view = draws.create_visibility()
 
 commands = RenderContext.commands("frame")
-FrustumCuller().record(commands, main_view, camera_position=eye, view_projection=view_projection)
+FrustumCuller().record(commands, main_view, camera_position=eye, view_projection=view_projection, fovy_deg=fovy_deg)
 with commands.render_pass(color=output.color_attachment()) as render:
 	draws.draw(render, main_view, "color")
 RenderContext.submit(commands.finish())
@@ -196,6 +196,13 @@ Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
 `hzb.depth_texture`, call `hzb.build(commands)`, then call
 `HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
 frustum results.
+
+LoD switch distances passed to `register_lod_group()` are world-space distances
+at a 90-degree vertical FoV. Pass the perspective camera's `fovy_deg` to
+`FrustumCuller.record()` to keep the same apparent size at each switch; narrower
+views switch farther away. The default of 90 degrees preserves existing callers.
+Orthographic views should use that default. The shared GPU buffer stores squared
+switch distances; each culling view supplies a squared FoV scale.
 
 The default culling ABI is `MESH_INSTANCE_DTYPE`; another dtype requires matching
 shaders/culling or caller-produced visibility. Group 1 supplies `instances` and

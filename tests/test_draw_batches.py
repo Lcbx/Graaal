@@ -50,7 +50,8 @@ class Shader:
 		pass
 
 	def uniform_buffer(self, name):
-		return Buffer(np.zeros(1, dtype=[('workgroup_count', 'u4'), ('batch_count', 'u4'), ('command_count', 'u4')]))
+		return Buffer(np.zeros(1, dtype=[('workgroup_count', 'u4'), ('batch_count', 'u4'), ('command_count', 'u4'),
+			('view_proj', 'f4', (4, 4)), ('planes', 'f4', (6, 4)), ('camera_position', 'f4', 4), ('lod_scale_sq', 'f4')]))
 
 	def bind_group(self, *args, **kwargs):
 		return NS(group=args[0], resources=kwargs)
@@ -124,7 +125,7 @@ def m(monkeypatch):
 	rc.BindGroup = BindGroup
 	rc.RenderContext = NS(record_stat=Mock(), require_features=Mock())
 	math = types.ModuleType(f"{prefix}.Math")
-	math.extract_frustum_planes = lambda x: x
+	math.extract_frustum_planes = lambda x: np.zeros((6, 4), dtype=np.float32)
 	monkeypatch.setitem(sys.modules, rc.__name__, rc)
 	monkeypatch.setitem(sys.modules, math.__name__, math)
 	loaded = {}
@@ -213,6 +214,9 @@ def test_unchanged_sync_does_not_read_or_upload(synced):
 
 def test_registry_updates_preserve_instances_and_selection(synced, m):
 	d, _, refs = synced
+	row = d.group_rows[10]
+	offset = int(d.buffers["mesh_metadata"].content[row]["lod_offset"])
+	assert d.buffers["lod_distances"].gpu[offset + 1] == 20**2
 	d.write_instance_fields(a=d.mesh_field("value"), b=42)
 	before = d.buffers["instances"].content.copy()
 	reads = refs.reads
@@ -222,15 +226,19 @@ def test_registry_updates_preserve_instances_and_selection(synced, m):
 	d.sync_resources()
 	changed = {name for name, buffer in d.buffers.items() if hasattr(buffer, "uploads") and len(buffer.uploads) != uploads[name]}
 	assert changed == {"lod_distances"}
-	row = d.group_rows[10]
-	offset = int(d.buffers["mesh_metadata"].content[row]["lod_offset"])
-	assert d.buffers["lod_distances"].gpu[offset + 1] == 30
+	assert d.buffers["lod_distances"].gpu[offset + 1] == 30**2
 	d.register_shader(1)
 	d.sync_resources()
 	check(d)
 	assert np.all(d.buffers["batches"].content[:len(d.source_batches)]["prepass"] == 1)
 	assert refs.reads == reads and d.instance_order_version == version
 	np.testing.assert_array_equal(before, d.buffers["instances"].content)
+
+
+def test_lod_distances_must_remain_representable_when_squared(d):
+	for distance in (1e-30, 1e20):
+		with pytest.raises(ValueError, match="Squared LoD distances"):
+			d.register_lod_group(10, (1, None), (distance,))
 
 
 def test_same_owners_with_reordered_components_invalidate_inputs(synced):
@@ -409,6 +417,27 @@ def test_bad_camera_input_leaves_uniforms_unchanged(m, position, matrix):
 		d.update_cull_camera(position, matrix)
 	np.testing.assert_array_equal(buffer.content, before)
 	assert not d._camera_params_dirty
+
+
+def test_camera_fov_scales_lod_distances_and_refreshes_uniform(m):
+	d = m._CullingState(Shader(), {})
+	position, matrix = [0, 0, 0], np.eye(4)
+	d.update_cull_camera(position, matrix)
+	assert d.camera_params_buffer.content["lod_scale_sq"][0] == pytest.approx(1)
+	d._camera_params_dirty = False
+	d.update_cull_camera(position, matrix)
+	assert not d._camera_params_dirty
+	d.update_cull_camera(position, matrix, 60)
+	assert d._camera_params_dirty
+	assert d.camera_params_buffer.content["lod_scale_sq"][0] == pytest.approx(3)
+	d._camera_params_dirty = False
+	d.update_cull_camera(position, matrix, 120)
+	assert d.camera_params_buffer.content["lod_scale_sq"][0] == pytest.approx(1 / 3)
+	before = d.camera_params_buffer.content.copy()
+	for fovy_deg in (0, 180, np.nan):
+		with pytest.raises(ValueError, match="FoV"):
+			d.update_cull_camera(position, matrix, fovy_deg)
+		np.testing.assert_array_equal(d.camera_params_buffer.content, before)
 
 
 @pytest.mark.parametrize("size", [(1, 1), (1, 9), (9, 1), (7, 5)])

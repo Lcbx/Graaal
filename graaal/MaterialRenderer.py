@@ -167,7 +167,8 @@ class MaterialRenderer:
 		if size[0] <= 0 or size[1] <= 0: return
 		oit.resize(size)
 		vp = oit.update_camera(camera, frame=frame, lighting=lighting)
-		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp)
+		FrustumCuller().record(commands, self.visibility, camera_position=camera.position, view_projection=vp,
+			fovy_deg=camera.fovy_deg if camera.perspective else 90.0)
 		external = oit.has_external_opaque_inputs
 		if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in self.draws.draw_batches):
 			# Existing scene color and occlusion depth belong to the caller. Local

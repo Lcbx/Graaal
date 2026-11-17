@@ -71,15 +71,22 @@ class _CullingState:
 		self._dispatch(commands, f"cull_{stage}", self.workgroup_count, f"cull_{stage}", stage)
 
 	def update_cull_camera(self, camera_position: Sequence[float],
-		view_projection: Sequence[Sequence[float]] | NDArray[Any]) -> None:
+		view_projection: Sequence[Sequence[float]] | NDArray[Any], fovy_deg: float = 90.0) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
 		vp = np.asarray(view_projection, dtype=np.float32)
 		position = np.asarray(camera_position, dtype=np.float32)
 		if vp.shape != (4, 4) or position.shape != (3,) or not np.all(np.isfinite(vp)) or not np.all(np.isfinite(position)):
 			raise ValueError("Expected a finite 4x4 camera matrix and vec3 position")
+		if not np.isfinite(fovy_deg) or not 0 < fovy_deg < 180:
+			raise ValueError("Expected vertical FoV between 0 and 180 degrees")
+		lod_scale_sq = (1.0 / np.tan(np.deg2rad(fovy_deg) * 0.5)) ** 2
+		if not np.isfinite(lod_scale_sq) or lod_scale_sq > np.finfo(np.float32).max:
+			raise ValueError("Expected a representable vertical FoV scale")
+		lod_scale_sq = np.float32(lod_scale_sq)
 		buffer = self.camera_params_buffer
 		if (self._camera_initialized and np.array_equal(buffer.content["view_proj"][0], vp)
-			and np.array_equal(buffer.content["camera_position"][0, :3], position)):
+			and np.array_equal(buffer.content["camera_position"][0, :3], position)
+			and buffer.content["lod_scale_sq"][0] == lod_scale_sq):
 			return
 		planes = extract_frustum_planes(vp)
 		if not np.all(np.isfinite(planes)):
@@ -87,6 +94,7 @@ class _CullingState:
 		buffer.content["view_proj"] = vp
 		buffer.content["planes"] = planes
 		buffer.content["camera_position"] = [*position, 0.0]
+		buffer.content["lod_scale_sq"] = lod_scale_sq
 		self._camera_initialized = True
 		self._camera_params_dirty = True
 
