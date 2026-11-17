@@ -8,7 +8,7 @@ import glfw
 
 from graaal.TransparencyPass import DEBUG_VIEWS
 from graaal.RenderContext import RenderContext
-from scenes.rendering_settings import FilterSettings
+from graaal.rendering_settings import FilterSettings
 from scenes import transparency_example as scene
 from scenes.example_overlay import ExampleOverlay
 

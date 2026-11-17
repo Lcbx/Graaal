@@ -5,13 +5,8 @@ Estimates assume the current engine architecture; items with open design questio
 
 ## Small — investigation, fixes, and local changes
 
-- Transparency-related :
-  - Check that alpha mask textures use a low-precision format for alpha.
-  - Grazing fade is not taken into account for alpha mask (use dithering).
-  - how is the noise anchored / applied to geometry ? how does it handle slanted surface ?
-  - Check out old anchored blue implementation; see if it worked well / can be reused.
-- Add setting for Hi-Z level to stop culling at (memory vs leniency).
-- Use squared distances and FoV for LOD; take FoV into account.
+- Check that alpha mask textures use a low-precision format for alpha.
+- maybe old anchored blue noise can be reused.
 
 ## Medium — contained rendering and tooling features
 

@@ -130,20 +130,31 @@ fn raster_opacity(id: u32, material: Material, uv: vec2f, lod: f32, world: vec3f
 	return raster_opacity_from_alpha(id, material, uv, lod, world, base_color(material, uv, lod).a);
 }
 
-@fragment
-fn opaque_prepass(input: VertexOutput, @builtin(front_facing) front: bool) {
-	let lod = raster_lod(input.uv);
-	let material = get_material(input.instance);
-	if !front && material.flags.y == 0u { discard; }
-	if material.surface.z == 1.0 && base_color(material, input.uv, lod).a < material.surface.w { discard; }
+fn opaque_visible(input: VertexOutput, material: Material, lod: f32, sample: u32) -> bool {
+	let fade = surface_grazing_fade(input.instance, input.world);
+	if material.surface.z != 1.0 { return true; }
+	if base_color(material, input.uv, lod).a < material.surface.w { return false; }
+	let pixel = vec2u(input.position.xy);
+	let seed = hash_u32(pixel.x ^ hash_u32(pixel.y) ^ hash_u32(sample) ^ hash_u32(metadata[input.instance].z));
+	return f32(seed >> 8u)*(1.0/16777216.0) < fade;
 }
 
 @fragment
-fn opaque(input: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+fn opaque_prepass(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32) {
 	let lod = raster_lod(input.uv);
 	let material = get_material(input.instance);
+	let visible = opaque_visible(input, material, lod, sample);
 	if !front && material.flags.y == 0u { discard; }
-	if material.surface.z == 1.0 && base_color(material, input.uv, lod).a < material.surface.w { discard; }
+	if !visible { discard; }
+}
+
+@fragment
+fn opaque(input: VertexOutput, @builtin(front_facing) front: bool, @builtin(sample_index) sample: u32) -> @location(0) vec4f {
+	let lod = raster_lod(input.uv);
+	let material = get_material(input.instance);
+	let visible = opaque_visible(input, material, lod, sample);
+	if !front && material.flags.y == 0u { discard; }
+	if !visible { discard; }
 	let signed_normal = select(-input.normal, input.normal, front);
 	let normal = signed_normal / max(length(signed_normal), 1e-8);
 	return vec4f(shade_material(input.instance, material, input.uv, input.world, normal, lod), 1.0);

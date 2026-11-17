@@ -3,8 +3,7 @@
 ## Project
 Python game engine built on wgpu and numpy. It has an ECS core and a set of rendering tools that each work on their own.
 See [README.md](README.md) for an overview and [graaal/README.md](graaal/README.md)
-for APIs and architecture. Use the Python executable available in the active shell;
-do not assume `python`, `py`, or `pip` is on PATH.
+for APIs and architecture. Python is available : C:\Users\User\AppData\Local\Programs\Python\Python314\python.exe
 
 ## Where to look
 - ECS storage, queries, commands, and scheduling: `graaal/ECS.py`, `graaal/ecs_*.py`;

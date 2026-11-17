@@ -13,6 +13,7 @@ from graaal.Assets import gltf_node_matrix, load_blue_noise
 from graaal import TransparencyData as transparency_data
 from graaal import TextureProcessing as texture_processing
 from scenes import transparency_example as scene
+from graaal.render_resolution import ResolutionPresenter
 from graaal import TransparencyPass as transparency
 
 
@@ -303,6 +304,19 @@ def test_gpu_resize_rebuilds_targets_and_bindings(gpu_scene, monkeypatch):
 	assert renderer.hzb.view is previous_hzb
 
 
+@pytest.mark.parametrize("aa_mode", ["off", "lxaa", "msaa"])
+def test_scaled_scene_presents_at_window_size(gpu_scene, aa_mode):
+	renderer, output = gpu_scene
+	presenter = ResolutionPresenter(target_format="rgba8unorm")
+	if aa_mode == "msaa": renderer.set_msaa_enabled(True)
+	renderer.aa_pass.mode = aa_mode
+	assert renderer.render_frame(render_size=(32, 32), presenter=presenter)
+	assert renderer.transparency.size == (32, 32)
+	assert presenter.size == (32, 32)
+	assert output.size[:2] == (64, 64)
+	assert np.any(read_texture(output, np.uint8, 4)[:, :, :3])
+
+
 def test_mask_canopy_is_noise_and_tail_filter_independent(monkeypatch):
 	"""The real MASK canopy is rendered entirely through opaque depth/cutoff."""
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
@@ -334,6 +348,39 @@ def test_mask_canopy_is_noise_and_tail_filter_independent(monkeypatch):
 		render_frame(renderer)
 		np.testing.assert_array_equal(read_texture(output, np.uint8, 4), image)
 		np.testing.assert_array_equal(read_texture(renderer.transparency.transmittance, np.float16, 4), 1)
+
+
+def test_gpu_mask_grazing_fade_dithers_opaque_depth(gpu_scene, monkeypatch):
+	renderer, _ = gpu_scene
+	primitives, materials, images, stored = make_layers()
+	primitive = primitives[0]
+	primitive.vertices["position"][:, 2] = 0
+	primitive.vertices["normal"] = (1, 0, 0)
+	stored = stored[:6].copy()
+	stored["position"][:, :3] = primitive.vertices["position"]
+	stored["normal"][:, :3] = primitive.vertices["normal"]
+	materials = materials[:1].copy()
+	materials["base_color"][0, 3] = 1
+	materials["surface"][0, 2:] = (1, 0.5)
+	monkeypatch.setattr(scene, "load_transparency_scene", lambda path: ([primitive], materials, images[:1], stored))
+	scene.init_scene()
+	renderer.camera = scene.Camera((0, 0, 3), (0, 0, 0), (0, 1, 0), 3,
+		perspective=False, near=0.1, far=100)
+	angle = np.deg2rad(77.5)
+	renderer.opaque_batches.data.write_instance_fields(iRotation=scene.pack_quaternion([0, np.sin(angle/2), 0, np.cos(angle/2)]))
+	renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=False, start_angle=70, end_angle=85))
+	render_frame(renderer)
+	baseline = read_texture(renderer.transparency.depth, np.float32, 1)[:, :, 0] < 1
+	assert baseline.mean() > 0.5
+	renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=True, start_angle=70, end_angle=85))
+	render_frame(renderer)
+	faded = read_texture(renderer.transparency.depth, np.float32, 1)[:, :, 0] < 1
+	assert 0.4 < faded[baseline].mean() < 0.6
+	render_frame(renderer)
+	np.testing.assert_array_equal(read_texture(renderer.transparency.depth, np.float32, 1)[:, :, 0] < 1, faded)
+	renderer.transparency.set_grazing_fade(scene.GrazingFade(enabled=True, start_angle=10, end_angle=30))
+	render_frame(renderer)
+	assert not np.any(read_texture(renderer.transparency.depth, np.float32, 1)[:, :, 0] < 1)
 
 
 def test_gpu_hiz_culls_opaque_occlusion_and_preserves_cutout_holes(gpu_scene):

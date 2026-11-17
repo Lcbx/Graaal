@@ -25,7 +25,7 @@ MSAA_SAMPLE_COUNTS = (1, 4)
 
 @checked_dataclass(frozen=True)
 class GrazingFade:
-	"""Opacity fade by angle from the geometric normal: 0 face-on, 90 edge-on."""
+	"""BLEND opacity and MASK coverage fade by geometric angle, 0 face-on to 90 edge-on."""
 	enabled: bool = True
 	start_angle: float_range(0, 90) = 83.0
 	end_angle: float_range(0, 90) = 86.0
@@ -366,7 +366,7 @@ class TransparencyPass:
 		self.uniforms.upload_changed()
 
 	def set_grazing_fade(self, options):
-		"""Change transparent-surface opacity fade without rebuilding GPU resources."""
+		"""Change BLEND opacity and MASK coverage fade without rebuilding GPU resources."""
 		self.uniforms.content["grazing"] = (options.start_angle, options.end_angle, options.enabled, 0)
 		self.uniforms.upload_changed()
 		self.grazing_fade = options

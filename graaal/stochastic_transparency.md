@@ -52,7 +52,7 @@ GPU resources.
 | `set_kawase_passes(count)` | Set 0-8 down/up pairs; default 1. Zero displays the unblurred tail. |
 | `set_banded_options(proxy=None, subset=None, tail_msaa=None)` | Change boolean options; `None` preserves the current value. All default to off. |
 | `set_noise_scale(pixels)` | Set the positive finite 1x screen-noise cell size; default 1. |
-| `set_grazing_fade(GrazingFade(...))` | Set angular opacity fade; default enabled from 83 to 86 degrees. |
+| `set_grazing_fade(GrazingFade(...))` | Set angular BLEND opacity and MASK coverage fade; default enabled from 83 to 86 degrees. |
 | `set_debug_view(name)` | Select one of the views below. |
 | `set_ambient_occlusion(bool)`, `set_ambient_occlusion_settings(settings)` | Configure AO in composition using `AmbientOcclusionSettings`. |
 
@@ -148,9 +148,12 @@ tail contribution.
 | `tail_transmittance` | Scalar transmission excluding the nearest fragment |
 
 `GrazingFade(enabled=True, start_angle=83, end_angle=86)` fades BLEND opacity
-toward silhouettes; angles must satisfy `0 <= start_angle < end_angle <= 90`.
-MASK uses alpha-cutoff discard and opaque depth, independently of grazing fade,
-noise and tail blur. MASK UVs and depth agree at native MSAA sample positions.
+and MASK coverage toward silhouettes; angles must satisfy
+`0 <= start_angle < end_angle <= 90`.
+MASK applies the alpha cutoff, then dithers surviving samples by the grazing
+fade factor before writing opaque depth. Its screen-space thresholds are stable
+across the depth and color passes and independent of the blue-noise texture and
+tail blur. MASK UVs and depth agree at native MSAA sample positions.
 
 Banded tail color approximates an opacity-weighted mix rather than sorted
 layer composition. Atomic allocation order can vary between frames. The 1x

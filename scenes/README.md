@@ -36,10 +36,13 @@ components, see the [engine guide](../graaal/README.md), [ECS reference](../graa
 
 In `transparency_example.py`, the ImGui settings panel is visible at startup.
 `material_example.py` opens it with **F**. Both use
-`RenderingSettings` in `rendering_settings.py`; its `handle_key` callback
-handles keyboard editing of visible controls. The top section selects MSAA,
-LXAA, FAAA, DDAA2, or no antialiasing, and controls SSAO; transparency controls are
-below it. **A** toggles SSAO and **O** switches between its compose and
+`RenderingSettings` in [`graaal/rendering_settings.py`](../graaal/rendering_settings.py); its `handle_key` callback
+handles keyboard editing of visible controls. The rendering resolution slider
+scales scene, AO, and AA targets from 25% to 100% of the framebuffer; a final
+sampled pass via [`ResolutionPresenter`](../graaal/render_resolution.py) fills the unchanged
+window, then ImGui draws at full size. The top
+section selects MSAA, LXAA, FAAA, DDAA2, or no antialiasing, and controls SSAO;
+transparency controls are below it. **A** toggles SSAO and **O** switches between its compose and
 separate-pass implementations. `example_overlay.py` connects **M**, **A**, **O**,
 **P**, and **F** in both scenes. **P** toggles the profiler and starts monitored
 submissions; GPU timings appear when the device supports timestamp queries.

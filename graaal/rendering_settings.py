@@ -1,4 +1,4 @@
-"""Shared rendering and transparency controls for the interactive scenes.
+"""Optional ImGui rendering and transparency controls.
 
 Pass a TransparencyPass or MaterialRenderer to RenderingSettings, register
 handle_key with the key event, and call draw inside the ImGui frame. Optional
@@ -46,6 +46,7 @@ class RenderingSettings:
 		self.renderer = getattr(renderer, "transparency", renderer)
 		self.visible = visible
 		self.position = position
+		self.resolution_percent = 100
 		self.on_msaa_changed = on_msaa_changed
 		self.on_ssao_changed = on_ssao_changed
 		self.ao_pass = ao_pass
@@ -60,6 +61,15 @@ class RenderingSettings:
 	def set_msaa_enabled(self, enabled):
 		if type(enabled) is not bool: raise ValueError("MSAA enabled must be boolean")
 		self.set_aa_mode("msaa" if enabled else "off")
+
+	def set_resolution_percent(self, percent):
+		"""Set the scene render size as a percentage of the window framebuffer."""
+		if type(percent) is not int or not 25 <= percent <= 100:
+			raise ValueError("Rendering resolution must be an integer percentage from 25 to 100")
+		self.resolution_percent = percent
+
+	def render_size(self, window_size):
+		return tuple(max(1, (size*self.resolution_percent+50)//100) for size in window_size)
 
 	def set_aa_mode(self, mode):
 		if mode not in ("off", "msaa", "lxaa", "faaa", "ddaa2"): raise ValueError("Unknown antialiasing mode")
@@ -149,6 +159,9 @@ class RenderingSettings:
 				if changed: self.set_grazing_angle(name, value)
 
 	def draw_general_rendering_options(self, imgui):
+		changed, value = imgui.slider_int("Rendering resolution (%)", self.resolution_percent, 25, 100)
+		_item_tooltip("Render the scene at a percentage of the window framebuffer, then sample it into the unchanged window size. The interface stays sharp.")
+		if changed: self.set_resolution_percent(value)
 		modes = ("off", "msaa", "lxaa", "faaa", "ddaa2") if self.aa_pass is not None else ("off", "msaa")
 		changed, index = imgui.combo("Antialiasing (M)", modes.index(self.aa_mode), ("Off", "MSAA 4x", "LXAA", "FAAA", "DDAA2")[:len(modes)])
 		_item_tooltip("4x samples opaque/MASK geometry, transmission and the exact nearest layer. Tail estimation defaults to 1x. Linear HDR is resolved before tone mapping.")

@@ -40,7 +40,8 @@ from graaal.TransparencyData import load_transparency_scene as load_transparency
 from graaal.transparency_utils import record_transparency
 from graaal.TransparencyPass import GrazingFade, TransparencyPass
 from scenes.example_overlay import ExampleOverlay
-from scenes.rendering_settings import FilterSettings, RenderingSettings
+from graaal.render_resolution import ResolutionPresenter
+from graaal.rendering_settings import FilterSettings, RenderingSettings
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
@@ -197,11 +198,14 @@ def on_char(code):
 	return True
 
 
-def render_frame(*, profiler=None, overlay=None):
+def render_frame(*, profiler=None, overlay=None, render_size=None, presenter=None):
 	"""Record frustum culling, opaque depth, Hi-Z culling, and transparency."""
-	width, height = RenderContext.window_dimensions
-	if width <= 0 or height <= 0:
+	window_size = RenderContext.window_dimensions
+	if min(window_size) <= 0:
 		return False
+	width, height = render_size if render_size is not None else window_size
+	scaled = (width, height) != window_size
+	if scaled and presenter is None: raise ValueError("Scaled rendering requires a presenter")
 	transparency.resize((width, height))
 	view_projection = transparency.update_camera(camera)
 	commands = overlay.commands("stochastic_renderer") if overlay is not None else RenderContext.commands("stochastic_renderer")
@@ -227,7 +231,9 @@ def render_frame(*, profiler=None, overlay=None):
 		else:
 			transparent_batches.draw(render, name)
 	record_transparency(commands, transparency, transparent_batches.passes, draw_transparent)
-	output = RenderContext.screen()
+	screen = RenderContext.screen()
+	if scaled: presenter.resize((width, height))
+	output = presenter.color_attachment() if scaled else screen
 	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
 		aa_pass.resize((width, height))
 		output = aa_pass.color_attachment()
@@ -240,7 +246,8 @@ def render_frame(*, profiler=None, overlay=None):
 		ao_pass.update_camera(camera, sample_count=transparency.sample_count)
 		ao_pass.record(commands, transparency.depth, aa_output)
 	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-		aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
+		aa_pass.record(commands, presenter.color_attachment() if scaled else screen, aa_pass.mode)
+	if scaled: presenter.record(commands, screen)
 	if overlay is not None: overlay.submit(commands)
 	else: RenderContext.submit(commands.finish())
 	return True
@@ -253,6 +260,7 @@ def run_scene():
 	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | A: SSAO | O: SSAO path | F: settings | P: profiler | D: debug | Space: orbit",
 		required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
 	init_scene()
+	presenter = ResolutionPresenter(target_format=transparency.target_format)
 	settings = RenderingSettings(transparency, on_msaa_changed=set_msaa_enabled,
 		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
 	overlay = ExampleOverlay(settings, get_ao_method=lambda: ao_method, set_ao_method=set_ao_method)
@@ -265,7 +273,7 @@ def run_scene():
 				if orbit:
 					angle += RenderContext.frame_time * 0.2
 				camera.position = Vec3(center + distance * np.array([cos(angle), 0.5, sin(angle)]))
-				if render_frame(overlay=overlay):
+				if render_frame(overlay=overlay, render_size=settings.render_size(RenderContext.window_dimensions), presenter=presenter):
 					gui.render(overlay.draw)
 	finally:
 		RenderContext.event_handlers["mouse_scroll"].remove(scroll_callback)

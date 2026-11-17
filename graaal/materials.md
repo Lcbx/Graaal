@@ -315,11 +315,12 @@ backfaces, one renders both sides. The generic surface template defaults to zero
 Its alpha modes are 0 OPAQUE, 1 MASK, and 2 BLEND. Transparent-capable shaders
 default to BLEND; opaque shaders default to OPAQUE. `DefaultMaterialShader`
 routes each binding by its resolved `alpha_mode`: OPAQUE/MASK write opaque
-depth; MASK uses deterministic texture-alpha cutoff at native MSAA sample
-locations. BLEND defaults to exact nearest plus banded tails with one Kawase
-down/up pair and 1x tail estimation. The material parameter `grazing_fade`
-defaults to `false`, with start/end angles of 70/85 degrees. For low-level
-`TransparencyPass` rendering, `GrazingFade` defaults to enabled at 83/86 degrees.
+depth; MASK uses texture-alpha cutoff followed by deterministic grazing-fade
+dithering at native MSAA sample locations. BLEND defaults to exact nearest plus
+banded tails with one Kawase down/up pair and 1x tail estimation. The material
+parameter `grazing_fade` defaults to `false`, with start/end angles of 70/85
+degrees. For low-level `TransparencyPass` rendering, `GrazingFade` defaults to
+enabled at 83/86 degrees.
 
 `MaterialShader.is_blended(material, overrides)` selects a binding's route;
 generic shaders use their `transparent` flag. Custom policies may override this

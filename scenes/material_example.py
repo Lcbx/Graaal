@@ -23,7 +23,8 @@ from graaal.Math import Camera, Vec3
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from graaal.TransparencyData import VERTEX_DTYPE
 from scenes.example_overlay import ExampleOverlay
-from scenes.rendering_settings import RenderingSettings
+from graaal.render_resolution import ResolutionPresenter
+from graaal.rendering_settings import RenderingSettings
 
 
 STRIPED_SHADER = '''
@@ -125,6 +126,7 @@ def run_scene():
 	renderer = MaterialRenderer(meshes=meshes, base_textures=checker_texture.view(dimension="2d-array"), frame_fields={"time": ("f32", 0.0)})
 	ao_pass = AmbientOcclusionPass(target_format=renderer.transparency.target_format)
 	aa_pass = AntialiasingPass(target_format=renderer.transparency.target_format)
+	presenter = ResolutionPresenter(target_format=renderer.transparency.target_format)
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
 	striped = meshes[-1].shader.default_material
@@ -230,21 +232,27 @@ def run_scene():
 				camera.position = Vec3(9*sin(angle), 1.3, 9*cos(angle))
 				adapter.sync()
 				commands = overlay.commands("material_example")
-				output = RenderContext.screen()
+				window_size = RenderContext.window_dimensions
+				render_size = settings.render_size(window_size)
+				scaled = render_size != window_size
+				screen = RenderContext.screen()
+				if scaled: presenter.resize(render_size)
+				output = presenter.color_attachment() if scaled else screen
 				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-					aa_pass.resize(RenderContext.window_dimensions)
+					aa_pass.resize(render_size)
 					output = aa_pass.color_attachment()
 				aa_output = output
 				if ao_enabled and ao_method == "pass":
-					ao_pass.resize(RenderContext.window_dimensions)
+					ao_pass.resize(render_size)
 					output = ao_pass.color_attachment()
-				renderer.record(commands, RenderContext.window_dimensions, camera, output,
+				renderer.record(commands, render_size, camera, output,
 					frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
 				if ao_enabled and ao_method == "pass":
 					ao_pass.update_camera(camera, sample_count=renderer.transparency.sample_count)
 					ao_pass.record(commands, renderer.transparency.depth, aa_output)
 				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-					aa_pass.record(commands, RenderContext.screen(), aa_pass.mode)
+					aa_pass.record(commands, presenter.color_attachment() if scaled else screen, aa_pass.mode)
+				if scaled: presenter.record(commands, screen)
 				overlay.submit(commands)
 				gui.render(draw_controls)
 	finally:

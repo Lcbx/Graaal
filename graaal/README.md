@@ -103,6 +103,8 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
 | `EcsMaterials` | `MaterialInstance` and `MaterialTransform` are components; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
 | `ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
+| `rendering_settings` | `RenderingSettings` provides optional ImGui controls for `TransparencyPass` or `MaterialRenderer`; `set_resolution_percent/render_size` choose the scene size. |
+| `render_resolution` | `ResolutionPresenter.resize/color_attachment/record` samples a scene-sized color target into a window-sized output. |
 | `diagnostics_visualizer` | `DiagnosticsVisualizer.update(report)` keeps bounded performance history; `draw()` shows passes, commands, and resource memory inside an ImGui frame. |
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without

@@ -1,7 +1,7 @@
 # Antialiasing
 
 Implementation: [AntialiasingPass.py](AntialiasingPass.py). Example controls:
-[rendering_settings.py](../scenes/rendering_settings.py). Regression tests:
+[rendering_settings.py](rendering_settings.py). Regression tests:
 [test_antialiasing.py](../tests/test_antialiasing.py). Run from the repository
 root with `python -m pytest tests/test_antialiasing.py -q` (GPU backend required
 for rendering tests).
