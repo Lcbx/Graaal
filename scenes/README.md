@@ -10,11 +10,12 @@ python main.py scenes/prototype.py
 python main.py scenes/transparency_example.py
 python main.py scenes/material_example.py
 python main.py scenes/msaa_example.py
+python main.py scenes/animation_example.py
 ```
 
 Add `--frames N` to stop a RenderContext scene after N displayed frames, for
 example `python main.py scenes/material_example.py --frames 120`. Closing the
-window can end a run earlier. The six modules export `run_scene()` and can be
+window can end a run earlier. The modules export `run_scene()` and can be
 imported without opening a GPU device. `main.py` invokes that entry point and
 cleans up the context afterward.
 
@@ -26,6 +27,7 @@ cleans up the context afterward.
 | `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. F opens settings; P opens the performance profiler. |
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
+| `animation_example.py` | Greenman skeletal animation with CPU skinning and material rendering. Keys 1–4 select clips; Space pauses. The loader is specific to the bundled asset. |
 
 These files are runnable examples rather than a stable scene API. For reusable
 components, see the [engine guide](../graaal/README.md), [ECS reference](../graaal/ECS_API.md),

@@ -1,0 +1,9 @@
+﻿# Skeletal animation CPU foundation
+
+`graaal.SkeletalAnimation` is independent of ECS and graphics. `Skeleton` takes a depth-first preorder forest of parent indices (`-1` for roots), local reference translation, xyzw rotation and scale, and affine inverse-bind matrices. Resources copy their inputs into read-only float32 arrays. Matrices act on column vectors; local transforms compose as translation, rotation, then scale.
+
+`Clip` accepts equally spaced local TRS frames for every bone and a positive frame rate. Its duration is `(frames - 1) / fps`; looping wraps at that endpoint, so matching first and last frames are needed for a seamless loop. `sample_clip(clip, times, loop=True)` takes a one-dimensional array of seconds and returns batched translation, normalized quaternion rotation and scale. Set `loop=False` to clamp. The caller must match clips to skeletons with the same bone order and count.
+
+`model_matrices(skeleton, translation, rotation, scale)` evaluates batches of local poses, and `skin_matrices(skeleton, model)` returns contiguous `(instances, bones, 3, 4)` row-major float32 matrices representing `model @ inverse_bind`. A renderer must use this row layout explicitly when reading the future skin buffer. `skin_vertices(positions, normals, joints, weights, matrices)` applies one pose to a mesh on the CPU, using the inverse transpose of each blended linear transform for normals. Joint weights must sum to one; singular blended transforms raise `ValueError`.
+
+For material rendering, pass the deformed vertices to `MaterialRenderer.update_mesh_vertices`; see the [material guide](materials.md#animated-mesh-vertices) and [Greenman example](../scenes/animation_example.py). No ECS animation adapter, general asset importer, or reusable GPU skinning renderer is provided yet.

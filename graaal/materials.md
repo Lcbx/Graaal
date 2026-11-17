@@ -113,6 +113,21 @@ renderer.record(commands, size, camera, output_attachment)
 RenderContext.submit(commands.finish())
 ```
 
+## Animated mesh vertices
+
+`renderer.update_mesh_vertices(mesh, vertices)` updates a registered mesh's
+positions, normals and UVs in both raster geometry and transparent surface
+reconstruction. Supply one vertex for each original mesh vertex; the original
+indices and topology remain in use. The mesh must have explicit `bounds` that
+conservatively enclose every pose. Call the update before recording and submitting
+the frame that uses it. Every draw sharing that mesh sees the same geometry;
+register separate `MaterialMesh` objects for independent poses.
+
+The [animation example](../scenes/animation_example.py) evaluates a clip and uses
+`SkeletalAnimation.skin_vertices` to deform vertices before calling this method.
+This CPU bridge works with ordinary material shaders, overrides and transparency;
+it uploads vertex data per pose and does not provide GPU skinning or pose sharing.
+
 `MaterialInstance` uses `@component(multiples=True)`: an entity can own multiple
 renderables. Mesh, shader, dictionary and override references use explicit object
 fields; transforms use separate numeric columns. The adapter also accepts

@@ -20,6 +20,7 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [Transparency](stochastic_transparency.md) | Pass order, reconstruction, and technique limits |
 | [Dictionary materials](materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](../scenes/benchmarks/README.md) | Reproduction commands and diagnostic options |
+| [Skeletal animation](skeletal_animation.md) | CPU skeleton and clip conventions, sampling, and pose evaluation |
 
 ## Architecture and maintenance contracts
 

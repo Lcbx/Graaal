@@ -55,9 +55,14 @@ class MaterialRenderer:
 			+ [i.shader for i in self.instances or () if i.shader is not None])
 		self.draws = DrawBatches(MESH_INSTANCE_DTYPE)
 		self.culler = FrustumCuller()
-		vertices, self.offsets = [], []
+		vertices, self.offsets, self._mesh_gpu = [], [], []
+		self._mesh_indices, self._mesh_vertex_counts, self._mesh_has_bounds = [], [], []
 		for index, mesh in enumerate(self.meshes):
-			source = mesh.vertices if mesh.indices is None else mesh.vertices[mesh.indices]
+			indices = None if mesh.indices is None else np.asarray(mesh.indices).copy()
+			self._mesh_indices.append(indices)
+			self._mesh_vertex_counts.append(len(mesh.vertices))
+			self._mesh_has_bounds.append(mesh.bounds is not None)
+			source = mesh.vertices if indices is None else mesh.vertices[indices]
 			if not len(source) or len(source) % 3: raise ValueError("Mesh must contain complete triangles")
 			self.offsets.append(sum(len(v) for v in vertices)//3)
 			raster = np.zeros(len(source), dtype=VERTEX_DTYPE)
@@ -68,7 +73,9 @@ class MaterialRenderer:
 			raster["triangle"] = np.repeat(np.arange(len(source)//3), 3)
 			raster["barycentric"] = np.tile(((1, 0), (0, 1), (0, 0)), (len(source)//3, 1))
 			vertices.append(stored)
-			self.draws.register_mesh(index, Mesh(raster, np.arange(len(source), dtype=np.uint32)), bounds=mesh.bounds)
+			gpu_mesh = Mesh(raster, np.arange(len(source), dtype=np.uint32))
+			self._mesh_gpu.append(gpu_mesh)
+			self.draws.register_mesh(index, gpu_mesh, bounds=mesh.bounds)
 			self.draws.register_lod_group(index, (index,))
 		usage = BufferUsage.STORAGE | BufferUsage.COPY_DST
 		headers, shared, per_instance, _, _ = self.library.pack([])
@@ -149,6 +156,34 @@ class MaterialRenderer:
 		ordered = transforms[self.draws.instance_order]
 		if not np.array_equal(self.draws.buffers["instances"].content[:len(ordered)], ordered):
 			self.draws.write_instances(ordered)
+
+	def update_mesh_vertices(self, mesh, vertices):
+		"""Upload same-topology mesh vertices for both raster and deferred shading.
+
+		The registered bounds must enclose all updated positions. All instances of
+		this mesh share the update; use separate meshes for independent poses.
+		Call before recording commands that consume these vertices.
+		"""
+		if mesh not in self.mesh_ids: raise ValueError("Mesh is not registered")
+		mesh_id = self.mesh_ids[mesh]
+		if not self._mesh_has_bounds[mesh_id]: raise ValueError("Updated meshes require explicit conservative bounds")
+		vertices = np.asarray(vertices)
+		if vertices.ndim != 1 or len(vertices) != self._mesh_vertex_counts[mesh_id] or not vertices.dtype.names or any(name not in vertices.dtype.names for name in ("position", "normal", "uv")):
+			raise ValueError("Expected one position, normal and uv per original vertex")
+		indices = self._mesh_indices[mesh_id]
+		source = vertices if indices is None else vertices[indices]
+		gpu_mesh = self._mesh_gpu[mesh_id]
+		if len(source) != gpu_mesh.vertex_range[1] or any(source[name].shape != (len(source), width) or not np.isfinite(source[name]).all() for name, width in (("position", 3), ("normal", 3), ("uv", 2))):
+			raise ValueError("Vertex fields must be finite and preserve mesh topology")
+		raster = gpu_mesh.vertices.copy()
+		stored = np.zeros(len(source), dtype=SHADING_VERTEX_DTYPE)
+		for name, width in (("position", 3), ("normal", 3), ("uv", 2)):
+			raster[name] = source[name]
+			stored[name][:, :width] = source[name]
+		start, count = gpu_mesh.vertex_range
+		gpu_mesh.vertex_buffer.write_range(raster, offset=start * raster.dtype.itemsize)
+		offset = self.offsets[mesh_id] * 3 * stored.dtype.itemsize
+		self.transparency.vertices.write_range(stored, offset=offset)
 
 	def set_sample_count(self, count):
 		if self.transparency.set_sample_count(count):
