@@ -5,18 +5,17 @@ Estimates assume the current engine architecture; items with open design questio
 
 ## Small — investigation, fixes, and local changes
 
-- Check that alpha mask textures use a low-precision format for alpha.
-- Grazing fade is not taken into account for alpha mask (use dithering).
-- Ensure nearest material is not recorded in the stochastic banded tail.
-- See how banded / noise is used (read doc).
-- Check out old anchored blue implementation; see if it worked well / can be reused.
+- Transparency-related :
+  - Check that alpha mask textures use a low-precision format for alpha.
+  - Grazing fade is not taken into account for alpha mask (use dithering).
+  - how is the noise anchored / applied to geometry ? how does it handle slanted surface ?
+  - Check out old anchored blue implementation; see if it worked well / can be reused.
 - Add setting for Hi-Z level to stop culling at (memory vs leniency).
 - Use squared distances and FoV for LOD; take FoV into account.
 
 ## Medium — contained rendering and tooling features
 
-- Add proper monitoring and logging.
-  - Time different passes so performance can be assessed.
+- Add tonemapping (PBRneutral, uncharted, filmic, aces) 
 - Make SSAO respect normals.
 - Implement ramp / toon shading.
 - Experiment with a Kuwahara material.
@@ -24,7 +23,7 @@ Estimates assume the current engine architecture; items with open design questio
 - Ensure depth prepass only has close / big surfaces, not alpha-tested surfaces.
 - Make wgpu-py Canvas use MSAA for main buffer (?).
 - Implement parallax texture mapping.
-- Implement triplanar mapping.
+- Implement triplanar mapping & normal-aware texture blending
 - Add sphere frustum & Hi-Z check before (instead of ?) AABB.
   - Use it for region binning on CPU ?
 - Can we use different shaders for different LOD levels?
@@ -34,6 +33,7 @@ Estimates assume the current engine architecture; items with open design questio
 - Implement a simple irradiance map based on global directional map.
 - Peripheral motion blur (take camera motion for intensity multiplied with `1 - vignette mask`).
 - Godrays: https://blog.cclarke-magrab.me/blogs/graphics/god-rays-02
+- make a Navmesh generation workflow (maybe offline baking/authoring then stiched together at runtime)
 
 ## Large — new subsystems and integration work
 
@@ -41,6 +41,7 @@ Estimates assume the current engine architecture; items with open design questio
 - Implement Forward+ / tiled shading.
   - Add compute light binning.
 - Implement GPU animation using custom vertex attributes and animation texture atlas.
+	- support animation modifiers from CPU (for Ik and ragdolls)
 - Use OpenAL for binaural audio.
 - Use Bullet for physics (at first; maybe migrate to ctypes & Jolt or Box3D later).
   - Add Box3D support?
