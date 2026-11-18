@@ -7,6 +7,10 @@
 <ShadingVertex> position: vec4f;
 <ShadingVertex> normal: vec4f;
 <ShadingVertex> uv: vec4f;
+#if PARAMS.get("gpu_skinning", false)
+<ShadingVertex> joints: vec4u;
+<ShadingVertex> weights: vec4f;
+#endif
 storage<2, 4, read> vertices: array<ShadingVertex>;
 storage<2, 5, read> shading_instances: array<MeshInstance>;
 #if PARAMS.get("sample_count", 1) > 1
@@ -47,14 +51,23 @@ fn shade_payload(payload: vec4u, pixel: vec2i, sample: u32) -> vec4f {
 	let raw_a = vertices[triangle];
 	let raw_b = vertices[triangle + 1u];
 	let raw_c = vertices[triangle + 2u];
+	let inst = shading_instances[instance_id];
 	// Deform each original vertex before interpolating, exactly as rasterization.
+#if PARAMS.get("gpu_skinning", false)
+	let skin_a = apply_skin(inst.iTint, raw_a.position.xyz, raw_a.normal.xyz, raw_a.joints, raw_a.weights);
+	let skin_b = apply_skin(inst.iTint, raw_b.position.xyz, raw_b.normal.xyz, raw_b.joints, raw_b.weights);
+	let skin_c = apply_skin(inst.iTint, raw_c.position.xyz, raw_c.normal.xyz, raw_c.joints, raw_c.weights);
+	let a = deform_vertex(instance_id, skin_a.position, skin_a.normal, raw_a.uv.xy);
+	let b = deform_vertex(instance_id, skin_b.position, skin_b.normal, raw_b.uv.xy);
+	let c = deform_vertex(instance_id, skin_c.position, skin_c.normal, raw_c.uv.xy);
+#else
 	let a = deform_vertex(instance_id, raw_a.position.xyz, raw_a.normal.xyz, raw_a.uv.xy);
 	let b = deform_vertex(instance_id, raw_b.position.xyz, raw_b.normal.xyz, raw_b.uv.xy);
 	let c = deform_vertex(instance_id, raw_c.position.xyz, raw_c.normal.xyz, raw_c.uv.xy);
+#endif
 	let xy = unpack2x16unorm(payload.z);
 	var bary = max(vec3f(xy, 1.0-xy.x-xy.y), vec3f(0.0));
 	bary /= max(bary.x+bary.y+bary.z, 1e-6);
-	let inst = shading_instances[instance_id];
 	let position = instance_position(inst, a.position.xyz*bary.x + b.position.xyz*bary.y + c.position.xyz*bary.z);
 	let normal = instance_normal(inst, a.normal.xyz*bary.x + b.normal.xyz*bary.y + c.normal.xyz*bary.z);
 	let uv = a.uv.xy*bary.x + b.uv.xy*bary.y + c.uv.xy*bary.z;

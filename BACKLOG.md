@@ -26,7 +26,7 @@ Estimates assume the current engine architecture; items with open design questio
 - Support decals (uses transparency pass).
   - Implementation can be based on Material, MaterialRenderer, TransparencyPass and the related shaders.
 - Implement a simple irradiance map based on global directional map.
-- Peripheral motion blur (take camera motion for intensity multiplied with `1 - vignette mask`).
+- Peripheral motion blur (take camera linear and angular motion into account for intensity/vector multiplied with `1 - vignette mask`).
 - Godrays: https://blog.cclarke-magrab.me/blogs/graphics/god-rays-02
 - make a Navmesh generation workflow (maybe offline baking/authoring then stiched together at runtime)
 

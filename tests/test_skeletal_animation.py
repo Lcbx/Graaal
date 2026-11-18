@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, skin_matrices, skin_vertices
+from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, sample_crossfade, skin_matrices, skin_vertices
 
 
 def skeleton(parents=(-1, 0, 1, 0)):
@@ -29,6 +29,31 @@ def test_clip_sampling_loop_clamp_and_shortest_quaternion_path():
 	np.testing.assert_allclose(sample_clip(clip, [-1, 1, 3], loop=False)[0][:, 0, 0], [0, 2, 0])
 	translation[:] = 9
 	assert clip.translation[0, 0, 0] == 0
+
+
+def test_crossfade_samples_independent_times_and_blends_local_poses():
+	source = Clip([[[0, 0, 0]], [[2, 0, 0]]], [[[0, 0, 0, 1]], [[0, 0, 0, 1]]], np.ones((2, 1, 3)), fps=1)
+	target = Clip([[[4, 0, 0]], [[8, 0, 0]]], [[[0, 0, 0, -1]], [[0, 0, 0, -1]]], np.full((2, 1, 3), 3), fps=1)
+	translation, rotation, scale = sample_crossfade(source, target, [0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0, 0.5, 1])
+	np.testing.assert_allclose(translation[:, 0, 0], [1, 3.5, 6])
+	np.testing.assert_allclose(np.abs(rotation[:, 0, 3]), 1)
+	np.testing.assert_allclose(scale[:, 0, 0], [1, 2, 3])
+	np.testing.assert_allclose(sample_crossfade(source, target, [2], [2], 0.5, source_loop=False, target_loop=False)[0][0, 0, 0], 5)
+	assert sample_crossfade(source, target, [], [], 0.5)[1].shape == (0, 1, 4)
+
+
+def test_crossfade_rejects_invalid_inputs():
+	clip = Clip(np.zeros((1, 1, 3)), [[[0, 0, 0, 1]]], np.ones((1, 1, 3)))
+	other = Clip(np.zeros((1, 2, 3)), [[[0, 0, 0, 1], [0, 0, 0, 1]]], np.ones((1, 2, 3)))
+	with pytest.raises(ValueError, match="bone count"):
+		sample_crossfade(clip, other, [0], [0], 0.5)
+	with pytest.raises(ValueError, match="same length"):
+		sample_crossfade(clip, clip, [0], [0, 0], 0.5)
+	for weights in (-0.1, 1.1, np.nan, [0, 1]):
+		with pytest.raises(ValueError, match="weights"):
+			sample_crossfade(clip, clip, [0], [0], weights)
+	with pytest.raises(ValueError, match="weights"):
+		sample_crossfade(clip, clip, [], [], np.nan)
 
 
 def test_hierarchy_and_skin_matrices_with_rotation_and_nonuniform_scale():

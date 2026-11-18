@@ -1,0 +1,25 @@
+// A row-major 3x4 affine transform, matching SkinMatrixBuffer.
+<SkinMatrix> row0: vec4f;
+<SkinMatrix> row1: vec4f;
+<SkinMatrix> row2: vec4f;
+<SkinnedVertex> position: vec3f;
+<SkinnedVertex> normal: vec3f;
+
+// Indices and normalized weights are validated by the caller. A singular
+// blended linear transform produces a zero normal rather than NaNs.
+fn skin_vertex(position: vec3f, normal: vec3f, weights: vec4f,
+	a: SkinMatrix, b: SkinMatrix, c: SkinMatrix, d: SkinMatrix) -> SkinnedVertex {
+	let r0 = a.row0*weights.x + b.row0*weights.y + c.row0*weights.z + d.row0*weights.w;
+	let r1 = a.row1*weights.x + b.row1*weights.y + c.row1*weights.z + d.row1*weights.w;
+	let r2 = a.row2*weights.x + b.row2*weights.y + c.row2*weights.z + d.row2*weights.w;
+	let p = vec4f(position, 1.0);
+	let col0 = vec3f(r0.x, r1.x, r2.x);
+	let col1 = vec3f(r0.y, r1.y, r2.y);
+	let col2 = vec3f(r0.z, r1.z, r2.z);
+	let det = dot(col0, cross(col1, col2));
+	let transformed = (cross(col1, col2)*normal.x + cross(col2, col0)*normal.y + cross(col0, col1)*normal.z) * sign(det);
+	var result: SkinnedVertex;
+	result.position = vec3f(dot(r0, p), dot(r1, p), dot(r2, p));
+	result.normal = select(vec3f(0.0), transformed / max(length(transformed), 1e-8), abs(det) > 1e-8);
+	return result;
+}

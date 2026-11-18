@@ -67,6 +67,10 @@ fn is_exact_nearest(input: VertexOutput, sample: u32) -> bool {
 <VertexInput> uv: vec2f;
 <VertexInput> barycentric: vec2f;
 <VertexInput> triangle: u32;
+#if PARAMS.get("gpu_skinning", false)
+<VertexInput> joints: vec4u;
+<VertexInput> weights: vec4f;
+#endif
 
 <VertexOutput> @builtin(position) position: vec4f;
 #if PARAMS.get("sample_count", 1) > 1
@@ -86,7 +90,12 @@ fn is_exact_nearest(input: VertexOutput, sample: u32) -> bool {
 @vertex
 fn vertex(input: VertexInput, @builtin(instance_index) instance_index: u32) -> VertexOutput {
 	let id = visible_instances[instance_index];
+#if PARAMS.get("gpu_skinning", false)
+	let skinned = apply_skin(instances[id].iTint, input.position, input.normal, input.joints, input.weights);
+	let deformed = deform_vertex(id, skinned.position, skinned.normal, input.uv);
+#else
 	let deformed = deform_vertex(id, input.position, input.normal, input.uv);
+#endif
 	let world = instance_position(instances[id], deformed.position);
 	var output: VertexOutput;
 	output.position = frame.proj * frame.view * vec4f(world, 1.0);

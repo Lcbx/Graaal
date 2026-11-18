@@ -34,3 +34,36 @@ def test_deformed_material_mesh_updates_raster_and_transparent_reconstruction():
 	assert np.count_nonzero(first != second) > 100
 	with pytest.raises(ValueError, match="original vertex"):
 		renderer.update_mesh_vertices(mesh, updated[:2])
+
+
+def test_ecs_pose_batches_update_independent_indexed_material_meshes():
+	from graaal.ECS import ECS
+	from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+	from graaal.MaterialSkinning import MaterialSkinningAdapter
+	from graaal.SkeletalAnimation import Clip, Skeleton
+
+	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
+	dtype = np.dtype([("position", "f4", 3), ("normal", "f4", 3), ("uv", "f4", 2), ("joints", "u4", 1), ("weights", "f4", 1)])
+	vertices = np.zeros(3, dtype=dtype)
+	vertices["position"] = [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
+	vertices["normal"], vertices["weights"] = (0, 0, 1), 1
+	shader = DefaultMaterialShader()
+	indices = np.array([2, 1, 0], dtype=np.uint32)
+	meshes = [MaterialMesh(vertices, shader, indices=indices, bounds=((0, 0, 0), (5, 5, 5))) for _ in range(2)]
+	renderer = MaterialRenderer(meshes=meshes, target_format="rgba8unorm")
+	world = ECS()
+	world.register(SkeletonRef, ClipPlayer)
+	owners = world.create(2)
+	world.add(owners, SkeletonRef(0), ClipPlayer(0, speed=0, loop=False))
+	world.get(ClipPlayer)[owners].assign(time=[0.25, 0.75])
+	rig = Skeleton([-1], [[0, 0, 0]], [[0, 0, 0, 1]], [[1, 1, 1]], [np.eye(4)])
+	clip = Clip([[[0, 0, 0]], [[2, 0, 0]]], [[[0, 0, 0, 1]], [[0, 0, 0, 1]]], np.ones((2, 1, 3)), fps=1)
+	animation = EcsAnimationAdapter(world, {0: rig}, {0: clip})
+	skinning = MaterialSkinningAdapter(renderer)
+	for owner, mesh in zip(owners, meshes): skinning.bind(owner, mesh, vertices)
+	for batch in animation.update(0): skinning.update(batch.entities, batch.matrices)
+	for i, offset in enumerate((0.5, 1.5)):
+		expected = vertices["position"][indices] + (offset, 0, 0)
+		np.testing.assert_allclose(renderer._mesh_gpu[i].vertices["position"], expected)
+		start = renderer.offsets[i] * 3
+		np.testing.assert_allclose(renderer.transparency.vertices.content["position"][start:start + 3, :3], expected)

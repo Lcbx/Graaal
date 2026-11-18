@@ -15,6 +15,8 @@ VERTEX_DTYPE = np.dtype([
 SHADING_VERTEX_DTYPE = np.dtype([
 	("position", "<f4", 4), ("normal", "<f4", 4), ("uv", "<f4", 4),
 ])
+SKINNED_VERTEX_DTYPE = np.dtype(VERTEX_DTYPE.descr + [("joints", "<u4", (4,)), ("weights", "<f4", (4,))])
+SKINNED_SHADING_VERTEX_DTYPE = np.dtype(SHADING_VERTEX_DTYPE.descr + [("joints", "<u4", (4,)), ("weights", "<f4", (4,))])
 MATERIAL_DTYPE = np.dtype([
 	("base_color", "<f4", 4), ("emission", "<f4", 4),
 	("surface", "<f4", 4), ("opacity_rgb", "<f4", 4), ("flags", "<u4", 4),

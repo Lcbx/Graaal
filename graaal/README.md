@@ -79,6 +79,10 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | --- | --- |
 | [ECS](ECS_API.md) | `component`, `array_field`, `columns` define data; `ECS.register/create/add/set/remove/delete` manage it; `ECS.query` joins stores. `ComponentAccessor.version/touch` track edits; `ComponentSelection.read/assign` gather and write; accessor `edit_dense` borrows store columns. |
 | `ecs_commands`, `ecs_schedule` | Re-exported by `ECS`: `CommandBuffer.flush/clear` apply or discard deferred edits; `DeferredEntities.resolve` retrieves created IDs; `Scheduler.add/compile/run` orders synchronous systems. |
+| `EcsAnimation` | `SkeletonRef`, `ClipPlayer`, and `EcsAnimationAdapter` advance ECS playback and return batched poses with generational entity handles. |
+| `SkeletalGltf` | `load_skinned_gltf` imports a supported subset of skinned glTF and resamples joint tracks into CPU animation resources. |
+| `SkinMatrixBuffer` | `SkinMatrixBuffer` allocates stable GPU skin-matrix ranges for caller-owned IDs. |
+| `MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
 | `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |
 | `Assets` | `load_gltf_scene` returns static triangle lists, materials and images; `read_gltf_accessor` reads attributes; `load_gltf_first_mesh_interleaved` loads one local-space primitive; `load_blue_noise` returns CPU thresholds. |
 | `InstanceData` | `MESH_INSTANCE_DTYPE` defines transforms/tint; `pack_quaternion`, `pack_scale`, `pack_rgba8_srgb` encode fields; `make_instances` packs separate component columns. |

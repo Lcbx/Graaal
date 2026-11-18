@@ -78,7 +78,7 @@ class TransparencyPass:
 
 	def __init__(self, *, materials, base_textures, vertices, blue_noise=None,
 		material_sampler=None, target_format=None, noise_scale=1.0, grazing_fade=None, sample_count=1,
-		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None,
+		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None, gpu_skinning=False,
 		kawase_passes=1, banded_proxy=False, banded_subset=False, banded_tail_msaa=False):
 		if any(type(value) is not bool for value in (banded_proxy, banded_subset, banded_tail_msaa)): raise ValueError("Banded options must be boolean")
 		if type(kawase_passes) is not int or not 0 <= kawase_passes <= 8: raise ValueError("kawase_passes must be an integer from 0 through 8")
@@ -91,6 +91,7 @@ class TransparencyPass:
 		self.sample_count = sample_count
 		self._material_source = material_source
 		self._material_library = material_library
+		self._gpu_skinning = bool(gpu_skinning)
 		if frame_fields is None: frame_fields = {}
 		if not isinstance(frame_fields, Mapping):
 			raise TypeError("frame_fields must map names to (WGSL type, default) pairs")
@@ -143,7 +144,7 @@ class TransparencyPass:
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"),
 				params={**self._banded_params(count), "material_source": self._material_source, "sample_count": count,
-					"material_library": self._material_library, "frame_fields": self._frame_types})
+					"material_library": self._material_library, "frame_fields": self._frame_types, "gpu_skinning": self._gpu_skinning})
 		return self._geometry_shaders[key]
 
 
@@ -169,7 +170,7 @@ class TransparencyPass:
 		key = (count, self._banded_flags, self.ambient_occlusion_settings)
 		if key not in self._shader_sets:
 			params = {**self._banded_params(count), "material_source": self._material_source,
-				"material_library": self._material_library, "frame_fields": self._frame_types}
+				"material_library": self._material_library, "frame_fields": self._frame_types, "gpu_skinning": self._gpu_skinning}
 			self._shader_sets[key] = (
 				self._geometry_shader(count),
 				Shader(filepath=str(SHADERS / "stochastic_shade.shader"), params=dict(params, sample_count=count if self.banded_tail_msaa else 1)),
@@ -186,7 +187,7 @@ class TransparencyPass:
 			key = ("tail", count, self._banded_flags)
 			if key not in self._geometry_shaders:
 				params = dict(self._banded_params(count), sample_count=1, guide_sample_count=count, banded_statistics=True,
-					material_source=self._material_source, material_library=self._material_library, frame_fields=self._frame_types)
+					material_source=self._material_source, material_library=self._material_library, frame_fields=self._frame_types, gpu_skinning=self._gpu_skinning)
 				self._geometry_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params)
 			self.tail_shader = self._geometry_shaders[key]
 
@@ -195,7 +196,7 @@ class TransparencyPass:
 		if key not in self._nearest_shaders:
 			self._nearest_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_shade.shader"),
 				params={"material_source": self._material_source, "sample_count": self.sample_count,
-					"material_library": self._material_library, "frame_fields": self._frame_types, "shade_nearest": True})
+					"material_library": self._material_library, "frame_fields": self._frame_types, "shade_nearest": True, "gpu_skinning": self._gpu_skinning})
 		self.nearest_shading_shader = self._nearest_shaders[key]
 		self.nearest_shade_pipeline = ComputePipeline(self.nearest_shading_shader, entry="shade_nearest", layout=self._pipeline_layout(self.nearest_shading_shader, "shade_nearest"))
 		self.shade_pipeline = ComputePipeline(self.shading_shader, entry="shade_bands", layout=self._pipeline_layout(self.shading_shader, "shade_bands"))

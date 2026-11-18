@@ -27,12 +27,16 @@ cleans up the context afterward.
 | `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. F opens settings; P opens the performance profiler. |
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
-| `animation_example.py` | Greenman skeletal animation with CPU skinning and material rendering. Keys 1–4 select clips; Space pauses. The loader is specific to the bundled asset. |
+| `animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
 
 These files are runnable examples rather than a stable scene API. For reusable
 components, see the [engine guide](../graaal/README.md), [ECS reference](../graaal/ECS_API.md),
 [material guide](../graaal/materials.md), and
 [transparency guide](../graaal/stochastic_transparency.md).
+
+For a headless ECS animation event example, run
+`python -m scenes.animation_events_example`. Two players run the same clip in
+opposite directions; a scheduled event consumer counts their footstep markers.
 
 ## Rendering and transparency settings
 

@@ -123,10 +123,94 @@ conservatively enclose every pose. Call the update before recording and submitti
 the frame that uses it. Every draw sharing that mesh sees the same geometry;
 register separate `MaterialMesh` objects for independent poses.
 
-The [animation example](../scenes/animation_example.py) evaluates a clip and uses
-`SkeletalAnimation.skin_vertices` to deform vertices before calling this method.
+`SkeletalAnimation.skin_vertices` can deform vertices before calling this method.
 This CPU bridge works with ordinary material shaders, overrides and transparency;
-it uploads vertex data per pose and does not provide GPU skinning or pose sharing.
+it uploads vertex data per pose and does not provide pose sharing.
+
+`MaterialSkinningAdapter` connects batches of poses to independently animated
+meshes. Bind each persistent owner ID to its own registered mesh and bind-pose
+vertex array containing `position`, `normal`, `uv`, `joints` and `weights` fields:
+
+```python
+from graaal.MaterialSkinning import MaterialSkinningAdapter
+
+skinning = MaterialSkinningAdapter(renderer)
+skinning.bind(entity, mesh, bind_vertices)
+# For every batch returned by EcsAnimationAdapter.update(dt):
+skinning.update(batch.entities, batch.matrices)
+```
+
+The adapter copies bind vertices and applies every update from that pose. It uses
+the full supplied owner ID, so remove the binding with `unbind(entity)` on
+deletion before binding a replacement. Unknown or duplicate IDs are rejected;
+each owner needs a distinct mesh. `EcsMaterialAdapter` still manages material
+and transform extraction separately. The application owns the order of animation,
+skinning, material synchronization and frame recording. See the example for all
+of these steps together.
+
+### GPU skinning
+
+Pass a `SkinMatrixBuffer` as `skin_palette` to `MaterialRenderer` to enable GPU
+skinning. A skinned `MaterialMesh` supplies `joints` and `weights` fields with
+four entries per vertex, normalized nonnegative weights, and explicit bounds
+that enclose every pose. Meshes without these fields remain static. Each owner
+of a skinned mesh needs an allocated palette range covering every joint index,
+including indices whose weight is zero. Multiple owners may share the same mesh:
+
+```python
+from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+
+palette = SkinMatrixBuffer(capacity=256)
+renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette)
+palette.acquire(entity, len(skeleton.parents))
+
+# After animation evaluation, before recording the frame:
+for batch in animation.update(dt):
+	palette.write(batch.entities, batch.matrices)
+material_adapter.sync()
+renderer.record(commands, size, camera, output_attachment)
+```
+
+The owner is the full entity handle when using `EcsMaterialAdapter`; for direct
+`DrawInstance` inputs it is the instance's `surface_id`. Allocate ranges before
+material synchronization, initialize them before rendering, and remove an
+entity's draw before releasing its range. `renderer.record()` refreshes palette
+offsets after range changes. Call `renderer.sync_skinning()` explicitly before
+manually recording material passes. The GPU path reserves `iTint` in the packed
+material instance data for the palette address. It skins before material vertex
+hooks in both raster and transparent reconstruction, so custom materials,
+overrides and transparency use the same pose. Keep palette writes and releases
+ordered with GPU submissions as described in the
+[animation guide](skeletal_animation.md#gpu-skin-matrices).
+
+The [animation example](../scenes/animation_example.py) demonstrates three ECS
+players sharing one skinned mesh and rendering through the material system.
+
+`PosePalette(palette)` can reconcile palette allocations and uploads from the
+complete list returned by `animation.update(dt)`:
+
+```python
+from graaal.PosePalette import PosePalette
+
+poses = PosePalette(palette)
+poses.update(animation.update(dt))
+material_adapter.sync()
+renderer.record(commands, size, camera, output_attachment)
+```
+
+Every update is a complete snapshot: an absent owner is released, and a new
+owner gets an allocated and initialized range. Do not separately manage ranges
+owned by `poses`. Every skinned draw must have an owner in the snapshot. Update
+ECS draw membership before reconciling, then synchronize the material adapter
+before recording; do not record between reconciliation and synchronization.
+Ensure prior GPU work has finished using any ranges that can be released or
+rewritten. These ordering requirements also apply when an entity is removed or
+its handle is recycled. A managed owner's bone count cannot change in place:
+remove its draw and omit it from a snapshot before reintroducing it with the new
+rig. The fixed-capacity palette may still fail from insufficient contiguous
+space. On allocation failure, newly acquired ranges are released; ranges of
+owners absent from the snapshot have already been released. Fix the capacity or
+snapshot and retry before recording. GPU upload errors may leave partial writes.
 
 `MaterialInstance` uses `@component(multiples=True)`: an entity can own multiple
 renderables. Mesh, shader, dictionary and override references use explicit object

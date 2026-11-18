@@ -24,6 +24,12 @@ def _freeze(*arrays):
 	for array in arrays: array.flags.writeable = False
 
 
+def _output(value, shape, name):
+	if not isinstance(value, np.ndarray) or value.dtype != np.float32 or value.shape != shape or not value.flags.writeable or not value.flags.c_contiguous:
+		raise ValueError(f"{name} must be a writable C-contiguous float32 array with shape {shape}")
+	return value
+
+
 class Skeleton:
 	"""A depth-first, parent-before-child skeleton and its local reference pose."""
 	def __init__(self, parents, translation, rotation, scale, inverse_bind):
@@ -75,7 +81,7 @@ class Clip:
 	def duration(self): return (len(self.translation) - 1) / self.fps
 
 
-def sample_clip(clip, times, *, loop=True):
+def sample_clip(clip, times, *, loop=True, out=None):
 	"""Return batched local translation, rotation and scale for a 1D time array.
 
 	Looping treats the final frame as the endpoint at duration and wraps there;
@@ -83,6 +89,18 @@ def sample_clip(clip, times, *, loop=True):
 	"""
 	times = np.asarray(times, dtype=np.float64)
 	if times.ndim != 1 or not np.isfinite(times).all(): raise ValueError("times must be a finite 1D array")
+	shape = (len(times), clip.translation.shape[1])
+	if out is None:
+		translation = np.empty(shape + (3,), dtype=np.float32)
+		rotation = np.empty(shape + (4,), dtype=np.float32)
+		scale = np.empty(shape + (3,), dtype=np.float32)
+	else:
+		if not isinstance(out, (tuple, list)) or len(out) != 3: raise ValueError("out must contain translation, rotation and scale arrays")
+		translation = _output(out[0], shape + (3,), "translation out")
+		rotation = _output(out[1], shape + (4,), "rotation out")
+		scale = _output(out[2], shape + (3,), "scale out")
+		if any(np.shares_memory(a, b) for a, b in ((translation, rotation), (translation, scale), (rotation, scale))):
+			raise ValueError("pose output arrays must not overlap")
 	if clip.duration == 0:
 		frame = np.zeros_like(times)
 	else:
@@ -91,21 +109,54 @@ def sample_clip(clip, times, *, loop=True):
 	first = np.floor(frame).astype(np.intp)
 	second = np.minimum(first + 1, len(clip.translation) - 1)
 	weight = (frame - first).astype(np.float32)[:, None, None]
-	translation = clip.translation[first] * (1 - weight) + clip.translation[second] * weight
-	scale = clip.scale[first] * (1 - weight) + clip.scale[second] * weight
+	np.multiply(clip.translation[first], 1 - weight, out=translation)
+	translation += clip.translation[second] * weight
+	np.multiply(clip.scale[first], 1 - weight, out=scale)
+	scale += clip.scale[second] * weight
 	q0, q1 = clip.rotation[first], clip.rotation[second]
 	q1 = np.where(np.sum(q0 * q1, axis=-1, keepdims=True) < 0, -q1, q1)
-	rotation = q0 * (1 - weight) + q1 * weight
+	np.multiply(q0, 1 - weight, out=rotation)
+	rotation += q1 * weight
 	rotation /= np.linalg.norm(rotation, axis=-1, keepdims=True)
 	return translation, rotation, scale
 
 
-def model_matrices(skeleton, translation, rotation, scale):
+def sample_crossfade(source, target, source_times, target_times, weights, *, source_loop=True, target_loop=True):
+	"""Sample and blend two clips in local space, with one weight per instance.
+
+	Weights range from zero (source) to one (target); a scalar applies to all
+	instances. Both clips must use the same skeleton and their times must have
+	the same length. Rotation uses shortest-path normalized linear interpolation.
+	"""
+	if source.translation.shape[1] != target.translation.shape[1]:
+		raise ValueError("clips must have the same bone count and order")
+	source_pose = sample_clip(source, source_times, loop=source_loop)
+	target_pose = sample_clip(target, target_times, loop=target_loop)
+	if source_pose[0].shape != target_pose[0].shape:
+		raise ValueError("source and target times must have the same length")
+	weights = np.asarray(weights, dtype=np.float32)
+	if not np.isfinite(weights).all() or np.any((weights < 0) | (weights > 1)):
+		raise ValueError("weights must be finite values in [0, 1], one per instance")
+	if weights.ndim == 0: weights = np.broadcast_to(weights, (len(source_pose[0]),))
+	if weights.shape != (len(source_pose[0]),):
+		raise ValueError("weights must be finite values in [0, 1], one per instance")
+	weight = weights[:, None, None]
+	translation = source_pose[0] * (1 - weight) + target_pose[0] * weight
+	q0, q1 = source_pose[1], target_pose[1]
+	q1 = np.where(np.sum(q0 * q1, axis=-1, keepdims=True) < 0, -q1, q1)
+	rotation = q0 * (1 - weight) + q1 * weight
+	rotation /= np.linalg.norm(rotation, axis=-1, keepdims=True)
+	scale = source_pose[2] * (1 - weight) + target_pose[2] * weight
+	return translation, rotation, scale
+
+
+def model_matrices(skeleton, translation, rotation, scale, *, out=None):
 	"""Convert batched local TRS to model matrices, processing one depth at a time."""
 	translation = np.asarray(translation, dtype=np.float32)
 	if translation.ndim != 3 or translation.shape[1:] != (len(skeleton.parents), 3):
 		raise ValueError("translation must have shape (instances, bones, 3)")
 	n, bones = translation.shape[:2]
+	result = np.empty((n, bones, 4, 4), dtype=np.float32) if out is None else _output(out, (n, bones, 4, 4), "model out")
 	translation = _array(translation, (n, bones, 3), "translation")
 	rotation = _rotations(rotation, (n, bones, 4), "rotation")
 	scale = _array(scale, (n, bones, 3), "scale")
@@ -123,7 +174,6 @@ def model_matrices(skeleton, translation, rotation, scale):
 	local[..., :3, :3] *= scale[..., None, :]
 	local[..., :3, 3] = translation
 	local[..., 3, 3] = 1
-	result = np.empty_like(local)
 	for depth in range(int(skeleton.depth.max()) + 1):
 		bones_at_depth = np.flatnonzero(skeleton.depth == depth)
 		if depth == 0: result[:, bones_at_depth] = local[:, bones_at_depth]
@@ -131,12 +181,15 @@ def model_matrices(skeleton, translation, rotation, scale):
 	return result
 
 
-def skin_matrices(skeleton, model):
+def skin_matrices(skeleton, model, *, out=None):
 	"""Return contiguous row-major 3x4 affine skin matrices (model @ inverse bind)."""
 	model = np.asarray(model, dtype=np.float32)
 	if model.ndim != 4 or model.shape[1:] != (len(skeleton.parents), 4, 4) or not np.isfinite(model).all():
 		raise ValueError("model must be finite with shape (instances, bones, 4, 4)")
-	return np.ascontiguousarray((model @ skeleton.inverse_bind)[..., :3, :])
+	shape = (len(model), len(skeleton.parents), 3, 4)
+	result = np.empty(shape, dtype=np.float32) if out is None else _output(out, shape, "skin out")
+	np.matmul(model[..., :3, :], skeleton.inverse_bind, out=result)
+	return result
 
 
 def skin_vertices(positions, normals, joints, weights, matrices):

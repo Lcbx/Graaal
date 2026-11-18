@@ -9,7 +9,7 @@ from .InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 from .Materials import MaterialBinding, MaterialLibrary, MaterialShader
 from .EcsMaterials import MaterialInstance, MaterialTransform, EcsMaterialAdapter
 from .RenderContext import BufferUsage, GpuBuffer, Mesh, RenderContext, Texture, TextureUsage
-from .TransparencyData import VERTEX_DTYPE, SHADING_VERTEX_DTYPE, MATERIAL_DTYPE
+from .TransparencyData import VERTEX_DTYPE, SHADING_VERTEX_DTYPE, SKINNED_VERTEX_DTYPE, SKINNED_SHADING_VERTEX_DTYPE, MATERIAL_DTYPE
 from .TransparencyPass import TransparencyPass, record_transparency
 
 _DRAW_IDS = count(1)
@@ -46,11 +46,18 @@ class MaterialRenderer:
 	culling and caller-owned commands/output; presentation/submission remain external.
 	"""
 
-	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, frame_fields=None, **transparency_options):
+	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, frame_fields=None, skin_palette=None, **transparency_options):
 		self.instances = None if instances is None else list(instances)
 		self.meshes = list(dict.fromkeys(meshes if meshes is not None else (i.mesh for i in self.instances or ())))
 		if not self.meshes: raise ValueError("Register at least one mesh")
 		self.mesh_ids = {mesh: index for index, mesh in enumerate(self.meshes)}
+		self.skin_palette = skin_palette
+		self._skin_owners = np.empty(0, dtype=np.uint64)
+		self._skin_meshes = np.empty(0, dtype=np.uint32)
+		self._skin_codes = np.empty(0, dtype=np.uint32)
+		self._mesh_max_joint = []
+		self._raster_dtype = SKINNED_VERTEX_DTYPE if skin_palette is not None else VERTEX_DTYPE
+		self._shading_dtype = SKINNED_SHADING_VERTEX_DTYPE if skin_palette is not None else SHADING_VERTEX_DTYPE
 		self.library = MaterialLibrary([mesh.shader for mesh in self.meshes] + list(shaders)
 			+ [i.shader for i in self.instances or () if i.shader is not None])
 		self.draws = DrawBatches(MESH_INSTANCE_DTYPE)
@@ -65,11 +72,25 @@ class MaterialRenderer:
 			source = mesh.vertices if indices is None else mesh.vertices[indices]
 			if not len(source) or len(source) % 3: raise ValueError("Mesh must contain complete triangles")
 			self.offsets.append(sum(len(v) for v in vertices)//3)
-			raster = np.zeros(len(source), dtype=VERTEX_DTYPE)
-			stored = np.zeros(len(source), dtype=SHADING_VERTEX_DTYPE)
+			raster = np.zeros(len(source), dtype=self._raster_dtype)
+			stored = np.zeros(len(source), dtype=self._shading_dtype)
 			for name, width in (("position", 3), ("normal", 3), ("uv", 2)):
 				raster[name] = source[name]
 				stored[name][:, :width] = source[name]
+			fields = set(source.dtype.names or ())
+			has_skin = {"joints", "weights"} <= fields
+			if skin_palette is not None and bool(fields & {"joints", "weights"}) != has_skin: raise ValueError("Mesh needs both joints and weights")
+			if has_skin and skin_palette is not None:
+				joints, weights = source["joints"], source["weights"]
+				if mesh.bounds is None: raise ValueError("Skinned meshes require explicit conservative bounds")
+				if joints.shape != (len(source), 4) or joints.dtype.kind not in "iu" or np.any(joints < 0) or np.any(joints > np.iinfo(np.uint32).max):
+					raise ValueError("Skinned joints must contain four uint32-compatible indices per vertex")
+				if weights.shape != (len(source), 4) or not np.isfinite(weights).all() or np.any(weights < 0) or not np.allclose(weights.sum(axis=1), 1, atol=1e-5):
+					raise ValueError("Skinned weights must be finite, nonnegative and sum to one")
+				raster["joints"], stored["joints"] = joints, joints
+				raster["weights"], stored["weights"] = weights, weights
+				self._mesh_max_joint.append(int(np.max(joints)))
+			else: self._mesh_max_joint.append(None)
 			raster["triangle"] = np.repeat(np.arange(len(source)//3), 3)
 			raster["barycentric"] = np.tile(((1, 0), (0, 1), (0, 0)), (len(source)//3, 1))
 			vertices.append(stored)
@@ -82,6 +103,7 @@ class MaterialRenderer:
 		self.headers = GpuBuffer(headers, usage)
 		self.parameters = dict(material_parameters=GpuBuffer(shared, usage), instance_parameters=GpuBuffer(per_instance, usage),
 			material_headers=self.headers)
+		if skin_palette is not None: self.parameters["skin_matrices"] = skin_palette.buffer
 		self.metadata = GpuBuffer(np.zeros((1, 4), dtype=np.uint32), usage)
 		if base_textures is None:
 			white = Texture((1, 1, 1), format="rgba8unorm-srgb", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
@@ -89,7 +111,7 @@ class MaterialRenderer:
 			base_textures = white.view(dimension="2d-array")
 		self.transparency = TransparencyPass(materials=GpuBuffer(np.zeros(1, dtype=MATERIAL_DTYPE), usage), base_textures=base_textures,
 			vertices=GpuBuffer(np.concatenate(vertices), usage), blue_noise=blue_noise,
-			material_library=self.library, frame_fields=frame_fields,
+			material_library=self.library, frame_fields=frame_fields, gpu_skinning=skin_palette is not None,
 			**transparency_options)
 		self.geometry = [self.transparency.create_geometry_passes(self.metadata, transparent=transparent,
 			instances=self.draws.buffers["instances"], geometry_resources=self.parameters,
@@ -137,11 +159,14 @@ class MaterialRenderer:
 			raise ValueError("Unknown mesh ID")
 		if surface_ids.dtype.kind not in "iu" or np.any(surface_ids <= 0) or np.any(surface_ids > 0xffffffff) or len(np.unique(surface_ids)) != n:
 			raise ValueError("Surface IDs must be distinct positive uint32 values")
+		codes = self._skin_codes_for(owners, mesh_ids) if self.skin_palette is not None else None
 		# Pack once, before mutations. Instance offsets remain valid after regrouping.
 		headers, shared, instance, ids, offsets = self.library.pack(bindings, dirty_materials=dirty_materials)
 		routes = np.array([int(binding.shader.is_blended(self.library.material_values(binding), binding.overrides)) for binding in bindings], dtype=np.uint32)
 		self.draws.sync(mesh_ids, routes, labels=owners.astype(np.uint64))
 		order = self.draws.instance_order
+		if codes is not None:
+			self._skin_owners, self._skin_meshes, self._skin_codes = owners[order].copy(), mesh_ids[order].copy(), codes[order].copy()
 		self._write(self.headers, headers)
 		self._write(self.parameters["material_parameters"], shared)
 		self._write(self.parameters["instance_parameters"], instance)
@@ -154,8 +179,32 @@ class MaterialRenderer:
 	def update_transforms(self, transforms):
 		"""Transform-only ECS edits do not repack or validate material dictionaries."""
 		ordered = transforms[self.draws.instance_order]
+		if self.skin_palette is not None:
+			ordered = ordered.copy()
+			ordered["iTint"][:, 0] = self._skin_codes
 		if not np.array_equal(self.draws.buffers["instances"].content[:len(ordered)], ordered):
 			self.draws.write_instances(ordered)
+
+	def _skin_codes_for(self, owners, mesh_ids):
+		codes = np.zeros(len(owners), dtype=np.uint32)
+		for row, (owner, mesh_id) in enumerate(zip(owners, mesh_ids)):
+			maximum = self._mesh_max_joint[int(mesh_id)]
+			if maximum is None: continue
+			try: base, count = self.skin_palette.range(int(owner))
+			except KeyError as exc: raise ValueError(f"No skin palette range for owner {int(owner)}") from exc
+			if maximum >= count: raise ValueError("Skin palette range does not cover mesh joints")
+			codes[row] = base + 1
+		return codes
+
+	def sync_skinning(self):
+		"""Refresh palette offsets after owner ranges change, before recording."""
+		if self.skin_palette is None: return
+		codes = self._skin_codes_for(self._skin_owners, self._skin_meshes)
+		if np.array_equal(codes, self._skin_codes): return
+		self._skin_codes = codes
+		values = self.draws.buffers["instances"].content[:len(codes)].copy()
+		values["iTint"][:, 0] = codes
+		self.draws.write_instances(values)
 
 	def update_mesh_vertices(self, mesh, vertices):
 		"""Upload same-topology mesh vertices for both raster and deferred shading.
@@ -176,14 +225,14 @@ class MaterialRenderer:
 		if len(source) != gpu_mesh.vertex_range[1] or any(source[name].shape != (len(source), width) or not np.isfinite(source[name]).all() for name, width in (("position", 3), ("normal", 3), ("uv", 2))):
 			raise ValueError("Vertex fields must be finite and preserve mesh topology")
 		raster = gpu_mesh.vertices.copy()
-		stored = np.zeros(len(source), dtype=SHADING_VERTEX_DTYPE)
+		offset = self.offsets[self.mesh_ids[mesh]] * 3
+		stored = self.transparency.vertices.content[offset:offset + len(source)].copy()
 		for name, width in (("position", 3), ("normal", 3), ("uv", 2)):
 			raster[name] = source[name]
 			stored[name][:, :width] = source[name]
 		start, count = gpu_mesh.vertex_range
 		gpu_mesh.vertex_buffer.write_range(raster, offset=start * raster.dtype.itemsize)
-		offset = self.offsets[mesh_id] * 3 * stored.dtype.itemsize
-		self.transparency.vertices.write_range(stored, offset=offset)
+		self.transparency.vertices.write_range(stored, offset=offset * stored.dtype.itemsize)
 
 	def set_sample_count(self, count):
 		if self.transparency.set_sample_count(count):
@@ -203,6 +252,7 @@ class MaterialRenderer:
 def record_material_frame(renderer, commands, size, camera, output, *, frame=None, lighting=None, culler=None):
 	"""Record the default material frame; culler may override the renderer's culler."""
 	renderer.sync()
+	if getattr(renderer, "skin_palette", None) is not None: renderer.sync_skinning()
 	oit = renderer.transparency
 	if size[0] <= 0 or size[1] <= 0: return
 	oit.resize(size)
