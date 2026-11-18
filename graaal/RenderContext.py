@@ -2255,6 +2255,15 @@ class RenderPipeline(_OwnedResource):
 		self._cache_lock = Lock()
 
 
+	def clear_bind_group_cache(self):
+		"""Release resources retained by this pipeline's cached bindings."""
+		self._check_device()
+		with self._cache_lock:
+			for variant in self._cache.values():
+				with variant._lock: variant._bind_groups.clear()
+			if isinstance(self.layout, PipelineLayout):
+				for group in self.layout.groups: group.clear_cache()
+
 	def get_variant(
 		self,
 		render_pass: RenderPass,

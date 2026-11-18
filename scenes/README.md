@@ -9,6 +9,7 @@ python main.py scenes/direct_draw_example.py
 python main.py scenes/prototype.py
 python main.py scenes/transparency_example.py
 python main.py scenes/material_example.py
+python main.py scenes/postprocessing_example.py
 python main.py scenes/msaa_example.py
 python main.py scenes/animation_example.py
 ```
@@ -26,6 +27,7 @@ cleans up the context afterward.
 | `prototype.py` | ECS-backed actor/health panels in ImGui. Combat resolution is a placeholder. |
 | `transparency_example.py` | OPAQUE/MASK/BLEND glTF geometry, banded transparency and diagnostics; see below. F opens settings; P opens the performance profiler. |
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
+| `postprocessing_example.py` | Drive forward or backward with W/S or Up/Down, look with A/D or Left/Right, and adjust maximum blur, acceleration boost and vignette exponent in the panel. Space toggles blur. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 | `animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
 

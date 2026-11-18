@@ -5,8 +5,9 @@ Estimates assume the current engine architecture; items with open design questio
 
 ## Small — investigation, fixes, and local changes
 
--- Check that alpha mask textures use a low-precision format for alpha.
--- maybe old anchored blue noise can be reused.
+- add a PostProcessPass base python class & shader template
+- Check that alpha mask textures use a low-precision format for alpha.
+- maybe old anchored blue noise can be reused.
 
 ## Medium — contained rendering and tooling features
 

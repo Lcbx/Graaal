@@ -100,6 +100,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
 | `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
+| `PeripheralMotionBlurPass` | `resize/color_attachment/record` applies camera-motion blur to the edges of a single-sample color target. |
 | `HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
 | [TransparencyPass](stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/nearest_pass/transmittance_pass/banded_pass/shade_winner/compose` records banded transparency with Kawase blur. `TransparencyTargets` and `GrazingFade` configure resources and opacity fade. |
 | `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips. These helpers upload and submit GPU work when creating textures. |
@@ -119,6 +120,19 @@ package. `scenes/shaders/` contains only scene-specific examples. `Shader(filepa
 looks up shader includes beside the supplied file, then in the engine shader
 directory. `Geometry.make_cube_mesh()`
 creates a GPU mesh and requires an initialized backend.
+
+### Peripheral motion blur
+
+`PeripheralMotionBlurPass` is independent of the ECS and accepts an opaque scene color. Resize it to the render size, render the scene into `color_attachment()`, and record it to a matching single-sample output:
+
+```python
+blur.resize(size)
+with commands.render_pass(color=blur.color_attachment(clear=(0, 0, 0, 1)), depth=depth_attachment) as render:
+    draw_scene(render)
+blur.record(commands, output, linear_velocity=(0, 0, -20), angular_velocity=(0, 0.2, 0), fovy_deg=60)
+```
+
+Velocities are camera-local (x right, y up, z backwards), in world units per second and radians per second respectively. `minimum_velocity` subtracts a speed in world units per second from the magnitude of linear velocity (clamped at zero); angular motion is unaffected. `exposure` controls the motion interval, `strength` scales it, and `max_blur` limits the screen-space displacement. The sampling kernel is also capped at 127 pixels and 128 samples to bound GPU cost; longer requested displacements are shortened. The `inner_radius` and `outer_radius` control the smooth transition from the sharp center to the blurred periphery; radii are measured from the center in half-screen units. `blur_exponent` shifts the quintic transition toward the outer radius at larger values and toward the inner radius at smaller values; both ends meet the adjacent regions smoothly. The same falloff blends the sharp and blurred images, so strong blur does not appear abruptly near the center. Samples are weighted by their covered interval so the blur changes continuously as its length grows. Translation uses `reference_distance` in world units because this pass does not consume depth, so it approximates parallax rather than reconstructing per-pixel motion. `debug=True` blends in a direction hue (right red, down yellow-green, left cyan, up violet); its mix amount reflects both the vignette and blur displacement relative to `max_blur`, capped at 90%. Alpha is preserved. Use a separate pass instance for each set of motion parameters recorded before a submission. See [postprocessing_example.py](../scenes/postprocessing_example.py).
 
 ## Arrays and ordinary systems
 
