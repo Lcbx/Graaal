@@ -12,6 +12,7 @@ python main.py scenes/material_example.py
 python main.py scenes/postprocessing_example.py
 python main.py scenes/msaa_example.py
 python main.py scenes/animation_example.py
+python main.py scenes/mixing_animation_example.py
 ```
 
 Add `--frames N` to stop a RenderContext scene after N displayed frames, for
@@ -30,6 +31,7 @@ cleans up the context afterward.
 | `postprocessing_example.py` | Drive forward or backward with W/S or Up/Down, look with A/D or Left/Right, and adjust maximum blur, acceleration boost and vignette exponent in the panel. Space toggles blur. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 | `animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
+| `mixing_animation_example.py` | Compare a manually weighted clip blend with an ECS crossfade. Choose clips, adjust playback and fade settings in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
 
 These files are runnable examples rather than a stable scene API. For reusable
 components, see the [engine guide](../graaal/README.md), [ECS reference](../graaal/ECS_API.md),
