@@ -86,8 +86,7 @@ def run_scene():
 	    RenderPipeline,
 	    Shader,
 	)
-	from graaal.Math import Camera, Vec3
-	from pyrr import Quaternion
+	from graaal.Math import Camera, Vec3, Quaternion
 	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
 	from graaal.Geometry import make_cube_mesh
 	from graaal.Assets import load_gltf_first_mesh_interleaved

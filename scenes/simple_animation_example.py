@@ -1,6 +1,6 @@
 ﻿"""Greenman skeletal animation: 1 pose, 2 idle, 3 move, 4 attack; Space pauses.
 
-Run from the repository root: python main.py scenes/animation_example.py
+Run from the repository root: python main.py scenes/simple_animation_example.py
 """
 from pathlib import Path
 

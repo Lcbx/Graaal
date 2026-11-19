@@ -62,6 +62,31 @@ class AnimationEventTests(unittest.TestCase):
 		self.assertEqual(world.get(ClipPlayer)[[entity]].time[0], 0)
 		self.assertEqual(animation.events, [])
 
+	def test_nonlooping_seeks_outside_clip_do_not_emit_early_source_or_target_events(self):
+		rig = Skeleton([-1], [[0, 0, 0]], [[0, 0, 0, 1]], [[1, 1, 1]], [np.eye(4)])
+		clip = Clip([[[0, 0, 0]], [[1, 0, 0]]], [[[0, 0, 0, 1]], [[0, 0, 0, 1]]], np.ones((2, 1, 3)), fps=1)
+		for target in (False, True):
+			for time, speed, marker in ((2, -1, 0.8), (-1, 1, 0.2)):
+				with self.subTest(target=target, time=time):
+					world = ECS()
+					world.register(SkeletonRef, ClipPlayer)
+					entity = world.create()[0]
+					player = ClipPlayer(0, time=time, speed=speed, loop=False)
+					if target:
+						player = ClipPlayer(0, speed=0, transitioning=True, target_clip_id=1, target_time=time, target_speed=speed, target_loop=False, transition_duration=2)
+					world.add(entity, SkeletonRef(0), player)
+					tracks = {int(target): EventTrack(1, [marker], ["step"])}
+					adapter = EcsAnimationAdapter(world, {0: rig}, {0: clip, 1: clip}, event_tracks=tracks)
+					adapter.update(0.25)
+					self.assertEqual(adapter.events, [])
+					# A later seek crosses into the authored interval during this update.
+					seek = 1.1 if speed < 0 else -0.1
+					selection = world.get(ClipPlayer)[[entity]]
+					if target: selection.assign(target_time=seek)
+					else: selection.assign(time=seek)
+					adapter.update(0.4)
+					self.assertEqual([event.name for event in adapter.events], ["step"])
+
 
 if __name__ == "__main__":
 	unittest.main()
