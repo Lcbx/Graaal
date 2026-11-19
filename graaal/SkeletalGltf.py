@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from .Assets import gltf_node_matrix, read_gltf_accessor
+from .Math import Quaternion
 from .SkeletalAnimation import Clip, Skeleton
 
 
@@ -36,13 +37,7 @@ def _sample_track(times, values, target, rotation):
 	fraction = np.clip((target - times[left]) / (times[right] - times[left]), 0, 1)[:, None]
 	a, b = values[left], values[right]
 	if not rotation: return a * (1 - fraction) + b * fraction
-	dot = np.sum(a * b, axis=1, keepdims=True)
-	b = np.where(dot < 0, -b, b)
-	angle = np.arccos(np.clip(np.abs(dot), 0, 1))
-	sine = np.sin(angle)
-	denominator = np.where(sine > 1e-6, sine, 1)
-	result = np.where(sine > 1e-6, np.sin((1 - fraction) * angle) / denominator * a + np.sin(fraction * angle) / denominator * b, a * (1 - fraction) + b * fraction)
-	return result / np.linalg.norm(result, axis=1, keepdims=True)
+	return Quaternion.slerp_batch(a, b, fraction)
 
 
 def load_skinned_gltf(path, *, node=None, fps=30):

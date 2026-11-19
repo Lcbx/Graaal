@@ -1,8 +1,8 @@
 # Benchmarks and diagnostics
 
 Run these commands from the repository root after `pip install -e .` (and the
-`render`, `assets`, `ui`, and `examples` extras for GPU tests). CPU scripts need
-NumPy only. GPU scripts need a working WGPU backend; `benchmark_ecs_uploads`
+`render`, `assets`, `ui`, and `examples` extras for GPU tests). CPU scripts use
+the project's core dependencies. GPU scripts need a working WGPU backend; `benchmark_ecs_uploads`
 opens a window, whereas the transparency diagnostics render offscreen.
 Add `--help` to an entry point to see all supported options. Output files are
 chosen by the caller; benchmarking does not modify the engine's defaults.
@@ -24,6 +24,14 @@ dense edits. Use `--implementation /path/to/compatible/ECS.py` with
 `benchmark_ecs_query_pairs` script similarly accepts a required
 `--implementation` and `--output`; a standalone historical snapshot is needed
 because the current `ECS.py` has package-relative imports.
+
+`python -m scenes.benchmarks.benchmark_animation --entities 64 256 1024 --bones 12 60 --repeat 10`
+measures controller advancement, pose evaluation and the combined update for
+single clips and crossfades. It reports median and p95 wall time, plus peak
+traced memory from a separate invocation; tracing is not an allocation count or
+a complete process/GPU memory measurement. Use `--output animation_cpu.json`
+to save the report. These synthetic short-chain rigs do not measure GPU upload,
+root motion, events or graph blending; timings depend on the machine and workload.
 
 ## Transparency
 

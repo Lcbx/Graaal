@@ -13,6 +13,7 @@ python main.py scenes/postprocessing_example.py
 python main.py scenes/msaa_example.py
 python main.py scenes/simple_animation_example.py
 python main.py scenes/mixing_animation_example.py
+python main.py scenes/layered_animation_example.py
 python main.py scenes/locomotion_example.py
 ```
 
@@ -33,6 +34,7 @@ cleans up the context afterward.
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
 | `simple_animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
 | `mixing_animation_example.py` | Compare a manually weighted clip blend with an ECS crossfade. Choose clips, adjust playback and fade settings in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
+| `layered_animation_example.py` | Compare a base clip with a masked override or additive layer. Adjust the clips, bone mask, layer weight and playback speeds in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
 | `locomotion_example.py` | Greenman crossfades between idle, walk and run using synthetic root translation. Adjust the movement boundary and compare requested and accepted displacement in ImGui. |
 
 These files are runnable examples rather than a stable scene API. For reusable

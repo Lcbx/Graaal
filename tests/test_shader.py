@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from graaal.RenderContext import *
-from pyrr import Matrix44 as Mat4
 
 
 @pytest.fixture(autouse=True)
@@ -42,7 +41,7 @@ def test_shader_variants():
 def test_uniform_buffer():
 	u = shader1.uniform_buffer()
 
-	u.content["mvp"] = Mat4.from_scale([1.0, 1.0, 1.0], dtype=np.float32)
+	u.content["mvp"] = np.eye(4, dtype=np.float32)
 	u.upload()
 
 

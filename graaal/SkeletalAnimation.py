@@ -3,7 +3,11 @@
 Transforms use column vectors, xyzw quaternions and float32 arrays.
 """
 
+from operator import index
+
 import numpy as np
+
+from .Math import Quaternion
 
 
 def _array(value, shape, name):
@@ -81,6 +85,72 @@ class Clip:
 	def duration(self): return (len(self.translation) - 1) / self.fps
 
 
+def subtree_mask(skeleton, root):
+	"""Return a float32 mask selecting a bone and its depth-first subtree."""
+	if isinstance(root, (bool, np.bool_)): raise ValueError("root must be a bone index")
+	try: root = index(root)
+	except TypeError as exc: raise ValueError("root must be a bone index") from exc
+	if root < 0 or root >= len(skeleton.parents): raise ValueError("root must be a valid bone index")
+	following = np.flatnonzero(skeleton.depth[root + 1:] <= skeleton.depth[root])
+	end = root + 1 + int(following[0]) if len(following) else len(skeleton.parents)
+	mask = np.zeros(len(skeleton.parents), dtype=np.float32)
+	mask[root:end] = 1
+	return mask
+
+
+def _layer_inputs(skeleton, base, overlay, weight, mask):
+	if not isinstance(base, (tuple, list)) or len(base) != 3 or not isinstance(overlay, (tuple, list)) or len(overlay) != 3:
+		raise ValueError("poses must contain translation, rotation and scale arrays")
+	translation = np.asarray(base[0], dtype=np.float32)
+	bones = len(skeleton.parents)
+	if translation.ndim != 3 or translation.shape[1:] != (bones, 3):
+		raise ValueError("translation must have shape (instances, bones, 3)")
+	n = len(translation)
+	base_t = _array(translation, (n, bones, 3), "base translation")
+	base_r = _rotations(base[1], (n, bones, 4), "base rotation")
+	base_s = _array(base[2], (n, bones, 3), "base scale")
+	overlay_t = _array(overlay[0], (n, bones, 3), "overlay translation")
+	overlay_r = _rotations(overlay[1], (n, bones, 4), "overlay rotation")
+	overlay_s = _array(overlay[2], (n, bones, 3), "overlay scale")
+	weight = np.asarray(weight, dtype=np.float32)
+	if not np.isfinite(weight).all() or np.any((weight < 0) | (weight > 1)):
+		raise ValueError("weights must be finite values in [0, 1]")
+	if weight.ndim == 0: weight = np.broadcast_to(weight, (n,))
+	if weight.shape != (n,): raise ValueError("weight must be scalar or one value per instance")
+	if mask is None: mask = np.ones(bones, dtype=np.float32)
+	mask = np.asarray(mask, dtype=np.float32)
+	if mask.shape != (bones,) or not np.isfinite(mask).all() or np.any((mask < 0) | (mask > 1)):
+		raise ValueError("mask must contain one finite value in [0, 1] per bone")
+	w = weight[:, None, None] * mask[None, :, None]
+	return (base_t, base_r, base_s), (overlay_t, overlay_r, overlay_s), w
+
+
+def _blend_local_poses(base, overlay, weight):
+	return (base[0] * (1 - weight) + overlay[0] * weight,
+		Quaternion.nlerp_batch(base[1], overlay[1], weight),
+		base[2] * (1 - weight) + overlay[2] * weight)
+
+
+def blend_poses(skeleton, base, overlay, weight, *, mask=None):
+	"""Blend batched local poses using per-instance weights and a per-bone mask."""
+	base, overlay, w = _layer_inputs(skeleton, base, overlay, weight, mask)
+	return _blend_local_poses(base, overlay, w)
+
+
+def additive_pose(skeleton, base, overlay, weight, *, mask=None):
+	"""Apply an overlay's local-pose delta from the skeleton reference to a base pose."""
+	(base_t, base_r, base_s), (overlay_t, overlay_r, overlay_s), w = _layer_inputs(skeleton, base, overlay, weight, mask)
+	reference_inverse = skeleton.rotation.copy()
+	reference_inverse[:, :3] *= -1
+	delta = Quaternion.multiply_batch(reference_inverse[None], overlay_r)
+	identity = np.zeros_like(delta)
+	identity[..., 3] = 1
+	delta = Quaternion.nlerp_batch(identity, delta, w)
+	rotation = Quaternion.multiply_batch(base_r, delta)
+	rotation /= np.linalg.norm(rotation, axis=-1, keepdims=True)
+	return base_t + (overlay_t - skeleton.translation) * w, rotation, base_s + (overlay_s - skeleton.scale) * w
+
+
 def sample_clip(clip, times, *, loop=True, out=None):
 	"""Return batched local translation, rotation and scale for a 1D time array.
 
@@ -114,10 +184,7 @@ def sample_clip(clip, times, *, loop=True, out=None):
 	np.multiply(clip.scale[first], 1 - weight, out=scale)
 	scale += clip.scale[second] * weight
 	q0, q1 = clip.rotation[first], clip.rotation[second]
-	q1 = np.where(np.sum(q0 * q1, axis=-1, keepdims=True) < 0, -q1, q1)
-	np.multiply(q0, 1 - weight, out=rotation)
-	rotation += q1 * weight
-	rotation /= np.linalg.norm(rotation, axis=-1, keepdims=True)
+	Quaternion.nlerp_batch(q0, q1, weight, out=rotation)
 	return translation, rotation, scale
 
 
@@ -140,14 +207,7 @@ def sample_crossfade(source, target, source_times, target_times, weights, *, sou
 	if weights.ndim == 0: weights = np.broadcast_to(weights, (len(source_pose[0]),))
 	if weights.shape != (len(source_pose[0]),):
 		raise ValueError("weights must be finite values in [0, 1], one per instance")
-	weight = weights[:, None, None]
-	translation = source_pose[0] * (1 - weight) + target_pose[0] * weight
-	q0, q1 = source_pose[1], target_pose[1]
-	q1 = np.where(np.sum(q0 * q1, axis=-1, keepdims=True) < 0, -q1, q1)
-	rotation = q0 * (1 - weight) + q1 * weight
-	rotation /= np.linalg.norm(rotation, axis=-1, keepdims=True)
-	scale = source_pose[2] * (1 - weight) + target_pose[2] * weight
-	return translation, rotation, scale
+	return _blend_local_poses(source_pose, target_pose, weights[:, None, None])
 
 
 def sample_clip_pairs(skeleton, clips, clip_ids, times, weights, *, out=None):
@@ -202,17 +262,8 @@ def model_matrices(skeleton, translation, rotation, scale, *, out=None):
 	translation = _array(translation, (n, bones, 3), "translation")
 	rotation = _rotations(rotation, (n, bones, 4), "rotation")
 	scale = _array(scale, (n, bones, 3), "scale")
-	x, y, z, w = np.moveaxis(rotation, -1, 0)
 	local = np.zeros((n, bones, 4, 4), dtype=np.float32)
-	local[..., 0, 0] = 1 - 2 * (y*y + z*z)
-	local[..., 0, 1] = 2 * (x*y - z*w)
-	local[..., 0, 2] = 2 * (x*z + y*w)
-	local[..., 1, 0] = 2 * (x*y + z*w)
-	local[..., 1, 1] = 1 - 2 * (x*x + z*z)
-	local[..., 1, 2] = 2 * (y*z - x*w)
-	local[..., 2, 0] = 2 * (x*z - y*w)
-	local[..., 2, 1] = 2 * (y*z + x*w)
-	local[..., 2, 2] = 1 - 2 * (x*x + y*y)
+	local[..., :3, :3] = Quaternion.matrix_batch(rotation)
 	local[..., :3, :3] *= scale[..., None, :]
 	local[..., :3, 3] = translation
 	local[..., 3, 3] = 1

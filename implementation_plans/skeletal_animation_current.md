@@ -54,14 +54,25 @@ Source plan: [skeletal_animation_pipeline.md](skeletal_animation_pipeline.md).
 - Validation: a NumPy crossfade smoke check passed.
 - Focused pytest validation after installing pytest: 52 animation, material and GPU tests passed. Three glTF importer tests initially hit a temporary-directory permission error in the sandbox; all three passed in a separate run outside it.
 
+## Milestone 4: compiled animation graph — started
+
+- Added standalone `subtree_mask` and `blend_poses` operations as a foundation for layered poses. Masks use the skeleton's depth-first subtree layout; batched blending accepts per-instance weights and soft per-bone masks and uses shortest-path quaternion interpolation. Resulting local poses feed the existing model/skin matrix and material path.
+- Added `additive_pose`, applying masked local translation and scale differences plus a shortest-path relative rotation against the skeleton reference. This is a standalone pose operation; the graph and root-motion controller do not yet schedule additive layers.
+- Added `scenes/layered_animation_example.py` to compare a base clip with masked override and additive layers on Greenman. The scene uploads both poses to the existing GPU material palette; its ImGui controls expose clips, masks, weights and playback. Validation: 15 focused tests passed and the windowed scene completed a three-frame GPU smoke test.
+- Consolidated batched quaternion interpolation and pose blending across clip sampling, crossfades, masked layers and root-motion delta blending. Quaternion operations and single-quaternion compatibility methods live in `graaal.Math.Quaternion`; glTF import retains slerp for resampling.
+- Replaced the external quaternion dependency with a NumPy implementation and retained the single-quaternion construction, interpolation and composition API. Batch multiplication and matrix composition, antipodal quaternions, crossfade/layer agreement and root-motion transitions have focused coverage.
+- Dependency removal validation: 129 focused CPU tests passed, as did five importer/dependency-boundary tests and five GPU shader/material tests. The dependency-boundary test blocks the removed package while importing math and animation modules.
+- Validation: 25 focused tests passed, covering subtree boundaries across roots, masked and soft blending, reference-relative rotation composition, quaternion signs and invalid inputs. Graph compilation, state machines and blend spaces remain to be implemented.
+
 ## Later milestones
 
-Milestones 3–6 have not started. Graphs, physics integration and the crowd GPU evaluator remain future work.
+Milestones 3, 5 and 6 have not started. Graph runtime, physics integration and the crowd GPU evaluator remain future work.
 
 ## Implementation assessment
 
 - The foundation matches the planned boundaries: standalone CPU resources and evaluation, optional ECS adapters, full generational handles and a shared 3x4 GPU skin palette consumed by materials. Pose buffers are reused, though sampling and blending still allocate intermediates.
 - Milestone 2 has crossfades, events, root-motion extraction, separate control/finalization phases and headless and rendered bounded-movement examples. Physics acceptance and reconciliation remain to be demonstrated. Root-motion crossfades use the documented fixed-step approximation.
-- Keep the crowd backend deferred until a CPU throughput benchmark establishes the required capacity. Graphs, blend spaces, masks, synchronization, IK and physics pose modifiers are still pending; phase splitting alone does not implement those features.
+- Keep the crowd backend deferred until target capacity and hardware justify it. Graphs, blend spaces, synchronization, IK and physics pose modifiers are still pending; the standalone mask operation does not yet provide graph layering.
+- Added `scenes/benchmarks/benchmark_animation.py` to measure CPU controller, pose and combined update timings for single clips and crossfades on configurable synthetic rigs. On this Windows/Python 3.14/NumPy 2.5.5 machine, a short five-repeat baseline for 60-bone rigs measured median combined updates of about 4.3/5.9 ms (256 single/crossfade) and 16.2/22.9 ms (1024 single/crossfade). These are workload-specific observations, not capacity targets; GPU uploads, root motion, events and graph workloads are not measured. Use longer runs and target hardware to decide whether to build the crowd backend.
 - Review improvements: corrected premature events after out-of-range non-looping seeks, removed redundant sampling at endpoint blend weights, and repaired links to the renamed simple animation scene. Regression coverage includes both source and target events and single-sample endpoint evaluation.
 - Review validation: 45 focused animation tests (plus four seek subtests), 92 existing ECS tests, and 15 material/palette/GPU tests passed. Core animation modules also imported with optional dependencies blocked. The full project suite was not run.

@@ -3,6 +3,7 @@ from operator import index
 
 import numpy as np
 
+from .Math import Quaternion
 from .SkeletalAnimation import sample_clip
 
 
@@ -17,17 +18,8 @@ def _inverse(matrix):
 def _transform(translation, rotation):
 	rotation = np.asarray(rotation, dtype=np.float64)
 	rotation = rotation / np.linalg.norm(rotation, axis=-1, keepdims=True)
-	x, y, z, w = np.moveaxis(rotation, -1, 0)
 	result = np.zeros(rotation.shape[:-1] + (4, 4), dtype=np.float64)
-	result[..., 0, 0] = 1 - 2 * (y*y + z*z)
-	result[..., 0, 1] = 2 * (x*y - z*w)
-	result[..., 0, 2] = 2 * (x*z + y*w)
-	result[..., 1, 0] = 2 * (x*y + z*w)
-	result[..., 1, 1] = 1 - 2 * (x*x + z*z)
-	result[..., 1, 2] = 2 * (y*z - x*w)
-	result[..., 2, 0] = 2 * (x*z - y*w)
-	result[..., 2, 1] = 2 * (y*z + x*w)
-	result[..., 2, 2] = 1 - 2 * (x*x + y*y)
+	result[..., :3, :3] = Quaternion.matrix_batch(rotation)
 	result[..., :3, 3] = translation
 	result[..., 3, 3] = 1
 	return result
@@ -46,35 +38,12 @@ def _powers(matrix, exponents):
 	return result
 
 
-def _quaternions(matrices):
-	"""Convert batches of rigid rotation matrices to xyzw quaternions."""
-	m = matrices[..., :3, :3]
-	diagonal = np.stack((1 + m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2], 1 + m[:, 0, 0] - m[:, 1, 1] - m[:, 2, 2], 1 - m[:, 0, 0] + m[:, 1, 1] - m[:, 2, 2], 1 - m[:, 0, 0] - m[:, 1, 1] + m[:, 2, 2]), axis=1)
-	choice = np.argmax(diagonal, axis=1)
-	result = np.empty((len(m), 4), dtype=np.float64)
-	for branch in range(4):
-		selected = choice == branch
-		part = m[selected]
-		s = 2 * np.sqrt(np.maximum(diagonal[selected, branch], 0))
-		if branch == 0:
-			values = ((part[:, 2, 1] - part[:, 1, 2]) / s, (part[:, 0, 2] - part[:, 2, 0]) / s, (part[:, 1, 0] - part[:, 0, 1]) / s, s / 4)
-		elif branch == 1:
-			values = (s / 4, (part[:, 0, 1] + part[:, 1, 0]) / s, (part[:, 0, 2] + part[:, 2, 0]) / s, (part[:, 2, 1] - part[:, 1, 2]) / s)
-		elif branch == 2:
-			values = ((part[:, 0, 1] + part[:, 1, 0]) / s, s / 4, (part[:, 1, 2] + part[:, 2, 1]) / s, (part[:, 0, 2] - part[:, 2, 0]) / s)
-		else:
-			values = ((part[:, 0, 2] + part[:, 2, 0]) / s, (part[:, 1, 2] + part[:, 2, 1]) / s, s / 4, (part[:, 1, 0] - part[:, 0, 1]) / s)
-		result[selected] = np.stack(values, axis=1)
-	return result / np.linalg.norm(result, axis=1, keepdims=True)
-
-
 def _blend_deltas(source, target, weight):
 	"""Blend same-frame rigid requests using linear translation and quaternion nlerp."""
 	weight = np.asarray(weight, dtype=np.float64)[:, None]
-	q0, q1 = _quaternions(source), _quaternions(target)
-	q1 = np.where(np.sum(q0 * q1, axis=1, keepdims=True) < 0, -q1, q1)
+	q0, q1 = Quaternion.from_matrices_batch(source), Quaternion.from_matrices_batch(target)
 	translation = source[:, :3, 3] * (1 - weight) + target[:, :3, 3] * weight
-	return _transform(translation, q0 * (1 - weight) + q1 * weight)
+	return _transform(translation, Quaternion.nlerp_batch(q0, q1, weight))
 
 
 class RootMotion:

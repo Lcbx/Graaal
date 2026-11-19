@@ -4,7 +4,36 @@
 
 `Clip` accepts equally spaced local TRS frames for every bone and a positive frame rate. Its duration is `(frames - 1) / fps`; looping wraps at that endpoint, so matching first and last frames are needed for a seamless loop. `sample_clip(clip, times, loop=True)` takes a one-dimensional array of seconds and returns batched translation, normalized quaternion rotation and scale. Set `loop=False` to clamp. The caller must match clips to skeletons with the same bone order and count.
 
+Quaternion operations use xyzw arrays and are vectorized across instances and
+bones through `graaal.Math.Quaternion`. Single-quaternion methods and
+`multiply_batch`, `nlerp_batch`, `slerp_batch`, `matrix_batch`
+and `from_matrices_batch` operate on NumPy arrays. Interpolation weights must
+broadcast against the quaternion arrays, typically with a trailing singleton
+dimension. Batch matrix methods use column-vector rotations. glTF track
+resampling uses slerp before clips are uniformly baked,
+while runtime interpolation uses nlerp.
+
 `sample_crossfade(source, target, source_times, target_times, weights)` samples two clips and blends their local poses. Times are one-dimensional arrays of equal length, and weights are a scalar or one value per instance in `[0, 1]`. Each clip can loop or clamp independently with `source_loop` and `target_loop`. Translation and scale blend linearly; rotation uses shortest-path normalized linear interpolation. Both clips must have the same bone order and count. The caller controls transition timing and weights.
+
+For an independent layer, `subtree_mask(skeleton, root)` selects a bone and its
+depth-first descendants. `blend_poses(skeleton, base, overlay, weight, mask=mask)`
+blends two batched local TRS pose tuples with a scalar or per-instance weight and
+a per-bone mask of values in `[0, 1]`. The effective weight is their product;
+translation and scale blend linearly, and rotation uses shortest-path normalized
+quaternion interpolation. A missing mask selects every bone. Inputs are not
+modified. Hierarchical transforms still propagate normally from each blended
+local bone to its children. The result can be passed to `model_matrices` and
+`skin_matrices` for the existing material palette.
+
+`additive_pose(skeleton, base, overlay, weight, mask=mask)` applies the overlay
+relative to the skeleton's local reference pose. Translation and scale use the
+weighted difference from that reference; rotations compose the base with a
+shortest-path, normalized interpolation from identity to
+`inverse(reference_rotation) * overlay_rotation`. Scale is an additive offset,
+not a multiplicative ratio, so zero reference scales are supported. The same
+weight, mask, shape and ownership rules as `blend_poses` apply. The caller must
+provide an overlay authored relative to this reference and manage root motion
+separately.
 
 `sample_clip_pairs(skeleton, clips, clip_ids, times, weights)` evaluates a batch
 whose instances may each use a different pair of clips. `clips` maps integer IDs
