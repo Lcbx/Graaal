@@ -48,6 +48,13 @@ opposite directions; a scheduled event consumer counts their footstep markers.
 Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
 crossfade with synthetic root motion and a movement boundary. It prints the
 requested and accepted displacement for each tick.
+Run `python -m scenes.animation_graph_example` for conditional ECS clip
+transitions combined with a masked upper-body pose task. It prints skin-matrix
+translations for two synthetic characters and requires no GPU.
+Run `python -m scenes.foot_ik_example` for root motion, pre-physics pose
+sampling and post-physics foot IK using a synthetic terrain height query.
+It aligns the foot to the terrain normal and compares enabled and disabled IK
+without a GPU or physics backend.
 
 ## Rendering and transparency settings
 

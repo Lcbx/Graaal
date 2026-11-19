@@ -46,6 +46,194 @@ weight is zero. The return value is the same local TRS pose tuple as
 apply the appropriate `RootMotion.in_place` after sampling. An optional `out`
 tuple supplies writable, non-overlapping, C-contiguous float32 pose arrays.
 
+`blend_space_1d(positions, clip_ids, values)` selects the neighboring clips and
+linear weights for a batch of parameter values. Positions are finite, strictly
+increasing axis coordinates, with one nonnegative integer clip ID per position.
+Values outside the axis clamp to its endpoints; a single-position space always
+selects that clip. The two returned arrays have shape `(instances, 2)` and can
+be passed directly to `sample_clip_pairs` with separately managed clip times:
+
+```python
+from graaal.SkeletalAnimation import blend_space_1d, sample_clip_pairs
+
+ids, weights = blend_space_1d([0, 1, 3], [idle_id, walk_id, run_id], speeds)
+pose = sample_clip_pairs(skeleton, clips, ids, times, weights)
+```
+
+`times` contains the caller's wrapped or clamped time for each selected clip.
+This selector does not advance playback, synchronize clips, blend root motion,
+or dispatch events; applications must manage those separately. Clip IDs must
+exist even for a zero-weight endpoint sample.
+
+`blend_space_2d(x_positions, y_positions, clip_grid, values)` selects from a
+rectangular grid, with `clip_grid[y, x]` and `(instances, 2)` input values.
+Axes are strictly increasing and values clamp at their endpoints. It returns
+IDs shaped `(instances, 2, 2)`, horizontal pair weights shaped `(instances, 2)`,
+and vertical blend weights shaped `(instances,)`. A single-point axis is valid.
+Use the two rows as sample slots in a `PosePlan`, then blend them vertically:
+
+```python
+from graaal.SkeletalAnimation import blend_space_2d
+
+ids, horizontal, vertical = blend_space_2d(x_axis, y_axis, clip_grid, parameters)
+samples = [(ids[:, row], times[:, row], horizontal) for row in range(2)]
+pose = plan.evaluate(clips, samples, vertical[:, None])
+```
+
+Here `plan` has two sample tasks followed by a blend task using weight slot 0,
+and `times` is `(instances, 2, 2)` in the same order as `ids`. Rotations are
+blended horizontally and then vertically using the existing shortest-path
+normalized interpolation; this order is part of the result. Playback, events,
+and root motion remain the caller's responsibility.
+
+## Compiled pose tasks
+
+`PosePlan` compiles a fixed sequence of batched local-pose operations. Each
+sample task evaluates one clip-pair sample slot; blend and additive tasks refer
+to earlier task indices and use a column of per-instance layer weights. An
+optional per-bone mask is copied when the plan is created.
+
+```python
+from graaal.PoseTasks import PosePlan
+from graaal.SkeletalAnimation import model_matrices, skin_matrices, subtree_mask
+
+plan = PosePlan(skeleton, [
+	("sample", 0),
+	("sample", 1),
+	("blend", 0, 1, 0, subtree_mask(skeleton, upper_body_bone)),
+])
+samples = [(base_ids, base_times, base_weights), (upper_ids, upper_times, upper_weights)]
+pose = plan.evaluate(clips, samples, layer_weights)  # layer_weights: (instances, 1)
+matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose))
+```
+
+Task forms are `("sample", sample_slot)` and
+`("blend", base_task, overlay_task, weight_slot, mask)` or
+`("additive", base_task, overlay_task, weight_slot, mask)`; `mask` can be
+`None`. An `("in_place", base_task, motion_slot)` task anchors selected
+instances' root to the reference pose before later operations. An
+`("input", pose_slot)` task copies a supplied pose into the plan, and
+`("two_bone_ik", base_task, chain, goal_slot, weight_slot)` applies IK.
+`("align_axis", base_task, bone, goal_slot, weight_slot, local_axis)` aligns
+a bone axis to a direction in model space.
+Sample triples use the same arrays and validation as
+`sample_clip_pairs`. Every layer weight must be finite and in `[0, 1]`.
+Operation names can also be supplied as `PoseOp` string-enum members, such as
+`PoseOp.SAMPLE` or `PoseOp.TWO_BONE_IK` from `graaal.PoseTasks`. The plan
+validates and stores enum members when it compiles; plain strings remain valid.
+The last task is the output. The plan reuses pose buffers based on task
+dependencies; its returned arrays are views that must be consumed or copied
+before its next evaluation, even if that evaluation fails. Different plans
+own separate buffers. Blend operations still allocate intermediate arrays.
+The plan does not advance playback, generate events or root motion, schedule
+physics, or implement a state machine; applications supply the dynamic inputs.
+
+For a pre/post-physics split, use two plans and pass the pre-physics output
+into the post-physics plan after obtaining model-space physics goals:
+
+```python
+import numpy as np
+
+pre = PosePlan(skeleton, [("sample", 0)])
+post = PosePlan(skeleton, [("input", 0), ("two_bone_ik", 0, (hip, knee, ankle), 0, 0)])
+base = pre.evaluate(clips, samples, np.empty((count, 0)))
+# Run physics, then convert its targets and poles to the skeleton's model space.
+pose = post.evaluate({}, [], ik_weights, poses=[base], goals=[(targets, poles)])
+```
+
+Each pose input is a local TRS tuple; inputs are copied before plan tasks run,
+including when an input aliases a previous result of the same plan. Each goal
+slot contains target and pole arrays shaped `(instances, 3)`. IK weights are
+columns in the ordinary weights array. Axis-alignment goal slots contain a
+one-element tuple with a direction array shaped `(instances, 3)`. See
+`two_bone_pose` below for scale and
+orientation limits. The application orders plans and physics and must keep the
+pre-physics pose alive until the post-physics call; no scheduler or physics
+backend is invoked by `PosePlan`.
+The headless [foot_ik_example.py](../scenes/foot_ik_example.py) demonstrates
+this order with root-motion requests and a synthetic terrain query.
+
+For an in-place task, pass `root_motions=[(motion, instance_mask), ...]` to
+`evaluate`. Each mask is a boolean array aligned with the sample instances;
+`motion` must be a `RootMotion` using the plan's skeleton, or `None` when the
+mask is all false. The operation uses `RootMotion.in_place`, including its root
+scale requirements. When consuming an `EcsAnimationAdapter` sample batch,
+`animation.in_place_motion(batch)` supplies a slot and checks that all selected
+source and target clips have compatible root-motion resources. The adapter's
+`root_motion_batches` remain movement requests for the application or physics
+system; this pose task only anchors the visual pose. Apply the task before any
+layer that should build on the in-place base.
+
+## Conditional state transitions
+
+`AnimationStateMachine` selects transitions from per-instance numeric
+parameters without owning playback. Each edge is `(source, target,
+parameter_column, comparison, threshold, fade_duration)`. Comparisons are
+`<`, `<=`, `>`, `>=`, `==` and `!=`; the first matching edge wins, so edge
+order defines priority. State IDs are nonnegative integers and durations must
+be positive.
+
+For a transition that needs several conditions, use `(source, target,
+conditions, fade_duration)`, where `conditions` is a nonempty list of
+`(parameter_column, comparison, threshold)` tuples. Every condition must
+match. For example, this edge requires both movement and ground contact:
+
+```python
+(0, 1, [(0, ">", 0.2), (1, "==", 1)], 0.3)
+```
+
+Each condition reads a column in the same per-instance parameter array. Use
+separate edges for alternative conditions; edge order still defines priority.
+
+```python
+from graaal.AnimationStateMachine import AnimationStateMachine
+
+machine = AnimationStateMachine([(0, 1, 0, ">", 0.2, 0.3), (1, 0, 0, "<=", 0.1, 0.3)])
+selected, target_states, durations = machine.select(states, speeds[:, None], transitioning)
+```
+
+The returned arrays align with the input instances. Unselected rows retain
+their current state and have zero duration; target IDs use `uint64`. Active transitions cannot be
+interrupted. The application stores current and target states, maps states to
+clips or blend spaces, starts the existing player crossfade for selected rows,
+and promotes the target state when that crossfade completes. It also owns
+playback time, events and root motion. This selector is independent of ECS and
+does not itself update a `ClipPlayer` or `PosePlan`.
+
+For single-clip states, `EcsAnimationStateAdapter` connects this selector to
+`ClipPlayer`. Register `AnimationState` with the ECS and attach it alongside
+`ClipPlayer` and `SkeletonRef`; initialize the state and player clip to match
+the supplied state-to-clip mapping.
+
+```python
+from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+
+control = EcsAnimationStateAdapter(world, machine, {0: idle_id, 1: walk_id})
+entities = control.query.fetch().entities
+parameters = speeds_for_entities(entities)[:, None]
+control.update(parameters)  # before animation.update(dt)
+animation.update(dt)
+```
+
+Parameter rows must follow the current query's entity order, with no structural
+ECS changes between fetching that order and `update`. Without a sync mapping,
+the adapter initializes target time to zero and inherits the source player's
+speed and loop setting.
+The existing playback adapter advances the fade and handles events and root
+motion. On the next control update after completion, the target state is
+promoted; a new transition may begin immediately. Paused players retain their
+pending state. A transition must remain owned by this adapter until completion;
+external changes to its source or target clip are rejected. The application
+must supply valid clips and any event or root-motion resources to playback.
+Control and playback updates are separate operations; a playback error does not
+undo a transition already started by control. Blend-space states still need
+an application-specific controller.
+
+For a complete headless composition of this controller, `PosePlan`, a bone
+mask and skin matrices, see [animation_graph_example.py](../scenes/animation_graph_example.py).
+The synthetic example does not enable root extraction, but its pose plan includes
+the in-place task and obtains its slot from each controller sample batch.
+
 `model_matrices(skeleton, translation, rotation, scale)` evaluates batches of local poses, and `skin_matrices(skeleton, model)` returns contiguous `(instances, bones, 3, 4)` row-major float32 matrices representing `model @ inverse_bind`. `skin_vertices(positions, normals, joints, weights, matrices)` applies one pose to a mesh on the CPU, using the inverse transpose of each blended linear transform for normals. Joint weights must sum to one; singular blended transforms raise `ValueError`.
 
 The sampling, model and skin functions accept optional `out` buffers. For
@@ -235,7 +423,109 @@ pose = sample_clip_pairs(skeleton, clips, samples.clip_ids, samples.times, sampl
 matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose))
 ```
 
+## Two-bone IK geometry
+
+`solve_two_bone` solves batched two-segment chains without ECS, rendering or a
+physics backend. All positions and the pole point must share a coordinate space:
+
+```python
+from graaal.InverseKinematics import solve_two_bone
+
+new_joint, new_end = solve_two_bone(roots, joints, ends, targets, poles)
+```
+
+Each input is a finite `(instances, 3)` array. Both bone lengths must be
+positive. The solver preserves lengths, clamps unreachable targets to the
+reachable distance, and uses each pole point to choose a bend direction. If a
+pole is collinear, it retains the existing bend when possible and otherwise
+chooses a deterministic perpendicular. Results are float64 position arrays;
+this function alone does not modify a pose.
+
+`two_bone_pose` applies the solve to a batched local pose and returns copied
+translation, rotation and scale arrays that can feed `model_matrices` and
+`skin_matrices`:
+
+```python
+from graaal.InverseKinematics import two_bone_pose
+
+pose = two_bone_pose(skeleton, pose, (hip, knee, ankle), targets, poles, weight=weights)
+```
+
+The bones must be a directly connected chain, and targets and poles are in
+skeleton model space. Ancestors of the hip, the hip and the knee must have
+positive uniform local scale; other scales are unrestricted. The root and joint
+rotations are blended with the original rotations using a scalar or per-instance
+weight in `[0, 1]`. A partial weight does not necessarily place the end at the
+target. Descendants follow the modified rotations, including the end bone;
+the function does not separately constrain end-effector orientation. The
+caller owns physics queries, converting world goals to model space, and
+post-physics scheduling.
+
+To orient a foot after solving its position, `align_bone_axis(skeleton, pose,
+bone, local_axis, directions, weight=...)` rotates the selected bone so its
+local axis points along each supplied model-space direction, such as a terrain
+normal. Its position stays fixed and descendants follow the rotation. The bone
+and all ancestors require positive uniform local scale. A weight of zero keeps
+the original local rotation; partial weights interpolate rotations. This aligns
+one axis and does not constrain twist, plant feet or perform a terrain query.
+The headless foot IK example combines the IK and axis-alignment pose tasks.
+
 ## Animation events
+
+For phase matching between looping clips, `SyncMapping` reuses `EventTrack`
+markers. Each track must contain the same unique names in the same cyclic
+order, at distinct times, with at least two markers. The first marker in time
+may differ between tracks. Track durations must match their respective clips.
+
+```python
+from graaal.AnimationEvents import EventTrack
+from graaal.AnimationSync import SyncMapping
+
+walk = EventTrack(1.0, [0.1, 0.6], ["left", "right"])
+run = EventTrack(0.8, [0.05, 0.35], ["left", "right"])
+sync = SyncMapping(walk, run)
+run_times, rate = sync.map(walk_times)
+```
+
+`map` accepts finite, possibly unwrapped source times and returns wrapped target
+times and per-interval rate ratios. The target time preserves progress between
+corresponding markers; multiplying source speed by the ratio gives the target
+speed within that interval. Pass `reverse=True` for reverse playback so the
+rate at an exact marker comes from the preceding interval. Reevaluate at marker
+boundaries: a single rate over a step crossing markers does not maintain phase
+when interval ratios differ. Mapping does not advance players, fire events,
+or synchronize root-motion requests automatically. Applications own those
+decisions and can use the mapped times with `sample_clip_pairs`.
+
+For a step that crosses markers or loops, `sync.advance(source_start,
+source_end, target_start)` returns unwrapped target end times. Start with
+`target_start = sync.map(source_start)[0]` or an equivalent aligned time;
+subsequent calls can use the previous result. The returned interval can be
+passed to `EventTrack.between` and `RootMotion.character_delta`, preserving
+crossings in either direction. All arrays must be finite, equal-length 1D
+arrays. Loop counts with magnitude `2**52` or greater are rejected to avoid
+losing cycle precision. The method calculates timing only; the caller applies
+it to playback and handles events and movement requests.
+
+To synchronize ECS crossfades, pass the same clip-pair mapping to both the
+state controller and playback adapter:
+
+```python
+sync_mappings = {(walk_id, run_id): sync}
+control = EcsAnimationStateAdapter(world, machine, state_clips, sync_mappings=sync_mappings)
+animation = EcsAnimationAdapter(world, skeletons, clips, sync_mappings=sync_mappings)
+```
+
+Each configured `(source_clip_id, target_clip_id)` pair synchronizes all its
+crossfades. Both clips must loop, their durations must match the tracks, and
+their target time must be aligned at the start. The state adapter initializes
+that time automatically; callers starting fades directly must set it using
+`sync.map`. Playback checks alignment, advances the target through marker
+intervals, and uses the resulting intervals for event and root-motion handling.
+When a fade ends, the target continues at the mapped speed at the fade endpoint;
+there is no ongoing synchronization after promotion. Supply mappings in both
+directions if transitions can run in both directions. An unconfigured pair
+keeps ordinary independent playback.
 
 `graaal.AnimationEvents.EventTrack` stores named markers independently of ECS:
 

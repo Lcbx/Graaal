@@ -5,6 +5,7 @@ import numpy as np
 from graaal.ECS import ECS
 from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
 from graaal.RootMotion import RootMotion
+from graaal.PoseTasks import PosePlan
 from graaal.SkeletalAnimation import Clip, Skeleton
 
 
@@ -17,6 +18,22 @@ def setup():
 
 
 class EcsRootMotionTests(unittest.TestCase):
+	def test_sample_batch_root_motion_slot_matches_existing_evaluator(self):
+		world, rig, clip = setup()
+		ids = world.create(2)
+		world.add(ids, SkeletonRef(0), ClipPlayer(0, loop=False))
+		world.get(ClipPlayer)[ids].assign(extract_root_motion=[True, False])
+		adapter = EcsAnimationAdapter(world, {0: rig}, {0: clip}, root_motions={(0, 0): RootMotion(rig, clip)})
+		adapter.update(0.5, evaluate_poses=False)
+		batch, = adapter.sample_batches
+		plan = PosePlan(rig, [("sample", 0), ("in_place", 0, 0)])
+		pose = plan.evaluate({0: clip}, [(batch.clip_ids, batch.times, batch.weights)], np.empty((2, 0)), root_motions=[adapter.in_place_motion(batch)])
+		np.testing.assert_allclose(pose[0][:, 0, 0], [0, 0.5])
+		np.testing.assert_allclose(adapter.evaluate_samples()[0].matrices[:, 0, 0, 3], pose[0][:, 0, 0])
+		self.assertAlmostEqual(adapter.root_motion_batches[0].matrices[0, 0, 3], 0.5)
+		adapter.root_motions.clear()
+		with self.assertRaisesRegex(ValueError, "root motion"): adapter.in_place_motion(batch)
+
 	def test_requests_and_in_place_poses_mixed_with_regular_players(self):
 		world, rig, clip = setup()
 		ids = world.create(4)

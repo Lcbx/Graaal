@@ -210,6 +210,58 @@ def sample_crossfade(source, target, source_times, target_times, weights, *, sou
 	return _blend_local_poses(source_pose, target_pose, weights[:, None, None])
 
 
+def blend_space_1d(positions, clip_ids, values):
+	"""Select two clips and their weights for each value on a 1D axis.
+
+	Positions must be strictly increasing. Values outside the axis clamp to
+	the nearest endpoint; the returned arrays have shape (instances, 2).
+	Playback times are managed separately by the caller.
+	"""
+	positions = np.asarray(positions, dtype=np.float64)
+	clip_ids = np.asarray(clip_ids)
+	values = np.asarray(values, dtype=np.float64)
+	if positions.ndim != 1 or not len(positions) or not np.isfinite(positions).all() or np.any(positions[1:] <= positions[:-1]):
+		raise ValueError("positions must be a nonempty, finite, strictly increasing 1D array")
+	if clip_ids.shape != positions.shape or clip_ids.dtype.kind not in "iu" or np.any(clip_ids < 0):
+		raise ValueError("clip_ids must contain one nonnegative integer per position")
+	if values.ndim != 1 or not np.isfinite(values).all():
+		raise ValueError("values must be a finite 1D array")
+	if len(positions) == 1:
+		return np.broadcast_to(clip_ids, (len(values), 2)).copy(), np.tile(np.array([1, 0], dtype=np.float32), (len(values), 1))
+	upper = np.clip(np.searchsorted(positions, values, side="right"), 1, len(positions) - 1)
+	lower = upper - 1
+	clamped = np.clip(values, positions[lower], positions[upper])
+	# Halving before subtraction avoids overflow for widely separated endpoints.
+	with np.errstate(over="ignore"): width = positions[upper] - positions[lower]
+	wide = np.isinf(width)
+	weight = np.empty(len(values), dtype=np.float64)
+	weight[wide] = (clamped[wide] * 0.5 - positions[lower[wide]] * 0.5) / (positions[upper[wide]] * 0.5 - positions[lower[wide]] * 0.5)
+	weight[~wide] = (clamped[~wide] - positions[lower[~wide]]) / width[~wide]
+	weight = weight.astype(np.float32)
+	return np.stack((clip_ids[lower], clip_ids[upper]), axis=1), np.stack((1 - weight, weight), axis=1)
+
+
+def blend_space_2d(x_positions, y_positions, clip_ids, values):
+	"""Select two horizontal clip pairs and a vertical blend for a grid.
+
+	The clip grid has shape (y positions, x positions), and values have shape
+	(instances, 2). Returns IDs (instances, 2, 2), horizontal pair weights
+	(instances, 2), and vertical blend weights (instances,).
+	"""
+	grid = np.asarray(clip_ids)
+	x_positions = np.asarray(x_positions)
+	y_positions = np.asarray(y_positions)
+	values = np.asarray(values, dtype=np.float64)
+	if values.ndim != 2 or values.shape[1:] != (2,) or not np.isfinite(values).all():
+		raise ValueError("values must be a finite array of shape (instances, 2)")
+	if x_positions.ndim != 1 or y_positions.ndim != 1 or grid.shape != (len(y_positions), len(x_positions)) or grid.dtype.kind not in "iu" or np.any(grid < 0):
+		raise ValueError("clip_ids must be a grid of nonnegative integers matching the axes")
+	x_indices, x_weights = blend_space_1d(x_positions, np.arange(len(x_positions)), values[:, 0])
+	y_indices, y_weights = blend_space_1d(y_positions, np.arange(len(y_positions)), values[:, 1])
+	ids = grid[y_indices[:, :, None], x_indices[:, None, :]]
+	return ids, x_weights, y_weights[:, 1]
+
+
 def sample_clip_pairs(skeleton, clips, clip_ids, times, weights, *, out=None):
 	"""Evaluate two clamped clip samples per instance into batched local poses.
 
