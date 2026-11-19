@@ -11,7 +11,9 @@ python main.py scenes/transparency_example.py
 python main.py scenes/material_example.py
 python main.py scenes/postprocessing_example.py
 python main.py scenes/msaa_example.py
-python main.py scenes/animation_example.py
+python main.py scenes/simple_animation_example.py
+python main.py scenes/mixing_animation_example.py
+python main.py scenes/locomotion_example.py
 ```
 
 Add `--frames N` to stop a RenderContext scene after N displayed frames, for
@@ -29,7 +31,9 @@ cleans up the context afterward.
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
 | `postprocessing_example.py` | Drive forward or backward with W/S or Up/Down, look with A/D or Left/Right, and adjust maximum blur, acceleration boost and vignette exponent in the panel. Space toggles blur. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
-| `animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
+| `simple_animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
+| `mixing_animation_example.py` | Compare a manually weighted clip blend with an ECS crossfade. Choose clips, adjust playback and fade settings in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
+| `locomotion_example.py` | Greenman crossfades between idle, walk and run using synthetic root translation. Adjust the movement boundary and compare requested and accepted displacement in ImGui. |
 
 These files are runnable examples rather than a stable scene API. For reusable
 components, see the [engine guide](../graaal/README.md), [ECS reference](../graaal/ECS_API.md),
@@ -39,6 +43,9 @@ components, see the [engine guide](../graaal/README.md), [ECS reference](../graa
 For a headless ECS animation event example, run
 `python -m scenes.animation_events_example`. Two players run the same clip in
 opposite directions; a scheduled event consumer counts their footstep markers.
+Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
+crossfade with synthetic root motion and a movement boundary. It prints the
+requested and accepted displacement for each tick.
 
 ## Rendering and transparency settings
 

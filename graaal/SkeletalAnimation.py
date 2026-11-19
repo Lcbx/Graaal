@@ -150,6 +150,48 @@ def sample_crossfade(source, target, source_times, target_times, weights, *, sou
 	return translation, rotation, scale
 
 
+def sample_clip_pairs(skeleton, clips, clip_ids, times, weights, *, out=None):
+	"""Evaluate two clamped clip samples per instance into batched local poses.
+
+	`clip_ids`, `times` and `weights` have shape (instances, 2). Weights are
+	nonnegative and sum to one per instance. The caller handles playback time
+	wrapping and root-motion removal separately.
+	"""
+	clip_ids = np.asarray(clip_ids)
+	times = np.asarray(times, dtype=np.float64)
+	weights = np.asarray(weights, dtype=np.float32)
+	if clip_ids.ndim != 2 or clip_ids.shape[1:] != (2,) or clip_ids.dtype.kind not in "iu" or np.any(clip_ids < 0):
+		raise ValueError("clip_ids must be a nonnegative integer array of shape (instances, 2)")
+	if times.shape != clip_ids.shape or not np.isfinite(times).all():
+		raise ValueError("times must be finite with shape (instances, 2)")
+	if weights.shape != clip_ids.shape or not np.isfinite(weights).all() or np.any((weights < 0) | (weights > 1)) or not np.allclose(weights.sum(axis=1), 1, rtol=0, atol=1e-6):
+		raise ValueError("weights must be nonnegative, finite, and sum to one per instance")
+	for clip_id in np.unique(clip_ids):
+		clip_id = int(clip_id)
+		if clip_id not in clips: raise ValueError(f"Unknown clip {clip_id}")
+		if clips[clip_id].translation.shape[1] != len(skeleton.parents): raise ValueError("Clip and skeleton bone counts differ")
+	shape = (len(clip_ids), len(skeleton.parents))
+	if out is None:
+		pose = tuple(np.empty(shape + (size,), dtype=np.float32) for size in (3, 4, 3))
+	else:
+		if not isinstance(out, (tuple, list)) or len(out) != 3: raise ValueError("out must contain translation, rotation and scale arrays")
+		pose = tuple(_output(value, shape + (size,), "pose out") for value, size in zip(out, (3, 4, 3)))
+		if any(np.shares_memory(a, b) for a, b in ((pose[0], pose[1]), (pose[0], pose[2]), (pose[1], pose[2]))):
+			raise ValueError("pose output arrays must not overlap")
+	# Endpoint weights require only one sample; this includes ordinary clip players.
+	for slot, selected in ((0, weights[:, 1] == 0), (1, weights[:, 1] == 1)):
+		for clip_id in np.unique(clip_ids[selected, slot]):
+			rows = np.flatnonzero(selected & (clip_ids[:, slot] == clip_id))
+			local = sample_clip(clips[int(clip_id)], times[rows, slot], loop=False)
+			for output, values in zip(pose, local): output[rows] = values
+	intermediate = (weights[:, 1] > 0) & (weights[:, 1] < 1)
+	for source, target in np.unique(clip_ids[intermediate], axis=0):
+		rows = np.flatnonzero(intermediate & (clip_ids[:, 0] == source) & (clip_ids[:, 1] == target))
+		mixed = sample_crossfade(clips[int(source)], clips[int(target)], times[rows, 0], times[rows, 1], weights[rows, 1], source_loop=False, target_loop=False)
+		for output, values in zip(pose, mixed): output[rows] = values
+	return pose
+
+
 def model_matrices(skeleton, translation, rotation, scale, *, out=None):
 	"""Convert batched local TRS to model matrices, processing one depth at a time."""
 	translation = np.asarray(translation, dtype=np.float32)

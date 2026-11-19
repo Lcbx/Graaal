@@ -6,6 +6,17 @@
 
 `sample_crossfade(source, target, source_times, target_times, weights)` samples two clips and blends their local poses. Times are one-dimensional arrays of equal length, and weights are a scalar or one value per instance in `[0, 1]`. Each clip can loop or clamp independently with `source_loop` and `target_loop`. Translation and scale blend linearly; rotation uses shortest-path normalized linear interpolation. Both clips must have the same bone order and count. The caller controls transition timing and weights.
 
+`sample_clip_pairs(skeleton, clips, clip_ids, times, weights)` evaluates a batch
+whose instances may each use a different pair of clips. `clips` maps integer IDs
+to clips; the three input arrays have shape `(instances, 2)`. Weights must be
+finite, lie in `[0, 1]`, and sum to one per instance. Times are in seconds and
+clamp at clip endpoints; the controller handles wrapping before sampling. Both
+clip IDs must exist and use the skeleton's bone order and count, even if one
+weight is zero. The return value is the same local TRS pose tuple as
+`sample_crossfade`, in the original instance order. For root-motion players,
+apply the appropriate `RootMotion.in_place` after sampling. An optional `out`
+tuple supplies writable, non-overlapping, C-contiguous float32 pose arrays.
+
 `model_matrices(skeleton, translation, rotation, scale)` evaluates batches of local poses, and `skin_matrices(skeleton, model)` returns contiguous `(instances, bones, 3, 4)` row-major float32 matrices representing `model @ inverse_bind`. `skin_vertices(positions, normals, joints, weights, matrices)` applies one pose to a mesh on the CPU, using the inverse transpose of each blended linear transform for normals. Joint weights must sum to one; singular blended transforms raise `ValueError`.
 
 The sampling, model and skin functions accept optional `out` buffers. For
@@ -53,7 +64,7 @@ starting animated root. The caller applies accepted movement and reconciles any
 rejected displacement. The standalone API leaves crossfade motion blending to
 the caller; the ECS adapter provides the policy described below.
 
-For CPU material rendering, pass the deformed vertices to `MaterialRenderer.update_mesh_vertices`, or use `MaterialSkinningAdapter` to connect poses to independent material meshes. The material renderer can alternatively consume the GPU palette below, allowing independently animated owners to share a mesh. See the [material guide](materials.md#gpu-skinning) and [Greenman example](../scenes/animation_example.py).
+For CPU material rendering, pass the deformed vertices to `MaterialRenderer.update_mesh_vertices`, or use `MaterialSkinningAdapter` to connect poses to independent material meshes. The material renderer can alternatively consume the GPU palette below, allowing independently animated owners to share a mesh. See the [material guide](materials.md#gpu-skinning) and [Greenman example](../scenes/simple_animation_example.py).
 
 ## GPU skin matrices
 
@@ -173,6 +184,28 @@ The batch's `clip_id` is the source ID at the start of that update, even if the
 fade completes during it. Pose matrices already contain the blended result and
 can be uploaded to the material renderer's skin palette as usual.
 
+Each successful update also replaces `animation.sample_batches` with the clip
+samples used for that pose. Each batch has a `skeleton_id`, full `entities`,
+`clip_ids` and wrapped or clamped `times` in seconds of shape `(N, 2)`, `weights` of shape `(N, 2)`,
+and an `in_place` flag per entity. Non-transitioning players use weights `(1, 0)`
+and repeat their clip and time in both slots. During a fade the second slot is
+the target; a fade completed in this update has weights `(0, 1)`. Times have
+already been wrapped or clamped, so sample them with `loop=False` to preserve a
+clamped endpoint. `in_place` identifies players whose selected root is replaced
+by the reference root after sampling. Sample arrays are independent snapshots;
+the adapter retains the previous list if an update fails. These samples can be
+used to prepare another pose evaluator without deriving controller state from
+skin matrices.
+
+```python
+from graaal.SkeletalAnimation import sample_clip_pairs, model_matrices, skin_matrices
+
+samples = animation.sample_batches[0]
+pose = sample_clip_pairs(skeleton, clips, samples.clip_ids, samples.times, samples.weights)
+# Apply RootMotion.in_place to flagged rows before evaluating matrices, if needed.
+matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose))
+```
+
 ## Animation events
 
 `graaal.AnimationEvents.EventTrack` stores named markers independently of ECS:
@@ -211,7 +244,35 @@ For an executable ECS scheduler example, see
 For fixed-step scheduling, register `animation.evaluate` as a system; its latest
 result is `animation.batches`. The application owns the fixed-step accumulator and
 must order consumers after the animation system. For a complete material example,
-see [animation_example.py](../scenes/animation_example.py).
+see [simple_animation_example.py](../scenes/simple_animation_example.py).
+
+To separate control and pose evaluation, call
+`animation.update(dt, evaluate_poses=False)` to advance playback, events and
+root-motion requests without evaluating CPU poses. It returns an empty list and
+replaces `sample_batches`; it does not change `animation.batches`. Later,
+`animation.evaluate_samples()` evaluates the
+latest samples without advancing playback; pass an earlier sample-batch list to
+evaluate that snapshot instead. It returns pose batches and does not change
+`animation.batches`. The samples must retain the adapter's grouping by skeleton
+and source clip, with at most one batch per pair; referenced resources and
+root-motion definitions must remain available. Consume or copy returned matrix
+views before the next pose evaluation or normal update, including a failed one.
+
+For scheduled phases, use `animation.advance` and `animation.finalize` instead of
+`animation.evaluate`. `advance` produces controller outputs and clears the old
+`batches`; `finalize` evaluates those samples and stores the new `batches`.
+Order any root-motion consumer and physics between them, and order rendering
+after finalization. Samples retain full entity handles from the advance step;
+applications must coordinate structural changes so removed entities are not
+rendered from stale snapshots. This split does not yet provide post-physics IK
+or pose modifiers.
+
+Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
+example that submits root-motion requests to a bounded movement system and
+reports the accepted displacement. It uses synthetic clips and a simple boundary.
+For the same flow with GPU-skinned materials, run
+`python main.py scenes/locomotion_example.py`. Greenman's walk clip is augmented
+with synthetic root translation; the boundary is an example movement constraint.
 
 For root-motion playback, provide a `RootMotion` for each `(skeleton_id, clip_id)`
 pair and set `extract_root_motion=True` on the players that need it:

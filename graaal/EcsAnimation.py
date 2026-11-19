@@ -5,7 +5,7 @@ import numpy as np
 
 from .ECS import component
 from .RootMotion import _blend_deltas
-from .SkeletalAnimation import model_matrices, sample_clip, sample_crossfade, skin_matrices
+from .SkeletalAnimation import model_matrices, sample_clip_pairs, skin_matrices
 
 
 @component
@@ -37,6 +37,17 @@ class PoseBatch:
 	clip_id: int
 	entities: np.ndarray
 	matrices: np.ndarray
+
+
+@dataclass(frozen=True)
+class AnimationSampleBatch:
+	"""Two normalized clip samples and weights per entity for one skeleton."""
+	skeleton_id: int
+	entities: np.ndarray
+	clip_ids: np.ndarray
+	times: np.ndarray
+	weights: np.ndarray
+	in_place: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,7 @@ class EcsAnimationAdapter:
 		self.root_motions = {} if root_motions is None else root_motions
 		self.query = world.query(SkeletonRef, ClipPlayer)
 		self.batches = []
+		self.sample_batches = []
 		self.events = []
 		self.root_motion_batches = []
 		self._pose_buffers = {}
@@ -94,7 +106,7 @@ class EcsAnimationAdapter:
 		if track.duration != clip.duration: raise ValueError("Event track duration must match its clip")
 		events = []
 		for entity, time, speed, loop, step in zip(entities, times, speeds, loops, steps):
-			start = float(time) % clip.duration if loop else float(np.clip(time, 0, clip.duration))
+			start = float(time) % clip.duration if loop else float(time)
 			for occurrence in track.between(start, start + float(speed) * float(step), loop=bool(loop)):
 				events.append(AnimationEvent(int(entity), clip_id, occurrence.name, role, occurrence.time))
 		return events
@@ -106,8 +118,45 @@ class EcsAnimationAdapter:
 			if np.any(selected): result[selected] = motion.character_delta(start[selected], end[selected], loop=repeats)
 		return result
 
-	def update(self, dt):
-		"""Advance by nonnegative seconds and return one PoseBatch per resource pair."""
+	def evaluate_samples(self, sample_batches=None):
+		"""Evaluate controller sample batches without advancing ECS state."""
+		if sample_batches is None: sample_batches = self.sample_batches
+		batches, keys = [], set()
+		for samples in sample_batches:
+			entities = np.asarray(samples.entities)
+			clip_ids = np.asarray(samples.clip_ids)
+			in_place = np.asarray(samples.in_place)
+			if entities.ndim != 1 or entities.dtype.kind not in "iu" or np.any(entities < 0) or not len(entities):
+				raise ValueError("sample batches require nonempty arrays of entity handles")
+			if clip_ids.shape != (len(entities), 2) or clip_ids.dtype.kind not in "iu" or np.any(clip_ids < 0):
+				raise ValueError("sample clip IDs must have shape (entities, 2)")
+			if in_place.shape != (len(entities),) or in_place.dtype.kind != "b": raise ValueError("in_place must be a boolean array aligned with entities")
+			if np.any(clip_ids[:, 0] != clip_ids[0, 0]): raise ValueError("a sample batch must share one source clip")
+			skeleton_id, clip_id = int(samples.skeleton_id), int(clip_ids[0, 0])
+			key = (skeleton_id, clip_id)
+			if key in keys: raise ValueError("sample batches must have distinct skeleton and source clip pairs")
+			keys.add(key)
+			if skeleton_id not in self.skeletons: raise ValueError(f"Unknown skeleton {skeleton_id}")
+			skeleton = self.skeletons[skeleton_id]
+			translation, rotation, scale, model, skin = self._pose_workspace(key, len(entities), len(skeleton.parents))
+			pose = sample_clip_pairs(skeleton, self.clips, clip_ids, samples.times, samples.weights, out=(translation, rotation, scale))
+			if np.any(in_place):
+				motion = self.root_motions.get(key)
+				if motion is None or motion.skeleton is not skeleton or motion.clip is not self.clips[clip_id]:
+					raise ValueError(f"Missing or incompatible root motion for skeleton {skeleton_id}, clip {clip_id}")
+				for target_id in np.unique(clip_ids[in_place, 1]):
+					target_id = int(target_id)
+					target_motion = self.root_motions.get((skeleton_id, target_id))
+					if target_motion is None or target_motion.skeleton is not skeleton or target_motion.clip is not self.clips[target_id] or target_motion.root != motion.root:
+						raise ValueError(f"Missing or incompatible root motion for skeleton {skeleton_id}, target clip {target_id}")
+				local = motion.in_place(*(value[in_place] for value in pose))
+				for output, values in zip(pose, local): output[in_place] = values
+			matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose, out=model), out=skin)
+			batches.append(PoseBatch(skeleton_id, clip_id, entities.copy(), matrices))
+		return batches
+
+	def update(self, dt, *, evaluate_poses=True):
+		"""Advance players; optionally skip pose evaluation and return an empty list."""
 		if not np.isscalar(dt) or not np.isfinite(dt) or dt < 0:
 			raise ValueError("dt must be a finite nonnegative scalar")
 		result = self.query.fetch()
@@ -133,7 +182,7 @@ class EcsAnimationAdapter:
 		next_ids, next_speeds, next_loop = clip_ids.copy(), speeds.copy(), loop.copy()
 		next_target_times, next_elapsed = target_times.copy(), elapsed.copy()
 		next_transitioning = transitioning.copy()
-		batches = []
+		sample_batches = []
 		events = []
 		root_batches = []
 		pairs = np.unique(np.stack((skeleton_ids, clip_ids), axis=1), axis=0)
@@ -152,8 +201,10 @@ class EcsAnimationAdapter:
 				local_times = np.where(loop[rows], np.mod(advanced[rows], clip.duration), np.clip(advanced[rows], 0, clip.duration))
 			else: local_times = np.zeros(len(rows), dtype=np.float64)
 			next_times[rows] = local_times
-			translation, rotation, scale, model, skin = self._pose_workspace((skeleton_id, clip_id), len(rows), len(skeleton.parents))
-			pose = sample_clip(clip, local_times, loop=False, out=(translation, rotation, scale))
+			sample_ids = np.repeat(clip_ids[rows, None], 2, axis=1)
+			sample_times = np.repeat(local_times[:, None], 2, axis=1)
+			sample_weights = np.zeros((len(rows), 2), dtype=np.float32)
+			sample_weights[:, 0] = 1
 			motion_rows = np.flatnonzero(root_motion[rows])
 			if len(motion_rows):
 				motion = self.root_motions.get((skeleton_id, clip_id))
@@ -176,8 +227,10 @@ class EcsAnimationAdapter:
 					target_local = np.where(target_loop[selected], np.mod(advanced_target[selected], target.duration), np.clip(advanced_target[selected], 0, target.duration))
 				else: target_local = np.zeros(len(selected), dtype=np.float64)
 				progress = np.minimum(advanced_elapsed[selected], duration[selected])
-				blended = sample_crossfade(clip, target, local_times[local_rows], target_local, progress / duration[selected], source_loop=False, target_loop=False)
-				for output, values in zip(pose, blended): output[local_rows] = values
+				sample_ids[local_rows, 1] = target_id
+				sample_times[local_rows, 1] = target_local
+				sample_weights[local_rows, 1] = progress / duration[selected]
+				sample_weights[local_rows, 0] = 1 - sample_weights[local_rows, 1]
 				motion_selected = selected[root_motion[selected]]
 				if len(motion_selected):
 					target_motion = self.root_motions.get((skeleton_id, target_id))
@@ -199,14 +252,12 @@ class EcsAnimationAdapter:
 				next_times[finished] = next_target_times[finished]
 				next_speeds[finished], next_loop[finished] = target_speeds[finished], target_loop[finished]
 				next_transitioning[finished] = False
-			if len(motion_rows):
-				in_place = motion.in_place(*(value[motion_rows] for value in pose))
-				for output, values in zip(pose, in_place): output[motion_rows] = values
-			matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose, out=model), out=skin)
-			batches.append(PoseBatch(skeleton_id, clip_id, result.entities[rows].copy(), matrices))
+			sample_batches.append(AnimationSampleBatch(skeleton_id, result.entities[rows].copy(), sample_ids, sample_times, sample_weights, root_motion[rows].copy()))
+		batches = self.evaluate_samples(sample_batches) if evaluate_poses else []
 		if len(result):
 			players.assign(clip_id=next_ids, time=next_times, speed=next_speeds, loop=next_loop, transitioning=next_transitioning, target_time=next_target_times, transition_time=next_elapsed)
 		self.events = events
+		self.sample_batches = sample_batches
 		self.root_motion_batches = root_batches
 		return batches
 
@@ -214,3 +265,14 @@ class EcsAnimationAdapter:
 		"""Scheduler callback; the most recent result is available as `batches`."""
 		if world is not self.world: raise ValueError("Animation adapter belongs to a different world")
 		self.batches = self.update(dt)
+
+	def advance(self, world, commands, dt):
+		"""Scheduler callback that advances controls without evaluating poses."""
+		if world is not self.world: raise ValueError("Animation adapter belongs to a different world")
+		self.update(dt, evaluate_poses=False)
+		self.batches = []
+
+	def finalize(self, world, commands, dt):
+		"""Scheduler callback that evaluates the latest samples into `batches`."""
+		if world is not self.world: raise ValueError("Animation adapter belongs to a different world")
+		self.batches = self.evaluate_samples()

@@ -2,7 +2,6 @@ import random as rd
 from math import cos, sin
 
 import numpy as np
-from pyrr import Quaternion
 
 from graaal.Assets import load_gltf_first_mesh_interleaved
 from graaal.Diagnostics import WatchTimer
@@ -12,7 +11,7 @@ from graaal.ECS import ECS, Scheduler, component
 from graaal.EcsDrawing import EcsDrawAdapter
 from graaal.Geometry import make_cube_mesh
 from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
-from graaal.Math import Camera, Vec3, Vec4
+from graaal.Math import Camera, Vec3, Vec4, Quaternion
 from graaal.RenderContext import Mesh, RenderContext, Shader, get_time
 
 frustum_culler = FrustumCuller()
