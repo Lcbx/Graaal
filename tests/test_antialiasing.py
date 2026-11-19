@@ -3,7 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from graaal.AntialiasingPass import AntialiasingPass, AntialiasingSettings
+from tests.postprocessing_harness import AntialiasingHarness, AntialiasingSettings
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 
 
@@ -11,7 +11,7 @@ from graaal.RenderContext import RenderContext, Texture, TextureUsage
 @pytest.mark.parametrize("format", ["rgba8unorm", "rgba8unorm-srgb"])
 def test_antialiasing_preserves_flat_color_and_processes_edges(mode, format):
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format=format)
+	aa = AntialiasingHarness(target_format=format)
 	size = (32, 32)
 	aa.resize(size)
 	aa.source = Texture(size, format=format, usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST | TextureUsage.COPY_SRC)
@@ -35,7 +35,7 @@ def test_antialiasing_preserves_flat_color_and_processes_edges(mode, format):
 def test_antialiasing_unfilterable_float_target(mode):
 	RenderContext.setup_graphics_backend(True)
 	if "float32-filterable" in RenderContext.device.features: pytest.skip("Device supports float32 filtering")
-	aa = AntialiasingPass(target_format="rgba32float")
+	aa = AntialiasingHarness(target_format="rgba32float")
 	size = (32, 32)
 	aa.resize(size)
 	aa.source = Texture(size, format="rgba32float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
@@ -63,7 +63,7 @@ def test_antialiasing_settings_validation():
 @pytest.mark.parametrize("mode", ["lxaa", "faaa", "ddaa2"])
 def test_antialiasing_hybrid_luma_chroma(mode):
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(show_edges=True))
+	aa = AntialiasingHarness(target_format="rgba8unorm", settings=AntialiasingSettings(show_edges=True))
 	aa.resize((16, 16))
 	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	image = np.empty((16, 16, 4), dtype=np.uint8)
@@ -97,7 +97,7 @@ def test_antialiasing_hybrid_luma_chroma(mode):
 @pytest.mark.parametrize("mode", ["lxaa", "faaa"])
 def test_antialiasing_ignores_faint_blue_chroma_variation(mode):
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=True, chroma_weight=5, show_edges=True))
+	aa = AntialiasingHarness(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=True, chroma_weight=5, show_edges=True))
 	size = (64, 64)
 	aa.resize(size)
 	aa.source = Texture(size, format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
@@ -117,7 +117,7 @@ def test_antialiasing_ignores_faint_blue_chroma_variation(mode):
 @pytest.mark.parametrize("mode", ["lxaa", "faaa", "ddaa2"])
 def test_antialiasing_edge_display(mode):
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(show_edges=True))
+	aa = AntialiasingHarness(target_format="rgba8unorm", settings=AntialiasingSettings(show_edges=True))
 	aa.resize((16, 16))
 	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	image = np.zeros((16, 16, 4), dtype=np.uint8)
@@ -151,7 +151,7 @@ def test_antialiasing_filters_encoded_rgb_for_both_output_formats(mode):
 	image[:, :, :3] = np.where(mask[:, :, None], (220, 130, 60), (25, 45, 80))
 	results = []
 	for format in ("rgba8unorm", "rgba8unorm-srgb"):
-		aa = AntialiasingPass(target_format=format)
+		aa = AntialiasingHarness(target_format=format)
 		aa.resize((32, 32))
 		aa.source = Texture((32, 32), format=format, usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST | TextureUsage.COPY_SRC)
 		RenderContext.device.queue.write_texture({"texture": aa.source.handle}, image, {"bytes_per_row": 128}, (32, 32, 1))
@@ -167,7 +167,7 @@ def test_antialiasing_filters_encoded_rgb_for_both_output_formats(mode):
 @pytest.mark.parametrize("hybrid_luma_chroma", [False, True])
 def test_specialized_edge_search_settings(hybrid_luma_chroma):
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=hybrid_luma_chroma))
+	aa = AntialiasingHarness(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=hybrid_luma_chroma))
 	aa.resize((16, 16))
 	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	image = np.full((16, 16, 4), 255, dtype=np.uint8)
@@ -200,7 +200,7 @@ def test_ddaa2_manual_filter_matches_hardware_filter(hybrid_luma_chroma, ddaa2_e
 	image[:, :, 3] = np.random.default_rng(8).integers(0, 256, (size[1], size[0]), dtype=np.uint8)
 	results = []
 	for manual_filter in (False, True):
-		aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=hybrid_luma_chroma, ddaa2_edge_steps=ddaa2_edge_steps))
+		aa = AntialiasingHarness(target_format="rgba8unorm", settings=AntialiasingSettings(hybrid_luma_chroma=hybrid_luma_chroma, ddaa2_edge_steps=ddaa2_edge_steps))
 		# Exercise both filtering paths on the same texture format, regardless of device features.
 		aa.manual_filter = manual_filter
 		aa.resize(size)
@@ -219,7 +219,7 @@ def test_ddaa2_manual_filter_matches_hardware_filter(hybrid_luma_chroma, ddaa2_e
 
 def test_ddaa2_disabled_diffusion_and_search_preserve_image():
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm", settings=AntialiasingSettings(ddaa2_strength=0, ddaa2_edge_steps=0))
+	aa = AntialiasingHarness(target_format="rgba8unorm", settings=AntialiasingSettings(ddaa2_strength=0, ddaa2_edge_steps=0))
 	aa.resize((16, 16))
 	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	image = np.zeros((16, 16, 4), dtype=np.uint8)
@@ -236,7 +236,7 @@ def test_ddaa2_disabled_diffusion_and_search_preserve_image():
 
 def test_faaa_edge_display_and_quality_settings():
 	RenderContext.setup_graphics_backend(True)
-	aa = AntialiasingPass(target_format="rgba8unorm")
+	aa = AntialiasingHarness(target_format="rgba8unorm")
 	aa.resize((16, 16))
 	aa.source = Texture((16, 16), format="rgba8unorm", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_DST)
 	image = np.zeros((16, 16, 4), dtype=np.uint8)

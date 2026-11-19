@@ -126,6 +126,19 @@ storage<0, 2, read> unused: array<u32>;
 	assert "unused" not in code
 
 
+def test_shorthand_binding_indices_accept_template_expressions():
+	info = render('''
+<Data> value: vec4f;
+uniform<{{ PARAMS.group }}, {{ PARAMS.slot }}> data: Data;
+sample_texture<{{ PARAMS.group }}, {{ PARAMS.slot + 1 }}> depth: depth;
+''', group=1, slot=3, sample_count=4)
+	assert (info.bindings["data"].group, info.bindings["data"].binding) == (1, 3)
+	assert (info.bindings["depth"].group, info.bindings["depth"].binding) == (1, 4)
+	assert info.bindings["depth"].type_name == "texture_depth_multisampled_2d"
+	with pytest.raises(ValueError, match="binding slot"):
+		render("texture<0, {{ PARAMS.slot }}> image: texture_2d<f32>;", slot=-1)
+
+
 @pytest.mark.parametrize("declaration,match", [
 	("uniform<0, 0, read_write> invalid: Frame;", "read-only"),
 	("storage<0, 0, write> invalid: array<u32>;", "Storage access"),

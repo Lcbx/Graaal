@@ -11,7 +11,7 @@ from collections.abc import Mapping
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from .AmbientOcclusionPass import AmbientOcclusionSettings
+from .postprocessing_settings import AmbientOcclusionSettings
 from .DrawBatches import RenderShader, ShaderPass
 from .RenderContext import BindGroup, BufferUsage, GpuBuffer, ComputePipeline, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
 from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE

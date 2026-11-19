@@ -1475,6 +1475,10 @@ class ShaderDeclarations:
 		space = f"<{storage}{', '+access if access else ''}>" if storage else ""
 		return f"@group({group}) @binding({binding}) var{space} {name}: {type_name};"
 
+	def next_binding(self, group):
+		"""Next free slot after declarations already rendered in this group."""
+		return max((info.binding for info in self.bindings.values() if info.group == group), default=-1)+1
+
 	@property
 	def structs(self):
 		result = {}
@@ -1884,7 +1888,7 @@ class Shader(_OwnedResource):
 		*,
 		source: str | None = None,
 		filepath: str | None = None,
-		basedir: str | None = None,
+		basedir: str | Sequence[str] | None = None,
 		features: Sequence[str] | None = None,
 		params: dict[str, Any] | None = None,
 		label: str | None = None,
@@ -1957,7 +1961,7 @@ class Shader(_OwnedResource):
 		self,
 		source: str | None,
 		filepath: str | None,
-		basedir: str | None,
+		basedir: str | Sequence[str] | None,
 		features: Sequence[str] | None,
 		params: dict[str, Any] | None,
 	) -> tuple[str, ShaderDeclarations]:
@@ -1998,7 +2002,7 @@ class Shader(_OwnedResource):
 			})
 
 		declarations = ShaderDeclarations()
-		env.globals.update(field=declarations.field, binding=declarations.binding)
+		env.globals.update(field=declarations.field, binding=declarations.binding, next_binding=declarations.next_binding)
 		rendered_wgsl = template.render(FEATURES=feature_dict, PARAMS=params or {})
 		return declarations.definitions()+"\n\n"+rendered_wgsl, declarations
 

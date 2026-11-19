@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from graaal.AmbientOcclusionPass import AmbientOcclusionSettings
+from graaal.postprocessing_settings import AmbientOcclusionSettings
 from graaal.settings_validation import checked_dataclass, float_range, int_range
 
 

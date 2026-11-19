@@ -1,5 +1,6 @@
 """Drive through a cube city. Space toggles peripheral motion blur."""
 from math import cos, exp, pi, sin
+import math
 from pathlib import Path
 
 import glfw
@@ -10,8 +11,31 @@ from graaal.Geometry import make_cube_mesh
 from graaal.ImGui import ImGui
 from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
 from graaal.Math import Camera, Vec3
-from graaal.PeripheralMotionBlurPass import PeripheralMotionBlurPass
+from graaal.PostprocessingPass import PostprocessingEffect, PostprocessingPass
 from graaal.RenderContext import RenderContext, Shader, Texture, TextureUsage
+
+
+class PeripheralMotionBlurEffect(PostprocessingEffect):
+	label = "peripheral_motion_blur"
+	def shader_function(self, index): return "peripheral_motion_blur"
+	def shader_paths(self): return (Path(__file__).with_name("shaders"),)
+	def shader_fragment(self, index):
+		return '#include "peripheral_motion_blur.shaderlib"\n', {}
+
+	def uniform_values(self, index): return {"motion": self.values}
+
+	def __init__(self, *, linear_velocity=(0, 0, 0), angular_velocity=(0, 0, 0), fovy_deg=60, exposure=1/60, reference_distance=10.0, strength=1.0, inner_radius=0.25, outer_radius=0.85, max_blur=0.08, debug=False, minimum_velocity=0.0, blur_exponent=1.0):
+		self.set_motion(linear_velocity=linear_velocity, angular_velocity=angular_velocity, fovy_deg=fovy_deg, exposure=exposure, reference_distance=reference_distance, strength=strength, inner_radius=inner_radius, outer_radius=outer_radius, max_blur=max_blur, debug=debug, minimum_velocity=minimum_velocity, blur_exponent=blur_exponent)
+
+	def set_motion(self, *, linear_velocity, angular_velocity, fovy_deg, exposure=1/60, reference_distance=10.0, strength=1.0, inner_radius=0.25, outer_radius=0.85, max_blur=0.08, debug=False, minimum_velocity=0.0, blur_exponent=1.0):
+		linear, angular = (np.asarray(v, dtype=np.float32) for v in (linear_velocity, angular_velocity))
+		if linear.shape != (3,) or angular.shape != (3,) or not np.all(np.isfinite(linear)) or not np.all(np.isfinite(angular)): raise ValueError("Expected finite three-component velocities")
+		values = (fovy_deg, exposure, reference_distance, strength, inner_radius, outer_radius, max_blur, minimum_velocity, blur_exponent)
+		if not all(math.isfinite(v) for v in values) or not (0 < fovy_deg < 180 and exposure >= 0 and reference_distance > 0 and strength >= 0 and 0 <= inner_radius < outer_radius and max_blur >= 0 and minimum_velocity >= 0 and blur_exponent > 0): raise ValueError("Invalid motion blur parameters")
+		speed = np.linalg.norm(linear.astype(np.float64))
+		if speed > 0: linear = linear * (max(0.0, speed-minimum_velocity)/speed)
+		self.values = {"linear": (*linear, 0), "angular": (*angular, 0), "params": (math.tan(math.radians(fovy_deg)/2), exposure*strength, reference_distance, max_blur), "radii": (inner_radius, outer_radius, float(debug), blur_exponent)}
+
 
 
 DEFAULT_BLUR_ENABLED = True
@@ -80,7 +104,8 @@ def run_scene():
 		draws.sync(np.zeros(n, dtype=np.uint32), np.zeros(n, dtype=np.uint32))
 		draws.write_instances(instances[draws.instance_order])
 		visibility = draws.create_visibility().all_visible()
-		blur = PeripheralMotionBlurPass()
+		motion = PeripheralMotionBlurEffect()
+		blur = PostprocessingPass([motion])
 		camera = Camera((0, 2, 0), (0, 2, -1), (0, 1, 0), 65, near=0.1, far=250)
 		enabled, debug = DEFAULT_BLUR_ENABLED, DEFAULT_BLUR_DEBUG
 		max_strength, inner_radius, outer_radius, blur_exponent = DEFAULT_MAX_STRENGTH, DEFAULT_INNER_RADIUS, DEFAULT_OUTER_RADIUS, DEFAULT_BLUR_EXPONENT
@@ -156,7 +181,8 @@ def run_scene():
 			turn_rate = (yaw-previous_yaw)/elapsed if elapsed > 0 else 0.0
 			linear = (-velocity*sin(yaw), 0, -velocity*cos(yaw)) if enabled else (0, 0, 0)
 			angular = (0, -turn_rate, 0) if enabled else (0, 0, 0)
-			blur.record(commands, RenderContext.screen(), linear_velocity=linear, angular_velocity=angular, fovy_deg=camera.fovy_deg, exposure=BLUR_EXPOSURE, reference_distance=BLUR_REFERENCE_DISTANCE, strength=max_strength*(1.0-0.75*exp(-acceleration_gain*filtered_acceleration)), inner_radius=inner_radius, outer_radius=outer_radius, blur_exponent=blur_exponent, max_blur=BLUR_MAX_LENGTH, debug=debug, minimum_velocity=minimum_velocity)
+			motion.set_motion(linear_velocity=linear, angular_velocity=angular, fovy_deg=camera.fovy_deg, exposure=BLUR_EXPOSURE, reference_distance=BLUR_REFERENCE_DISTANCE, strength=max_strength*(1.0-0.75*exp(-acceleration_gain*filtered_acceleration)), inner_radius=inner_radius, outer_radius=outer_radius, blur_exponent=blur_exponent, max_blur=BLUR_MAX_LENGTH, debug=debug, minimum_velocity=minimum_velocity)
+			blur.record(commands, RenderContext.screen())
 			RenderContext.submit(commands.finish())
 			gui.render(draw_controls)
 	finally:

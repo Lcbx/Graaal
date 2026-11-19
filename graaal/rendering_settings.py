@@ -74,7 +74,7 @@ class RenderingSettings:
 
 	def set_aa_mode(self, mode):
 		if mode not in ("off", "msaa", "lxaa", "faaa", "ddaa2"): raise ValueError("Unknown antialiasing mode")
-		if mode in ("lxaa", "faaa", "ddaa2") and self.aa_pass is None: raise ValueError("Postprocess AA requires an AntialiasingPass")
+		if mode in ("lxaa", "faaa", "ddaa2") and self.aa_pass is None: raise ValueError("Postprocess AA requires an antialiasing pass or effect")
 		sample_count = 4 if mode == "msaa" else 1
 		if self.renderer.sample_count != sample_count:
 			if self.on_msaa_changed is not None:

@@ -100,7 +100,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
 | `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
-| `PeripheralMotionBlurPass` | `resize/color_attachment/record` applies camera-motion blur to the edges of a single-sample color target. |
+| `PostprocessingPass` | Applies ordered antialiasing, ambient occlusion and custom effects; tuples fuse effects into one draw. |
 | `HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
 | [TransparencyPass](stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/nearest_pass/transmittance_pass/banded_pass/shade_winner/compose` records banded transparency with Kawase blur. `TransparencyTargets` and `GrazingFade` configure resources and opacity fade. |
 | `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips. These helpers upload and submit GPU work when creating textures. |
@@ -121,18 +121,74 @@ looks up shader includes beside the supplied file, then in the engine shader
 directory. `Geometry.make_cube_mesh()`
 creates a GPU mesh and requires an initialized backend.
 
-### Peripheral motion blur
+### Postprocessing
 
-`PeripheralMotionBlurPass` is independent of the ECS and accepts an opaque scene color. Resize it to the render size, render the scene into `color_attachment()`, and record it to a matching single-sample output:
+`PostprocessingPass` is independent of ECS and takes an ordered list. Each
+entry renders in a separate pass; a tuple fuses its effects into one shader in
+tuple order. A single effect is equivalent to a one-element tuple. Fusion
+recomputes earlier effects for neighborhood samples and may change image
+quality and shader cost. A fused tuple may contain each effect type only once;
+repeated types can be placed in separate list entries.
 
 ```python
-blur.resize(size)
-with commands.render_pass(color=blur.color_attachment(clear=(0, 0, 0, 1)), depth=depth_attachment) as render:
-    draw_scene(render)
-blur.record(commands, output, linear_velocity=(0, 0, -20), angular_velocity=(0, 0.2, 0), fovy_deg=60)
+from graaal.PostprocessingPass import PostprocessingPass, AmbientOcclusionEffect, AntialiasingEffect
+from scenes.postprocessing_example import PeripheralMotionBlurEffect
+
+ao = AmbientOcclusionEffect()
+motion = PeripheralMotionBlurEffect()
+post = PostprocessingPass([ao, (motion, AntialiasingEffect("faaa"))], target_format="rgba8unorm")
+post.resize(size)
+ao.update_camera(camera, size[0]/size[1])
+motion.set_motion(linear_velocity=(0, 0, -20), angular_velocity=(0, 0.2, 0), fovy_deg=60)
+with commands.render_pass(color=post.color_attachment(), depth=depth.depth_attachment(clear=1)) as render:
+	draw_scene(render)
+post.record(commands, output, depth=depth)
 ```
 
-Velocities are camera-local (x right, y up, z backwards), in world units per second and radians per second respectively. `minimum_velocity` subtracts a speed in world units per second from the magnitude of linear velocity (clamped at zero); angular motion is unaffected. `exposure` controls the motion interval, `strength` scales it, and `max_blur` limits the screen-space displacement. The sampling kernel is also capped at 127 pixels and 128 samples to bound GPU cost; longer requested displacements are shortened. The `inner_radius` and `outer_radius` control the smooth transition from the sharp center to the blurred periphery; radii are measured from the center in half-screen units. `blur_exponent` shifts the quintic transition toward the outer radius at larger values and toward the inner radius at smaller values; both ends meet the adjacent regions smoothly. The same falloff blends the sharp and blurred images, so strong blur does not appear abruptly near the center. Samples are weighted by their covered interval so the blur changes continuously as its length grows. Translation uses `reference_distance` in world units because this pass does not consume depth, so it approximates parallax rather than reconstructing per-pixel motion. `debug=True` blends in a direction hue (right red, down yellow-green, left cyan, up violet); its mix amount reflects both the vignette and blur displacement relative to `max_blur`, capped at 90%. Alpha is preserved. Use a separate pass instance for each set of motion parameters recorded before a submission. See [postprocessing_example.py](../scenes/postprocessing_example.py).
+The color output must match the pass format and be single-sample. AO needs a
+matching sampleable opaque depth texture with one or four samples; its camera
+must be updated after projection changes. An empty list copies the scene. Uniforms are uploaded when
+recording; use separate instances for different parameters recorded before a
+submission. See [postprocessing_example.py](../scenes/postprocessing_example.py).
+
+Custom `PostprocessingEffect` subclasses implement `shader_fragment(index)` and
+return `(source, options)`. Source is an ordinary engine Jinja template, with
+includes, macros, blocks and strict undefined-variable checking. It receives
+`INDEX`, `GROUP=1`, `SLOT` (the next free binding slot), and `OPTIONS`. Declare
+bindings through the usual shorthand or `binding()` callback; names and slots
+are reflected rather than repeated in Python. `next_binding(group)` returns the
+slot after the bindings already declared in that group. Group 0 belongs to the
+pass. Choose function, type and binding names that do not collide with other
+effects in a fused group.
+
+Define an effect function and return its name from `shader_function(index)`;
+the default name is `effect{index}`. Call `sample{{ INDEX }}(uv)` for input.
+The shared shader calls each effect in order, whether the group contains one
+effect or a fused tuple. `sample0` reads the scene color through the same
+filtering code in both cases. Override `shader_paths()` to provide directories
+for effect includes outside `graaal/shaders`.
+Samples contain encoded RGB and unchanged alpha; convert explicitly when an
+effect needs linear RGB. The template exposes `scene_color`, `linear_to_srgb`
+and `srgb_to_linear`. The pass handles output conversion for sRGB attachments.
+
+`uniform_values(index)` returns `{binding_name: {field_name: value}}`; the pass
+allocates and updates those reflected uniforms separately for each recorded
+stage. `resources(index, depth)` supplies other named resources, including
+externally managed buffers. An effect may use multiple uniforms. Set
+`requires_depth = True` for matching sampleable opaque depth; the base resource
+hook binds it as `effect{index}_depth`.
+
+`binding_layouts(index)` supplies optional `{binding_name: descriptor}` overrides
+for properties WGSL cannot express, such as an unfilterable float texture and a
+non-filtering sampler. Descriptors exclude `binding` and `visibility`; they are
+honored for every output format. Override `pipeline_key()` when compile-time
+source, options or layout properties change. Resource handles and uniform
+values can change without rebuilding the shader.
+
+The peripheral motion blur effect and its controls live in
+[postprocessing_example.py](../scenes/postprocessing_example.py). It implements
+the same `PostprocessingEffect` contract as the engine effects; its shader lives
+beside the example in `scenes/shaders/`.
 
 ## Arrays and ordinary systems
 
@@ -289,6 +345,8 @@ uniform<0, 0, read> frame: Frame;
 `@align` and `@size`. An optional `= value` records a Jinja2-expression
 default; regular uniform buffers are still initialized to zero. Omit `read`
 for uniforms if preferred; storage bindings accept `read` or `read_write`.
+Binding group and slot can also be Jinja expressions, for example
+`uniform<{{ GROUP }}, {{ SLOT + 1 }}> frame: Frame;`.
 `Shader.uniform_buffer()` uses the declared struct to derive NumPy layouts.
 For samplers or dynamic declarations, the existing Jinja2
 `binding(name, type, group, binding, storage=..., access=...)` and

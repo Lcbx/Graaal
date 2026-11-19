@@ -6,6 +6,7 @@ from jinja2.ext import Extension
 
 MISSING = object()
 _IDENTIFIER = r"[A-Za-z_][A-Za-z_0-9]*"
+_BINDING_INDEX = r"(?:\d+|\{\{[^{}\n]+\}\})"
 _FIELD = re.compile(
 	rf"^(?P<indent>[ \t]*)<(?P<struct>{_IDENTIFIER})>[ \t]+"
 	rf"(?P<attrs>(?:@{_IDENTIFIER}\([^()\n]*\)[ \t]*)*)"
@@ -14,7 +15,7 @@ _FIELD = re.compile(
 )
 _BINDING = re.compile(
 	rf"^(?P<indent>[ \t]*)(?P<kind>uniform|storage|texture|sample_texture)<[ \t]*"
-	r"(?P<group>\d+)[ \t]*,[ \t]*(?P<slot>\d+)"
+	rf"(?P<group>{_BINDING_INDEX})[ \t]*,[ \t]*(?P<slot>{_BINDING_INDEX})"
 	r"(?:[ \t]*,[ \t]*(?P<access>\w+))?[ \t]*>[ \t]+"
 	rf"(?P<name>{_IDENTIFIER})[ \t]*:[ \t]*(?P<type>[^;\n]+?)[ \t]*;[ \t]*(?P<comment>//[^\n]*)?$"
 )
@@ -125,7 +126,8 @@ class ShaderShorthand(Extension):
 					sample_textures = True
 				elif access is not None:
 					raise ValueError("Texture bindings do not take an access argument; specify it in the texture type")
-				args = [repr(match["name"]), type_name, match["group"], match["slot"]]
+				indices = ["("+value[2:-2].strip()+")" if value.startswith("{{") else value for value in (match["group"], match["slot"])]
+				args = [repr(match["name"]), type_name, *indices]
 				result.append(f"{match['indent']}{{{{ binding({', '.join(args + options)}) }}}}"+(" "+match["comment"] if match["comment"] else "")+ending)
 				continue
 			if re.match(rf"^[ \t]*(?:<{_IDENTIFIER}>[ \t]+|(?:uniform|storage|texture|sample_texture)<)", body):

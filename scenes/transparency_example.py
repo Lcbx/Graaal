@@ -20,8 +20,7 @@ from pathlib import Path
 import numpy as np
 
 from graaal.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
-from graaal.AmbientOcclusionPass import AmbientOcclusionPass
-from graaal.AntialiasingPass import AntialiasingPass
+from graaal.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
 from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
 from graaal.HZB import HZB
 from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
@@ -95,8 +94,9 @@ class GeometryBatches:
 
 
 transparency: TransparencyPass
-ao_pass: AmbientOcclusionPass
-aa_pass: AntialiasingPass
+ao_effect: AmbientOcclusionEffect
+aa_effect: AntialiasingEffect
+postprocessing_passes: dict
 opaque_batches: GeometryBatches
 transparent_batches: GeometryBatches
 camera: Camera
@@ -114,7 +114,7 @@ overlay = None
 
 def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_options):
 	"""Initialize the example's global render data after device setup."""
-	global transparency, ao_pass, aa_pass, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance, msaa_enabled, ao_enabled, ao_method
+	global transparency, ao_effect, aa_effect, postprocessing_passes, opaque_batches, transparent_batches, camera, hzb, center, radius, angle, orbit, distance, msaa_enabled, ao_enabled, ao_method
 	primitives, materials, images, vertices = load_transparency_scene(path)
 	# Ignore a large flat ground plane when framing the example.
 	objects = [p.vertices["position"] for p in primitives if np.ptp(p.vertices["position"][:, 1]) > 0.01]
@@ -134,8 +134,10 @@ def init_scene(path=PATH, *, blue_noise_path=BLUE_NOISE_PATH, **transparency_opt
 		base_textures=textures.view(dimension="2d-array"),
 		vertices=GpuBuffer(vertices, BufferUsage.STORAGE | BufferUsage.COPY_DST), blue_noise=blue_noise,
 		**transparency_options)
-	ao_pass = AmbientOcclusionPass(target_format=transparency.target_format)
-	aa_pass = AntialiasingPass(target_format=transparency.target_format)
+	ao_effect = AmbientOcclusionEffect()
+	aa_effect = AntialiasingEffect()
+	aa_effect.mode = "off"
+	postprocessing_passes = {}
 	msaa_enabled = transparency.sample_count == 4
 	ao_enabled, ao_method = False, "compose"
 	hzb = HZB()
@@ -236,19 +238,19 @@ def render_frame(*, profiler=None, overlay=None, render_size=None, presenter=Non
 	screen = RenderContext.screen()
 	if scaled: presenter.resize((width, height))
 	output = presenter.color_attachment() if scaled else screen
-	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-		aa_pass.resize((width, height))
-		output = aa_pass.color_attachment()
-	aa_output = output
-	if ao_enabled and ao_method == "pass":
-		ao_pass.resize((width, height))
-		output = ao_pass.color_attachment()
+	use_ao = ao_enabled and ao_method == "pass"
+	use_aa = aa_effect.mode in ("lxaa", "faaa", "ddaa2")
+	post = None
+	if use_ao or use_aa:
+		key = (use_ao, use_aa)
+		if key not in postprocessing_passes:
+			postprocessing_passes[key] = PostprocessingPass(([ao_effect] if use_ao else []) + ([aa_effect] if use_aa else []), target_format=transparency.target_format)
+		post = postprocessing_passes[key]
+		post.resize((width, height))
+		output = post.color_attachment()
 	transparency.compose(commands, output)
-	if ao_enabled and ao_method == "pass":
-		ao_pass.update_camera(camera, sample_count=transparency.sample_count)
-		ao_pass.record(commands, transparency.depth, aa_output)
-	if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-		aa_pass.record(commands, presenter.color_attachment() if scaled else screen, aa_pass.mode)
+	if use_ao: ao_effect.update_camera(camera, width/height)
+	if post is not None: post.record(commands, presenter.color_attachment() if scaled else screen, depth=transparency.depth if use_ao else None)
 	if scaled: presenter.record(commands, screen)
 	if overlay is not None: overlay.submit(commands)
 	else: RenderContext.submit(commands.finish())
@@ -264,7 +266,7 @@ def run_scene():
 	init_scene()
 	presenter = ResolutionPresenter(target_format=transparency.target_format)
 	settings = RenderingSettings(transparency, camera=camera, on_msaa_changed=set_msaa_enabled,
-		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
+		on_ssao_changed=set_ao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_effect, aa_pass=aa_effect)
 	overlay = ExampleOverlay(settings, get_ao_method=lambda: ao_method, set_ao_method=set_ao_method)
 	RenderContext.event_handlers["mouse_scroll"].append(scroll_callback)
 	RenderContext.event_handlers["char"].append(on_char)

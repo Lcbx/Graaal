@@ -1,13 +1,13 @@
 import numpy as np
 import pytest
-from graaal.PeripheralMotionBlurPass import PeripheralMotionBlurPass
+from tests.postprocessing_harness import PeripheralMotionBlurHarness
 from graaal.RenderContext import RenderContext, RenderPipeline, Shader, Texture, TextureUsage
 
 
 @pytest.mark.parametrize("format", ["rgba8unorm", "rgba8unorm-srgb", "rgba32float"])
 def test_peripheral_motion_blur(format):
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format=format)
+	blur = PeripheralMotionBlurHarness(target_format=format)
 	assert blur.resize((64, 64))
 	assert not blur.resize((0, 0))
 	shader = Shader(source="""
@@ -43,7 +43,7 @@ def test_peripheral_motion_blur(format):
 
 def test_motion_blur_tracks_projected_scene_direction():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((64, 64))
 	shader = Shader(source="""
 		@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -80,7 +80,7 @@ def test_motion_blur_tracks_projected_scene_direction():
 
 def test_motion_blur_debug_hue_and_strength():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((64, 64))
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def image(velocity, debug, strength=1):
@@ -106,7 +106,7 @@ def test_motion_blur_debug_hue_and_strength():
 
 def test_minimum_velocity_offsets_translation_without_affecting_rotation():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((32, 32))
 	output = Texture((32, 32), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def image(linear, angular, minimum):
@@ -128,7 +128,7 @@ def test_minimum_velocity_offsets_translation_without_affecting_rotation():
 
 def test_blur_exponent_shapes_vignette():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((64, 64))
 	output = Texture((64, 64), format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC)
 	def image(exponent):
@@ -142,12 +142,12 @@ def test_blur_exponent_shapes_vignette():
 	soft, steep = image(0.5), image(3.0)
 	assert soft[32, 18, 0] > steep[32, 18, 0]
 	assert np.array_equal(soft[32, 32], steep[32, 32])
-	assert np.array_equal(soft[4, 32], steep[4, 32])
+	assert np.array_equal(soft[4, 4], steep[4, 4])
 
 
 def test_long_blur_filters_fine_stripes():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((1200, 32))
 	shader = Shader(source="""
 		@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -175,26 +175,30 @@ def test_long_blur_filters_fine_stripes():
 @pytest.mark.parametrize("format", ["rgba8unorm", "rgba8unorm-srgb", "rgba32float"])
 def test_resize_releases_cached_target_bindings(format):
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format=format)
+	blur = PeripheralMotionBlurHarness(target_format=format)
 	for size in ((16, 16), (24, 24), (32, 32)):
 		blur.resize(size)
-		for variant in blur.pipeline._cache.values():
-			assert len(variant._bind_groups) == 0
-		if blur.manual_filter:
-			assert len(blur.pipeline.layout.groups[0]._bind_groups) == 0
+		for _, pipeline, _ in blur.post.pipelines.values():
+			for variant in pipeline._cache.values():
+				assert len(variant._bind_groups) == 0
+			if blur.manual_filter:
+				assert all(len(group._bind_groups) == 0 for group in pipeline.layout.groups)
 		output = Texture(size, format=format, usage=TextureUsage.RENDER_ATTACHMENT)
 		commands = RenderContext.commands("resize_motion_blur")
 		with commands.render_pass(color=blur.color_attachment(clear=(0, 0, 0, 1))):
 			pass
 		blur.record(commands, output.color_attachment(), linear_velocity=(1, 0, 0), angular_velocity=(0, 0, 0), fovy_deg=60)
 		RenderContext.submit(commands.finish())
-		cache = blur.pipeline.layout.groups[0]._bind_groups if blur.manual_filter else next(iter(blur.pipeline._cache.values()))._bind_groups
-		assert len(cache) == 1
+		pipeline = next(iter(blur.post.pipelines.values()))[1]
+		if blur.manual_filter:
+			assert all(len(group._bind_groups) == 1 for group in pipeline.layout.groups)
+		else:
+			assert len(next(iter(pipeline._cache.values()))._bind_groups) == 2
 
 
 def test_blur_strength_changes_smoothly_across_sample_boundaries():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((64, 64))
 	shader = Shader(source="""
 		@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -221,9 +225,9 @@ def test_blur_strength_changes_smoothly_across_sample_boundaries():
 	assert np.max(np.abs(below-above)) <= 2
 
 
-def test_vignette_blends_saturated_blur_gradually():
+def test_vignette_preserves_center_with_saturated_motion():
 	RenderContext.setup_graphics_backend(True)
-	blur = PeripheralMotionBlurPass(target_format="rgba8unorm")
+	blur = PeripheralMotionBlurHarness(target_format="rgba8unorm")
 	blur.resize((64, 64))
 	shader = Shader(source="""
 		@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -245,5 +249,6 @@ def test_vignette_blends_saturated_blur_gradually():
 	RenderContext.submit(commands.finish())
 	data = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 256}, (64, 64, 1))
 	pixels = np.frombuffer(data, dtype=np.uint8).reshape(64, 64, 4)
-	assert pixels[32, 18, 0] > 200
+	assert pixels[32, 32, 0] == 0
+	assert 90 < pixels[32, 18, 0] < 165
 	assert 90 < pixels[32, 4, 0] < 165

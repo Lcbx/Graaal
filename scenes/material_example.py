@@ -15,8 +15,7 @@ import numpy as np
 
 from graaal.DefaultMaterial import DefaultMaterialShader
 from graaal.DrawBatches import FrustumCuller
-from graaal.AmbientOcclusionPass import AmbientOcclusionPass
-from graaal.AntialiasingPass import AntialiasingPass
+from graaal.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
 from graaal.ECS import ECS
 from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
 from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
@@ -127,8 +126,10 @@ def run_scene():
 	RenderContext.device.queue.write_texture({"texture": checker_texture.handle}, pixels,
 		{"bytes_per_row": size*4, "rows_per_image": size}, (size, size, 2))
 	renderer = MaterialRenderer(meshes=meshes, base_textures=checker_texture.view(dimension="2d-array"), frame_fields={"time": ("f32", 0.0)})
-	ao_pass = AmbientOcclusionPass(target_format=renderer.transparency.target_format)
-	aa_pass = AntialiasingPass(target_format=renderer.transparency.target_format)
+	ao_effect = AmbientOcclusionEffect()
+	aa_effect = AntialiasingEffect()
+	aa_effect.mode = "off"
+	postprocessing_passes = {}
 	presenter = ResolutionPresenter(target_format=renderer.transparency.target_format)
 	adapter = EcsMaterialAdapter(renderer, world)
 	overrides = world.get(MaterialInstance)[entities].overrides
@@ -146,7 +147,7 @@ def run_scene():
 		ao_enabled = enabled
 		renderer.transparency.set_ambient_occlusion(enabled and ao_method == "compose")
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12), camera=camera,
-		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_pass, aa_pass=aa_pass)
+		on_msaa_changed=set_msaa_enabled, on_ssao_changed=set_ssao_enabled, ssao_enabled=ao_enabled, ao_pass=ao_effect, aa_pass=aa_effect)
 	def set_ao_method(method):
 		nonlocal ao_method
 		ao_method = method
@@ -241,13 +242,16 @@ def run_scene():
 				screen = RenderContext.screen()
 				if scaled: presenter.resize(render_size)
 				output = presenter.color_attachment() if scaled else screen
-				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-					aa_pass.resize(render_size)
-					output = aa_pass.color_attachment()
-				aa_output = output
-				if ao_enabled and ao_method == "pass":
-					ao_pass.resize(render_size)
-					output = ao_pass.color_attachment()
+				use_ao = ao_enabled and ao_method == "pass"
+				use_aa = aa_effect.mode in ("lxaa", "faaa", "ddaa2")
+				post = None
+				if use_ao or use_aa:
+					key = (use_ao, use_aa)
+					if key not in postprocessing_passes:
+						postprocessing_passes[key] = PostprocessingPass(([ao_effect] if use_ao else []) + ([aa_effect] if use_aa else []), target_format=renderer.transparency.target_format)
+					post = postprocessing_passes[key]
+					post.resize(render_size)
+					output = post.color_attachment()
 				oit = renderer.transparency
 				oit.resize(render_size)
 				vp = oit.update_camera(camera, frame={"time": animation_time}, lighting={"light_dir": (0.4, 0.8, 0.3)})
@@ -258,11 +262,8 @@ def run_scene():
 					renderer.draws.draw(render, renderer.visibility, name)
 				record_transparency(commands, oit, renderer.geometry[1], draw_transparent)
 				oit.compose(commands, output)
-				if ao_enabled and ao_method == "pass":
-					ao_pass.update_camera(camera, sample_count=renderer.transparency.sample_count)
-					ao_pass.record(commands, renderer.transparency.depth, aa_output)
-				if aa_pass.mode in ("lxaa", "faaa", "ddaa2"):
-					aa_pass.record(commands, presenter.color_attachment() if scaled else screen, aa_pass.mode)
+				if use_ao: ao_effect.update_camera(camera, render_size[0]/render_size[1])
+				if post is not None: post.record(commands, presenter.color_attachment() if scaled else screen, depth=oit.depth if use_ao else None)
 				if scaled: presenter.record(commands, screen)
 				overlay.submit(commands)
 				gui.render(draw_controls)

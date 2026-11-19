@@ -252,7 +252,7 @@ def test_postprocess_antialiasing_with_both_ao_paths(gpu_scene):
 	renderer, output = gpu_scene
 	for mode in ("lxaa", "faaa"):
 		for ao_method in ("compose", "pass"):
-			renderer.aa_pass.mode = mode
+			renderer.aa_effect.mode = mode
 			renderer.set_ao_method(ao_method)
 			renderer.set_ao_enabled(True)
 			render_frame(renderer)
@@ -309,7 +309,7 @@ def test_scaled_scene_presents_at_window_size(gpu_scene, aa_mode):
 	renderer, output = gpu_scene
 	presenter = ResolutionPresenter(target_format="rgba8unorm")
 	if aa_mode == "msaa": renderer.set_msaa_enabled(True)
-	renderer.aa_pass.mode = aa_mode
+	renderer.aa_effect.mode = aa_mode
 	assert renderer.render_frame(render_size=(32, 32), presenter=presenter)
 	assert renderer.transparency.size == (32, 32)
 	assert presenter.size == (32, 32)

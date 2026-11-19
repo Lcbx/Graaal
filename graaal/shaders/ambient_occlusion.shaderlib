@@ -1,6 +1,18 @@
+// The postprocessing template supplies INDEX; transparency supplies opaque_depth.
+#if INDEX is defined
+<AO> projection: mat4x4f;
+<AO> clip: vec4f;
+uniform<{{ GROUP }}, {{ SLOT }}> ao_camera: AO;
+sample_texture<{{ GROUP }}, {{ SLOT + 1 }}> ao_depth: depth;
+#set ao_depth_name = "ao_depth"
+#set ao = OPTIONS.get("ao", {})
+#else
+#set ao_depth_name = "opaque_depth"
 #set ao = PARAMS.get("ao", {})
+#endif
+
 fn ambient_occlusion_position(pixel: vec2i, depth: f32, projection: mat4x4f, clip: vec2f) -> vec3f {
-	let dimensions = vec2f(textureDimensions(opaque_depth));
+	let dimensions = vec2f(textureDimensions({{ ao_depth_name }}));
 	let uv = (vec2f(pixel)+vec2f(0.5))/dimensions;
 	let ndc = vec2f(uv.x*2.0-1.0, 1.0-uv.y*2.0);
 	if projection[3][3] > 0.5 {
@@ -25,7 +37,7 @@ fn ambient_occlusion(pixel: vec2i, sample: u32, depth: f32, projection: mat4x4f,
 	let projection_scale = abs(vec2f(projection[0][0], projection[1][1]));
 	let distance_scale = select(1.0/max(-position.z, 1e-6), 1.0, projection[3][3] > 0.5);
 	let radius_uv = radius_ws*projection_scale*distance_scale*0.5;
-	let dimensions = vec2f(textureDimensions(opaque_depth));
+	let dimensions = vec2f(textureDimensions({{ ao_depth_name }}));
 	let uv = (pixel_f+vec2f(0.5))/dimensions;
 	var occlusion = 0.0;
 	var alpha = 0.5*inv_sample_count;
@@ -37,7 +49,7 @@ fn ambient_occlusion(pixel: vec2i, sample: u32, depth: f32, projection: mat4x4f,
 		let uv2 = uv+vec2f(cos(angle), sin(angle))*radius_uv*alpha;
 		if all(uv2 >= vec2f(0.0)) && all(uv2 < vec2f(1.0)) {
 			let neighbor_pixel = vec2i(uv2*dimensions);
-			let neighbor_depth = textureLoad(opaque_depth, neighbor_pixel, i32(sample));
+			let neighbor_depth = textureLoad({{ ao_depth_name }}, neighbor_pixel, i32(sample));
 			if neighbor_depth < 1.0 {
 				let delta = ambient_occlusion_position(neighbor_pixel, neighbor_depth, projection, clip)-position;
 				let vv = dot(delta, delta);
@@ -48,3 +60,16 @@ fn ambient_occlusion(pixel: vec2i, sample: u32, depth: f32, projection: mat4x4f,
 	}
 	return clamp(1.0-occlusion*inv_sample_count*f32({{ao.get("strength", 3.0)}}), 0.0, 1.0);
 }
+
+#if INDEX is defined
+fn apply_ambient_occlusion(uv: vec2f) -> vec4f {
+	let pixel = clamp(vec2i(uv*vec2f(textureDimensions(scene_color))), vec2i(0), vec2i(textureDimensions(scene_color))-1);
+	var occlusion = 0.0;
+	for (var sample = 0u; sample < {{PARAMS.sample_count}}u; sample += 1u) {
+		let depth = textureLoad(ao_depth, pixel, i32(sample));
+		occlusion += ambient_occlusion(pixel, sample, depth, ao_camera.projection, ao_camera.clip.xy);
+	}
+	let color = sample{{ INDEX }}(uv);
+	return vec4f(linear_to_srgb(srgb_to_linear(color.rgb)*occlusion/f32({{PARAMS.sample_count}})), color.a);
+}
+#endif
