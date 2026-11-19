@@ -183,7 +183,7 @@ overrides and transparency use the same pose. Keep palette writes and releases
 ordered with GPU submissions as described in the
 [animation guide](skeletal_animation.md#gpu-skin-matrices).
 
-The [animation example](../scenes/animation_example.py) demonstrates three ECS
+The [animation example](../scenes/simple_animation_example.py) demonstrates three ECS
 players sharing one skinned mesh and rendering through the material system.
 
 `PosePalette(palette)` can reconcile palette allocations and uploads from the

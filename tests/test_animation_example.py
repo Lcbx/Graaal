@@ -4,7 +4,7 @@ import pytest
 pytest.importorskip("pygltflib")
 
 from graaal.SkeletalAnimation import model_matrices, sample_clip, skin_matrices
-from scenes.animation_example import ASSET, load_greenman
+from scenes.simple_animation_example import ASSET, load_greenman
 
 
 def test_greenman_clips_drive_valid_skin_matrices():

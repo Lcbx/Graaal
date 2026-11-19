@@ -245,7 +245,8 @@ def test_real_gpu_clipping_matches_surface_during_resize_and_dpi_changes(monkeyp
 	monkeypatch.setattr(RenderContext, "window_dimensions", physical)
 	monkeypatch.setattr(RenderContext, "_screen_view", texture.create_view())
 	def draw():
-		imgui.get_background_draw_list().add_rect_filled((0, 0), imgui.get_io().display_size, 0xffffffff)
+		width, height = imgui.get_io().display_size
+		imgui.get_background_draw_list().add_rect_filled((-width, -height), (2*width, 2*height), 0xffffffff)
 	try:
 		with ImGui() as gui:
 			gui.render(draw, clear=(0, 0, 0, 1))
