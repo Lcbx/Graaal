@@ -109,7 +109,9 @@ entity zero is a valid owner. Native `a`/`b` IDs retain their original namespace
 body IDs for contacts/triggers/state, joint ID in `a` for joint events, character
 ID in `a` for character events. Characters created directly on the native world
 have unresolved `entity_a`; their contacted body can still resolve `entity_b`.
-Ragdoll bone and character-owner mappings belong to their later integration phases.
+Ragdoll body records also resolve `bone_a`/`bone_b` to native physical bone
+indices; other or unresolved endpoints use -1. The asset's `bones` array maps
+these indices to render bones. Character-owner mapping remains a later phase.
 
 ```python
 def on_contact(ecs, commands, events):
@@ -127,7 +129,7 @@ CONTACT, TRIGGER, STATE, CHARACTER and JOINT records remain inspectable in
 with at least one live owner; an entity filter only matches a live endpoint.
 The same tick is never delivered twice, even if `dispatch_events` is called again.
 
-Begin/end records are the default; `RigidBody.flags |= int(pj.BodyFlag.REPORT)`
+Begin/end records are the default; `RigidBody(flags=int(pj.BodyFlag.REPORT))`
 opts into persist records. `physics.events_dropped` exposes the native cumulative
 overflow counter. Contact `impulse` is an estimate, not the solver's final impulse.
 
@@ -229,6 +231,99 @@ Run [physics_joints_example.py](../scenes/physics_joints_example.py) for hinge a
 slider motors, limits and a breakable fixed attachment. Native regression tests
 are in [test_ecs_physics_interactions.py](../tests/test_ecs_physics_interactions.py).
 
+## Native ragdolls and skeletons
+
+`graaal.PhysicsRagdoll.RagdollAsset` is a CPU helper independent of ECS and
+rendering. Construction loads the optional backend; module import does not.
+It binds a render `Skeleton` to authored `pj.RagdollSettings`:
+
+```python
+from graaal.PhysicsRagdoll import RagdollAsset
+
+asset = RagdollAsset(rig, authored_settings, bones=physical_render_indices)
+# Or generate capsule shapes and generic limits as an authoring fallback:
+fallback = RagdollAsset(rig, bones=physical_render_indices, radius=0.05, mass=70)
+```
+
+`bones` is one distinct render index per native bone, in native order; omitted
+means every render bone. Physical bones must form one parent-before-child tree.
+Their nearest mapped ancestors must match native parents, and native rest joint
+frames must coincide with mapped render joints. Animation-only intermediate
+bones and tips are supported. Native settings retain per-bone shapes, shape
+offsets/rotations, mass, joint axes/limits, strength and friction. Treat settings
+and mappings as immutable after construction; replace the asset key to rebuild.
+The fallback's generic limits require authoring for a particular character.
+
+Skeleton reference poses, animation poses and entity transforms require unit
+scale. Bake scale into skeleton translations, inverse binds and physical shapes.
+Non-unit scale is rejected rather than producing inconsistent joint frames.
+Position units are metres and rotations are xyzw. Shape offsets already belong
+to the native body setup; snapshot ragdoll joint poses must not offset them again.
+Base animation rotations are normalized consistently with the skeletal evaluator,
+including animation-only parents of physical bones.
+
+Register `EcsPhysics.PhysicsRagdoll` and pass an asset mapping through `ragdolls=`:
+
+```python
+from graaal.EcsPhysics import PhysicsRagdoll
+
+ecs.register(PhysicsRagdoll)
+ecs.add(character, PhysicsRagdoll(asset=0, mode=0), MaterialTransform())
+physics = EcsPhysicsAdapter(ecs, shapes, ragdolls={0: asset}, interpolate=True)
+# Each fixed tick, after reconcile and local animation/IK evaluation:
+physics.set_ragdoll_pose([character], local_pose)  # batched (T, R, S)
+# Then prepare_inputs(), step(), pull(), dispatch_events().
+matrices = physics.ragdoll_skin([character])
+```
+
+`mode` codes are kinematic=0, powered=1, limp=2. `blend` is the native transition
+duration in seconds; `strength` multiplies the asset's per-bone torque limits.
+Changing the asset rebuilds the native ragdoll; loss of its component, transform
+or full entity handle removes it. Ragdoll owners cannot also declare a `Collider`
+or `RigidBody`. Register those body component types as usual even in a ragdoll-only
+world. `physics.ragdolls` is a read-only owner-to-native-handle mapping. Use
+`physics.ragdolls[int(character)].hit(bone, impulse, point=None)` for an impulse
+and native `set_strength` for individual bone strengths. Declarative strength
+changes overwrite native strengths. Never remove individual ragdoll bones or
+remove an adapter-owned ragdoll directly; ECS reconciliation and close use native
+`remove_ragdolls` to free the complete structure.
+
+`set_ragdoll_pose` copies local animation targets in owner order, including
+animation-only bones. `prepare_inputs` converts them to native-parent joint frames
+and queues each held target with the entity's current world frame. The ECS frame
+stays caller-controlled in all modes; physical root displacement lives in the
+skeletal pose. Apply root-motion requests to that frame explicitly. Do not run a
+second native `play` timeline alongside the ECS animation clock.
+
+`ragdoll_skin(owners, weight=1, alpha=None)` returns detached float32 skin matrices
+in owner order, with repeated owners supported; all requested owners must share
+one asset. Native joint poses are converted from world to entity space, then to
+render-local TRS. Animation-only bones retain their local target and follow the
+corrected parent. `weight` blends the resulting local pose with animation, as a
+scalar or per-owner array. Native mode `blend` controls physical motors/transitions
+and is separate from this render weight. With `interpolate=True`, `pull` retains
+owned per-bone history; `alpha` interpolates positions and shortest-path rotations
+before conversion and skinning. Repeated pulls preserve history, skipped ticks
+snap, and rebuild/removal discards old history. Animation-only bones use the
+current held animation target. Sampling never changes gameplay state or targets.
+
+Wrap the final matrices in one `EcsAnimation.PoseBatch` per owner and feed the
+existing `PosePalette`; omit the ordinary animation finalizer for those owners.
+The standalone asset also exposes `target_pose`, `local_pose` and `skin` for
+applications without ECS. Render mesh bounds must cover the deformed pose.
+
+`entities_of` resolves both regular bodies and ragdoll bones; `bone_indices_of`
+returns native physical indices or -1. Query `exclude=[character]` excludes all
+its physical bones. `body_uids`/`body_owners` remain regular one-body ownership
+maps. Removal events retain bone identity for a surviving owner until dispatch;
+deleted owners resolve to `WORLD_ENTITY` and bone -1.
+
+See [ragdoll_example.py](../scenes/ragdoll_example.py) for the prefab humanoid,
+ECS animation clock, powered push, limp fall, blended recovery and the existing
+GPU skin palette. Its skinned boxes visualize the authored capsule volumes.
+Native frame, limit, mode, ownership and interpolation regressions are in
+[test_physics_ragdoll.py](../tests/test_physics_ragdoll.py).
+
 ## Render interpolation
 
 Construct the adapter with `interpolate=True` to retain two ticks of owned
@@ -278,8 +373,11 @@ costs. This headless benchmark uses isolated moving boxes and reports CPU wall
 times; it does not measure GPU frame rate or collision-heavy workloads.
 
 At body capacity, the pinned backend needs removals applied before additions
-can reserve space. Reconciliation uses `flush()` for that case without advancing
-time; native queries must not run concurrently with reconciliation. Keep world
+can reserve space. Reconciliation validates body and ragdoll declarations against
+their shared capacity before removing either type, allowing replacements in both
+directions within one call. It uses `flush()` when outgoing resources must free
+space for additions, without advancing time; native queries must not run
+concurrently with reconciliation. Keep world
 ownership and ECS callbacks on the scheduler thread. Use the context manager or
 `close()` to remove owned bodies and join the native thread; close is idempotent.
 

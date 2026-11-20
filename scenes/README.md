@@ -89,6 +89,14 @@ Run `python -m scenes.physics_joints_example` for hinge and slider motors with
 limits, reversed motor targets and a breakable fixed attachment. Both examples
 need the `physics` extra and run without graphics.
 
+Run `python main.py scenes/ragdoll_example.py` for a native humanoid driven by
+the ECS animation clock: animated standing, a powered push, a limp fall, and
+blended kinematic recovery repeat over eight seconds. The procedural skinned
+boxes use the existing skin palette and interpolate physical joints between
+fixed ticks. Run the complete cycle without graphics using
+`python -m scenes.ragdoll_example --headless --frames 960`, or check GPU skinning
+with `python -m scenes.ragdoll_example --offscreen --frames 6`.
+
 ## Rendering and transparency settings
 
 In `transparency_example.py`, the ImGui settings panel is visible at startup.

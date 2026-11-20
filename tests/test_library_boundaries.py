@@ -11,6 +11,7 @@ def test_inline_imports_are_confined_to_cold_paths():
 		"Assets": {"load_gltf_scene", "load_gltf_first_mesh", "load_blue_noise"},
 		"Diagnostics": {"__getattr__", "setup_memory_monitor"},
 		"EcsPhysics": {"EcsPhysicsAdapter.__init__"},
+		"PhysicsRagdoll": {"RagdollAsset.__init__"},
 		"Geometry": {"make_cube_mesh"},
 		"ImGui": {"ImGui.__init__"},
 		"MaterialRenderer": {"__getattr__"},
@@ -57,6 +58,7 @@ from graaal import draw_compiler, draw_layout, utils
 from graaal import SkeletalAnimation, SkeletalGltf, RootMotion, EcsAnimation, AnimationEvents, Geometry
 from graaal.diagnostics_visualizer import DiagnosticsVisualizer
 from graaal import EcsPhysics
+from graaal import PhysicsRagdoll
 from graaal.MaterialTransform import MaterialTransform
 world = ECS.ECS()
 world.register(MaterialTransform)
@@ -126,13 +128,22 @@ class ForbidBackends(importlib.abc.MetaPathFinder):
         if name.split('.')[0] in {'wgpu', 'glfw', 'jinja2', 'PIL', 'pygltflib', 'pyjoltphysics', 'imgui_bundle', 'psutil'}:
             raise AssertionError('Unexpected optional import: ' + name)
 sys.meta_path.insert(0, ForbidBackends())
-from graaal import Assets, SkeletalGltf, Geometry, EcsPhysics, Diagnostics
+from graaal import Assets, SkeletalGltf, Geometry, EcsPhysics, PhysicsRagdoll, Diagnostics
 from graaal.__main__ import simulate
 from graaal.Diagnostics import WatchTimer
 assert simulate().shape == (2, 3)
 with WatchTimer('cpu'): pass
 assert 'graaal.RenderDiagnostics' not in sys.modules
 assert Assets.load_blue_noise().shape == (64, 64)
+"""], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
+	assert result.returncode == 0, result.stderr
+
+
+def test_ragdoll_helper_has_no_ecs_or_rendering_dependency():
+	result = subprocess.run([sys.executable, "-c", """
+import sys
+from graaal.PhysicsRagdoll import RagdollAsset
+assert not {'graaal.ECS', 'graaal.EcsPhysics', 'graaal.RenderContext', 'pyjoltphysics'} & sys.modules.keys()
 """], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
 	assert result.returncode == 0, result.stderr
 
