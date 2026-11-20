@@ -21,6 +21,7 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [Dictionary materials](materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](../scenes/benchmarks/README.md) | Reproduction commands and diagnostic options |
 | [Skeletal animation](skeletal_animation.md) | CPU skeleton and clip conventions, sampling, and pose evaluation |
+| [Physics](physics.md) | Optional Jolt rigid bodies, collider lifecycle, transform authority, and fixed scheduling |
 
 ## Architecture and maintenance contracts
 
@@ -107,7 +108,8 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | [Materials](materials.md#useful-apis) | `MaterialShader` defines shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables, while renderer Jinja2 templates generate hook dispatch. |
 | `DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
 | `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
-| `EcsMaterials` | `MaterialInstance` and `MaterialTransform` are components; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
+| `MaterialTransform` | CPU-only position, rotation and scale component used by material and physics adapters. |
+| `EcsMaterials` | `MaterialInstance` component; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
 | `ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
 | `rendering_settings` | `RenderingSettings` provides optional ImGui controls for `TransparencyPass` or `MaterialRenderer`; `set_resolution_percent/render_size` choose the scene size. |
 | `render_resolution` | `ResolutionPresenter.resize/color_attachment/record` samples a scene-sized color target into a window-sized output. |

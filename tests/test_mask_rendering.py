@@ -109,7 +109,8 @@ def test_route_uses_uploaded_values_when_shared_material_is_not_dirty():
 
 def test_ecs_mask_mode_edit_updates_route_and_keeps_surface_identity():
 	from graaal.ECS import ECS
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.MaterialTransform import MaterialTransform
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	mesh = MaterialMesh(quad(), unlit())
 	material = {"alpha_mode": 1, "base_color": (1, 1, 1, .75), "emission": (1, 0, 0)}

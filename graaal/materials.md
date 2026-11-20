@@ -54,7 +54,8 @@ This non-exhaustive map covers the material modules. Import from
 | `Materials` | `ParameterLayout.pack` applies a declared slot layout. |
 | `DefaultMaterial` | `DefaultMaterialShader` provides the lit schema, shader hooks, alpha routing and semantic validation used in this guide. |
 | `MaterialRenderer` | `MaterialMesh(vertices, shader, ...)` registers geometry; `DrawInstance` describes optional direct inputs. `MaterialRenderer.record` records a frame; `update` accepts explicit arrays; `update_transforms` skips material packing; `set_sample_count` switches 1x/4x passes. |
-| `EcsMaterials` | `MaterialInstance` stores mesh/material references and overrides; `MaterialTransform` stores numeric transforms. `EcsMaterialAdapter.sync` extracts changed ECS data; `touch_materials(*dicts)` marks nested edits for repacking. |
+| `MaterialTransform` | CPU-only position, rotation and scale component shared by rendering and physics. |
+| `EcsMaterials` | `MaterialInstance` stores mesh/material references and overrides. `EcsMaterialAdapter.sync` extracts changed ECS data; `touch_materials(*dicts)` marks nested edits for repacking. |
 
 The default adapter uses `TransparencyPass` for rendering and `DrawBatches` for
 grouping/culling. See the [engine API overview](README.md#modules-and-useful-apis)
@@ -83,9 +84,8 @@ from graaal.Math import Vec3
 from graaal.DefaultMaterial import DefaultMaterialShader
 from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
 from graaal.RenderContext import RenderContext
-from graaal.EcsMaterials import (
-    MaterialInstance, MaterialTransform, EcsMaterialAdapter,
-)
+from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsMaterials import MaterialInstance, EcsMaterialAdapter
 
 glass = DefaultMaterialShader(
     transparent=True,

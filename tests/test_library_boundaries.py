@@ -13,7 +13,7 @@ import importlib.abc
 import numpy
 class BlockOptional(importlib.abc.MetaPathFinder):
     def find_spec(self, name, *args):
-        if name.split('.')[0] in {'wgpu', 'glfw', 'jinja2', 'pyrr', 'pygltflib', 'PIL', 'imgui_bundle', 'mypy_extensions'}:
+        if name.split('.')[0] in {'wgpu', 'glfw', 'jinja2', 'pyrr', 'pygltflib', 'PIL', 'imgui_bundle', 'mypy_extensions', 'pyjoltphysics'}:
             raise ModuleNotFoundError(name)
 sys.meta_path.insert(0, BlockOptional())
 before = list(sys.path)
@@ -21,6 +21,14 @@ import graaal
 from graaal import ECS, Math, Assets, TransparencyData, DrawList, InstanceData
 from graaal import draw_compiler, draw_layout, utils
 from graaal import SkeletalAnimation, RootMotion, EcsAnimation, AnimationEvents
+from graaal import EcsPhysics
+from graaal.MaterialTransform import MaterialTransform
+world = ECS.ECS()
+world.register(MaterialTransform)
+entity = world.create(1)
+world.add(entity, MaterialTransform())
+assert world.get(MaterialTransform)[entity].rotation.tolist() == [[0, 0, 0, 1]]
+assert 'graaal.EcsMaterials' not in sys.modules
 assert Math.Quaternion.from_y_rotation(0.5).shape == (4,)
 from types import SimpleNamespace as NS
 from graaal.__main__ import simulate

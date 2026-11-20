@@ -35,7 +35,8 @@ def run_scene():
 	from graaal.DrawBatches import DrawBatches, RenderShader, ShaderPass
 	from graaal.ECS import ECS, Scheduler
 	from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.MaterialTransform import MaterialTransform
 	from graaal.ImGui import ImGui
 	from graaal.Geometry import make_cube_mesh
 	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale

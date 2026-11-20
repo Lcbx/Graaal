@@ -17,7 +17,8 @@ from graaal.DefaultMaterial import DefaultMaterialShader
 from graaal.DrawBatches import FrustumCuller
 from graaal.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
 from graaal.ECS import ECS
-from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+from graaal.MaterialTransform import MaterialTransform
 from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
 from graaal.Math import Camera, Vec3
 from graaal.RenderContext import RenderContext, Texture, TextureUsage

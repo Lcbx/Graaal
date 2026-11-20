@@ -3,7 +3,7 @@ from dataclasses import field
 import numpy as np
 
 from .ECS import component
-from .Math import Vec3, Vec4
+from .MaterialTransform import MaterialTransform
 from .Materials import MaterialBinding
 from .InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
@@ -15,13 +15,6 @@ class MaterialInstance:
 	overrides: object = field(default_factory=dict)
 	shader: object = None
 	surface_id: np.uint32 = 0
-
-
-@component
-class MaterialTransform:
-	position: Vec3 = field(default_factory=lambda: Vec3(0, 0, 0))
-	rotation: Vec4 = field(default_factory=lambda: Vec4(0, 0, 0, 1))
-	scale: Vec3 = field(default_factory=lambda: Vec3(1, 1, 1))
 
 
 class EcsMaterialAdapter:

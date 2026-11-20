@@ -20,7 +20,8 @@ def run_scene():
 	from imgui_bundle import imgui
 	from graaal.DefaultMaterial import DefaultMaterialShader
 	from graaal.ECS import ECS
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.MaterialTransform import MaterialTransform
 	from graaal.ImGui import ImGui
 	from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera, Vec3

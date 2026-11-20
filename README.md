@@ -33,6 +33,17 @@ python main.py scenes/transparency_example.py
 The graphical commands require a working WGPU backend. See the
 [scene guide](scenes/README.md) for more examples and controls.
 
+For standalone headless physics, install the optional pinned backend:
+
+```sh
+python -m pip install -e ".[physics]"
+python -m scenes.physics_headless_example
+```
+
+This example uses pyjoltphysics directly, without ECS or graphics. For ECS rigid
+bodies and colliders, see the [physics guide](graaal/physics.md) and run
+`python -m scenes.physics_example --headless --frames 240`.
+
 ## ECS example
 
 ```python

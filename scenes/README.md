@@ -56,6 +56,29 @@ sampling and post-physics foot IK using a synthetic terrain height query.
 It aligns the foot to the terrain normal and compares enabled and disabled IK
 without a GPU or physics backend.
 
+Run `python -m scenes.physics_headless_example` after installing
+`python -m pip install -e ".[physics]"` for a standalone native Jolt smoke
+test. It checks `pyjoltphysics.selftest()`, creates a static floor and three
+dynamic unit boxes in one batch, runs exactly 120 ticks at 120 Hz, and prints
+their heights and the number of drained events. It uses neither ECS nor
+graphics and stops the native thread before returning. Use `--ticks 240`,
+`--tick-hz 60` or `--threads 4` to change the run settings.
+
+The backend uses SI units and xyzw quaternions. Snapshot arrays are read-only
+native views; resolve body UIDs with `snapshot.rows_of(...)` on each read and
+copy data that must outlive the world. The example returns copied arrays.
+Physics remains optional; importing this scene does not load the backend.
+
+Run `python main.py scenes/physics_example.py` for ECS falling cubes, static
+obstacles, a moving kinematic platform, and a translucent sensor that turns from
+green toward red as more boxes overlap it, returning toward green as they leave. Install
+both `physics` and `render` extras for the window. Run the same simulation without
+graphics with `python -m scenes.physics_example --headless --frames 240`, or
+render offscreen with `python -m scenes.physics_example --offscreen --frames 2`.
+The caller drives 120 Hz scheduler ticks; rendering reads the latest tick pose.
+See the [physics guide](../graaal/physics.md) for commands and supported collider
+combinations. Event handling in this scene drains native events directly.
+
 ## Rendering and transparency settings
 
 In `transparency_example.py`, the ImGui settings panel is visible at startup.

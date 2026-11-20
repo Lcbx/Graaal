@@ -88,7 +88,8 @@ def test_gpu_skinning_matches_cpu_material_shading(transparent, sample_count):
 
 def test_ecs_palette_reallocation_and_entity_recycling():
 	from graaal.ECS import ECS
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance, MaterialTransform
+	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.MaterialTransform import MaterialTransform
 
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	dtype = np.dtype([("position", "f4", 3), ("normal", "f4", 3), ("uv", "f4", 2), ("joints", "u4", 4), ("weights", "f4", 4)])
