@@ -61,7 +61,7 @@ Keep physics out of the animation evaluator itself. It should exchange root moti
 | Animation LOD                          | Medium                            | Tiered evaluation: exact on the CPU near the camera, baked on the GPU far away (section 4) |
 | Ragdoll blending                       | Later                             | Requires a physics backend. The GPU path consumes it through override slots             |
 | Secondary skeletons                    | Later                             | Independent attachments and additional rigs                                             |
-| Animation graph editor                 | Later                             | Valuable, but not a prerequisite for the runtime                                        |
+| Animation authoring tools              | High                              | Configure graphs, inspect clip timelines and author event markers                        |
 
 ### D. Other good architectural ideas
 
@@ -470,6 +470,37 @@ Benchmark NumPy implementations and accelerate only demonstrated bottlenecks.
 
 **Deliverable:** A scalable, feature-rich character animation subsystem.
 
+**7. Animation authoring and inspection tools — incremental**
+
+Provide tools to configure animation graphs, visualize and scrub clip timelines,
+and add, move, rename and remove animation events. Build the authoring data and
+validation separately from the UI so scripts and applications can use them
+without ECS or a graphics device. Continue to use the existing clip, event,
+state-machine and pose-plan APIs for preview and playback.
+
+- Define an editable, versioned representation for states, clip and blend-space
+  inputs, transitions and conditions, pose tasks, masks and sync settings.
+  Validate references, graph dependencies and unsupported combinations before
+  compiling; errors should identify the editable item. Preserve reusable runtime
+  resources and avoid inventing a second graph evaluator.
+- Add graph configuration UI for parameters, states, transitions and conditions,
+  blend spaces and layered poses. Provide a preview of the selected character,
+  active state and transition weights, with save/load and clear validation errors.
+- Add a timeline view showing clip duration, playback position, events and sync
+  markers. Support play, pause, scrub and zoom, plus event insertion, selection,
+  moving, renaming and deletion. Editing must preserve stable selection for
+  coincident events and preserve the runtime event ordering and boundary rules.
+- Save authored graph and marker data in a documented, portable format; round-trip
+  and validate before replacing an existing asset. Preview edits without changing
+  running instances until explicitly applied by the application. Define how sync
+  marker constraints and clip-duration changes are surfaced in the editor.
+- Test headless authoring, invalid inputs, event boundaries, serialization and
+  compilation into existing runtime resources. Exercise UI interactions and a
+  material-skinned preview when the graphics backend is available.
+
+**Deliverable:** An author can configure a locomotion graph, preview and scrub its
+clips, and add event markers that fire through the existing event runtime.
+
 ---
 
 ## 6. Key implementation decisions
@@ -491,7 +522,7 @@ Benchmark NumPy implementations and accelerate only demonstrated bottlenecks.
 | GPU mixing space          | Model space first (approximate, validated at bake time); local space with in-kernel FK as an escape hatch |
 | CPU modifiers for GPU tier| Dense per-character override slots (ragdoll poses, CPU-solved IK); no readback         |
 | LOD                       | Tier by distance with hysteresis; switch only outside active blends                    |
-| Graph editor              | Defer until graph runtime is stable                                                    |
+| Graph and timeline tools  | Incremental authoring model and validation first; graphical editing and preview build on the runtime |
 
 ### Testing priorities
 

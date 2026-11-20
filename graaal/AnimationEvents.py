@@ -1,6 +1,7 @@
 """Animation event tracks and interval traversal, independent of ECS."""
 from dataclasses import dataclass
 import math
+from operator import index
 
 import numpy as np
 
@@ -57,3 +58,53 @@ class EventTrack:
 				found.append((float(time), index, name))
 		found.sort(key=lambda item: (item[0] if forward else -item[0], item[1]))
 		return [EventOccurrence(name, time) for time, _, name in found]
+
+
+class EventTimeline:
+	"""Edit event markers with stable IDs and produce independent event tracks."""
+	def __init__(self, track):
+		if not isinstance(track, EventTrack): raise ValueError("timeline requires an EventTrack")
+		track = EventTrack(track.duration, track.times, track.names)
+		self._duration = float(track.duration)
+		self._events = [(i, float(time), name) for i, (time, name) in enumerate(zip(track.times, track.names))]
+		self._next_id = len(self._events)
+
+	@property
+	def duration(self): return self._duration
+
+	def _find(self, event_id):
+		if isinstance(event_id, (bool, np.bool_)): raise ValueError("event ID must be a nonnegative integer")
+		try: event_id = index(event_id)
+		except TypeError as exc: raise ValueError("event ID must be a nonnegative integer") from exc
+		if event_id < 0: raise ValueError("event ID must be a nonnegative integer")
+		for position, event in enumerate(self._events):
+			if event[0] == event_id: return position
+		raise KeyError(event_id)
+
+	def _track(self, events):
+		return EventTrack(self.duration, [event[1] for event in events], [event[2] for event in events])
+
+	def snapshot(self):
+		"""Return (event IDs, EventTrack), ordered by time and stable at ties."""
+		ordered = sorted(self._events, key=lambda event: event[1])
+		return tuple(event[0] for event in ordered), self._track(ordered)
+
+	def add(self, time, name):
+		"""Insert a marker and return its stable ID."""
+		event = (self._next_id, time, name)
+		self._track([event])
+		self._events.append((event[0], float(time), name))
+		self._next_id += 1
+		return event[0]
+
+	def update(self, event_id, *, time=None, name=None):
+		"""Move or rename a marker; omitted fields retain their values."""
+		position = self._find(event_id)
+		old_id, old_time, old_name = self._events[position]
+		event = (old_id, old_time if time is None else time, old_name if name is None else name)
+		self._track([event])
+		self._events[position] = (old_id, float(event[1]), event[2])
+
+	def remove(self, event_id):
+		"""Remove one marker by ID; removed IDs are not reused."""
+		del self._events[self._find(event_id)]

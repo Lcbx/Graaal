@@ -234,7 +234,7 @@ mask and skin matrices, see [animation_graph_example.py](../scenes/animation_gra
 The synthetic example does not enable root extraction, but its pose plan includes
 the in-place task and obtains its slot from each controller sample batch.
 
-`model_matrices(skeleton, translation, rotation, scale)` evaluates batches of local poses, and `skin_matrices(skeleton, model)` returns contiguous `(instances, bones, 3, 4)` row-major float32 matrices representing `model @ inverse_bind`. `skin_vertices(positions, normals, joints, weights, matrices)` applies one pose to a mesh on the CPU, using the inverse transpose of each blended linear transform for normals. Joint weights must sum to one; singular blended transforms raise `ValueError`.
+`model_matrices(skeleton, translation, rotation, scale)` evaluates batches of local poses, and `skin_matrices(skeleton, model)` returns contiguous `(instances, bones, 3, 4)` row-major float32 matrices representing `model @ inverse_bind`. `skin_vertices(positions, normals, joints, weights, matrices)` applies one pose to a mesh on the CPU, using the inverse transpose of each blended linear transform for normals. Joint weights must sum to one; singular blended transforms raise `ValueError` when transforming normals. Pass `normals=None` to skip normal transforms and return `(positions, None)`; this supports collapsed geometry in position-only previews.
 
 The sampling, model and skin functions accept optional `out` buffers. For
 `sample_clip`, supply a tuple of translation, rotation and scale arrays;
@@ -471,6 +471,28 @@ one axis and does not constrain twist, plant feet or perform a terrain query.
 The headless foot IK example combines the IK and axis-alignment pose tasks.
 
 ## Animation events
+
+`EventTimeline` provides an editable, headless model for event markers. It
+starts from an `EventTrack` and returns stable IDs for selecting and editing
+individual markers, including markers at the same time:
+
+```python
+from graaal.AnimationEvents import EventTimeline, EventTrack
+
+timeline = EventTimeline(EventTrack(clip.duration, [], []))
+event_id = timeline.add(0.2, "footstep")
+timeline.update(event_id, time=0.3, name="left_step")
+ids, track = timeline.snapshot()
+timeline.remove(event_id)
+```
+
+Snapshots return IDs in the same time order as the independent runtime track;
+ties retain insertion order. Removed IDs are not reused within the timeline.
+Edits validate against the same `[0, duration)` and nonempty-name rules as
+`EventTrack`, and a failed edit leaves the timeline unchanged. A snapshot does
+not update an existing player's track automatically: the application decides
+when to replace its event resource. Graphical editing, clip preview and asset
+persistence are not provided by this model.
 
 For phase matching between looping clips, `SyncMapping` reuses `EventTrack`
 markers. Each track must contain the same unique names in the same cyclic
