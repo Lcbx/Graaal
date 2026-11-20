@@ -97,3 +97,18 @@ def test_skin_vertices_blends_positions_and_transforms_normals():
 		skin_vertices([[0, 0, 0]], [[0, 1, 0]], [[2]], [[1]], matrices)
 	with pytest.raises(ValueError, match="joint indices or skin weights"):
 		skin_vertices([[0, 0, 0]], [[0, 1, 0]], [[0]], [[0.5]], matrices)
+
+
+def test_skin_vertices_positions_only_supports_singular_transforms():
+	matrices = np.tile(np.eye(4, dtype=np.float32)[:3], (2, 1, 1))
+	matrices[:, 0, 0] = 0
+	matrices[1, 0, 3] = 2
+	positions, normals = skin_vertices([[1, 2, 3]], None, [[0, 1]], [[0.25, 0.75]], matrices)
+	np.testing.assert_allclose(positions, [[1.5, 2, 3]])
+	assert normals is None
+	with pytest.raises(ValueError, match="singular"):
+		skin_vertices([[1, 2, 3]], [[0, 1, 0]], [[0, 1]], [[0.25, 0.75]], matrices)
+	with pytest.raises(ValueError, match="joint indices or skin weights"):
+		skin_vertices([[1, 2, 3]], None, [[0]], [[0.5]], matrices)
+	with pytest.raises(ValueError, match="finite"):
+		skin_vertices([[np.nan, 2, 3]], None, [[0]], [[1]], matrices)

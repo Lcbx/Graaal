@@ -55,7 +55,7 @@ before = list(sys.path)
 import graaal
 from graaal import ECS, Math, Assets, TransparencyData, DrawList, InstanceData
 from graaal import draw_compiler, draw_layout, utils
-from graaal import SkeletalAnimation, SkeletalGltf, RootMotion, EcsAnimation, AnimationEvents, Geometry
+from graaal import SkeletalAnimation, SkeletalGltf, RootMotion, EcsAnimation, AnimationEvents, AnimationGraph, Geometry
 from graaal.diagnostics_visualizer import DiagnosticsVisualizer
 from graaal import EcsPhysics
 from graaal import PhysicsRagdoll

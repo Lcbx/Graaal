@@ -342,24 +342,26 @@ def skin_vertices(positions, normals, joints, weights, matrices):
 
 	Joint indices and weights have shape (vertices, influences); matrices have
 	shape (bones, 3, 4). Weights must be nonnegative and sum to one per vertex.
+	Pass normals=None for positions only; the returned normal value is then None.
 	"""
 	positions = np.asarray(positions, dtype=np.float32)
-	normals = np.asarray(normals, dtype=np.float32)
+	normals = None if normals is None else np.asarray(normals, dtype=np.float32)
 	joints = np.asarray(joints)
 	weights = np.asarray(weights, dtype=np.float32)
 	matrices = np.asarray(matrices, dtype=np.float32)
-	if positions.ndim != 2 or positions.shape[1:] != (3,) or normals.shape != positions.shape:
+	if positions.ndim != 2 or positions.shape[1:] != (3,) or (normals is not None and normals.shape != positions.shape):
 		raise ValueError("positions and normals must have shape (vertices, 3)")
 	if joints.ndim != 2 or joints.shape[0] != len(positions) or joints.shape[1] == 0 or joints.dtype.kind not in "iu" or weights.shape != joints.shape:
 		raise ValueError("joints and weights must have shape (vertices, influences)")
 	if matrices.ndim != 3 or matrices.shape[1:] != (3, 4) or not len(matrices):
 		raise ValueError("matrices must have shape (bones, 3, 4)")
-	if not all(np.isfinite(value).all() for value in (positions, normals, weights, matrices)):
+	if not all(np.isfinite(value).all() for value in (positions, weights, matrices)) or (normals is not None and not np.isfinite(normals).all()):
 		raise ValueError("skin inputs must be finite")
 	if np.any(joints < 0) or np.any(joints >= len(matrices)) or np.any(weights < 0) or not np.allclose(weights.sum(axis=1), 1, atol=1e-5):
 		raise ValueError("invalid joint indices or skin weights")
 	blended = np.sum(matrices[joints] * weights[..., None, None], axis=1)
 	points = np.einsum("nij,nj->ni", blended[..., :3], positions) + blended[..., 3]
+	if normals is None: return points, None
 	try:
 		directions = np.linalg.solve(blended[..., :3].transpose(0, 2, 1), normals[..., None])[..., 0]
 	except np.linalg.LinAlgError as exc:

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from graaal.AnimationEvents import EventTrack
+from graaal.AnimationGraph import AnimationGraphDefinition
 from graaal.AnimationStateMachine import AnimationStateMachine
 from graaal.AnimationSync import SyncMapping
 from graaal.ECS import ECS
@@ -39,6 +40,33 @@ def test_sync_fade_across_markers_events_and_root_motion_remainder():
 	requests = {int(entity): matrix for group in playback.root_motion_batches for entity, matrix in zip(group.entities, group.matrices)}
 	assert requests[int(entities[0])][0, 3] == pytest.approx(2)
 	np.testing.assert_allclose(batch.matrices[:, 0, 0, 3], 0)
+
+
+def test_compiled_graph_mappings_feed_existing_state_and_playback_adapters():
+	world, entities, _, original = setup()
+	data = {
+		"version": 1,
+		"parameters": {"move": 0},
+		"states": {"idle": {"clip": "idle"}, "walk": {"clip": "walk"}},
+		"initial_state": "idle",
+		"transitions": [{"source": "idle", "target": "walk", "conditions": [{"parameter": "move", "comparison": ">", "threshold": 0}], "duration": 1}],
+		"sample_slots": ["base"],
+		"tasks": [{"name": "base", "op": "sample", "slot": "base"}],
+		"sync_mappings": [{"source": "idle", "target": "walk"}],
+	}
+	graph = AnimationGraphDefinition(data).compile(original.skeletons[0], {"idle": original.clips[0], "walk": original.clips[1]}, sync_tracks={"idle": original.event_tracks[0], "walk": original.event_tracks[1]})
+	control = EcsAnimationStateAdapter(world, graph.machine, graph.state_clips, sync_mappings=graph.sync_mappings)
+	playback = EcsAnimationAdapter(world, original.skeletons, graph.clips, event_tracks=original.event_tracks, root_motions=original.root_motions, sync_mappings=graph.sync_mappings)
+	control.update([[1], [0]])
+	players = world.get(ClipPlayer)[entities]
+	assert players.target_time[0] == pytest.approx(1.5)
+	playback.update(0.75)
+	assert players.target_time[0] == pytest.approx(3.25)
+	assert [(event.role, event.name) for event in playback.events if event.entity == entities[0]] == [("source", "right"), ("target", "right")]
+	playback.update(0.25)
+	control.update([[0], [0]])
+	assert players.clip_id[0] == graph.clip_ids["walk"]
+	assert world.get(AnimationState)[entities].state[0] == graph.state_ids["walk"]
 
 
 def test_sync_reverse_pause_and_continuation():
