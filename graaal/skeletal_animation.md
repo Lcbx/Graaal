@@ -201,6 +201,8 @@ Version 1 fields are:
 | `masks` | Optional named masks, either per-bone weights in `[0, 1]` or `{"root": bone_index}` subtree definitions. |
 | `tasks` | Required nonempty ordered task list; the final task is the output. |
 | `sync_mappings` | Optional list of `{source, target}` clip-name pairs; supplied marker tracks compile into `SyncMapping` resources. |
+| `blend_spaces` | Optional named 1D selectors: `{parameter, points: [{position, clip}, ...]}`. Positions must increase strictly. |
+| `blend_spaces_2d` | Optional named rectangular grids: `{x_parameter, y_parameter, x_positions, y_positions, clips, sample_slots, weight_slot}`. `clips` has one row per Y point and one clip per X point. |
 
 Each task has a unique `name` and a `PoseOp` or string `op`. `sample` names a
 sample `slot`; `in_place` names an earlier `base` task and a root-motion `slot`.
@@ -226,6 +228,30 @@ See [animation_graph_example.py](../scenes/animation_graph_example.py) for an EC
 locomotion controller and an independent masked upper-body layer compiled from
 one definition.
 
+Each `graph.blend_spaces[name]` stores a parameter column and an ordered clip
+axis. Call `ids, weights = graph.blend_spaces[name].select(parameter_rows)` with
+finite `(instances, parameter_columns)` rows. The existing `blend_space_1d`
+selector clamps values at the endpoints and returns two clip IDs and weights per
+instance. Supply those IDs and weights, plus caller-owned clip times, as a
+sample-slot triple to `graph.plan.evaluate`. This selector owns neither playback
+nor event traversal; layer masks still apply in the pose plan. See the graph
+tool's sample bindings for a live preview example.
+
+A `blend_spaces_2d` entry binds two distinct sample slots and one existing
+`weight_slot`. Its compiled selector returns `ids, horizontal, vertical =
+graph.blend_spaces_2d[name].select(parameter_rows)`, using the existing
+`blend_space_2d`. Supply `ids[:, 0]` and `ids[:, 1]` as the two sample-slot ID
+pairs, each with `horizontal` weights and caller-owned times. Set the named
+weight-slot column to `vertical`, then blend the two sample tasks in the pose
+plan. The row ordering follows increasing Y positions. X and Y parameters must
+be distinct; axes must be finite and strictly increasing. The named weight-slot
+parameter is a placeholder for standalone graph evaluation and must have a
+default in `[0, 1]`; its preview value is replaced by the selector's vertical
+weight when the grid is bound. This leaves the existing pose evaluator in charge
+of the final local-pose blend. Each named 2D grid must use a distinct weight slot;
+compilation rejects shared slots so simultaneously active grids cannot overwrite
+one another's vertical blend weight.
+
 For synchronized clip transitions, request `sync_mappings` in the definition
 and supply `sync_tracks={clip_name: event_track, ...}` to `compile`. Each requested
 pair needs distinct clips and marker tracks whose durations exactly match the
@@ -239,11 +265,13 @@ IDs in `graph.sync_mappings`. Pass that same mapping to both
 must loop. For editable tracks, compile from `EventTimeline.snapshot()[1]` so
 subsequent edits stay separate from the existing runtime mapping.
 
-This first authoring version supports single-clip states, sample tasks, in-place
-root anchoring, masked blend/additive layers and clip-pair sync settings.
-Blend-space states and IK/phase authoring are not yet represented. The
-[timeline tool](../tool/README.md) provides an in-memory definition editor, state
-diagram and explicit layered-pose/transition previews using this API. Runtime
+This first authoring version supports single-clip states, named 1D/2D blend-space
+sample bindings, in-place root anchoring, masked blend/additive layers and
+clip-pair sync settings. Blend-space states and IK/phase authoring
+are not yet represented. The
+[timeline tool](../tool/README.md) provides an in-memory definition editor,
+transition/condition forms, state diagram and explicit layered-pose/transition
+previews using this API. Runtime
 blend-space, sync and IK APIs remain available for application-owned composition.
 
 ## Conditional state transitions

@@ -32,6 +32,8 @@ def default_definition(animations):
 class GraphWindow:
 	"""Compile a draft and preview explicit samples without owning playback."""
 	STATE_SAMPLE = "<state / transition>"
+	BLEND_PREFIX = "<blend: "
+	GRID_PREFIX = "<grid: "
 
 	def __init__(self, root, animations, *, select_clip, redraw, closed):
 		import tkinter as tk
@@ -42,6 +44,7 @@ class GraphWindow:
 		self.select_clip, self.redraw, self.closed = select_clip, redraw, closed
 		self.graph, self.parameters, self.target_state = None, None, None
 		self.parameter_entries, self.bindings = {}, {}
+		self.transition_window = None
 		self.window = tk.Toplevel(root)
 		self.window.title("Animation graph configuration")
 		self.window.geometry("1120x820")
@@ -58,6 +61,7 @@ class GraphWindow:
 		toolbar = ttk.Frame(self.window, padding=8)
 		toolbar.pack(fill="x")
 		ttk.Button(toolbar, text="Compile draft", command=self.compile_draft).pack(side="left")
+		ttk.Button(toolbar, text="Edit transitions", command=self.open_transitions).pack(side="left", padx=5)
 		ttk.Checkbutton(toolbar, text="Preview graph in viewport", variable=self.preview_enabled, command=self.change_preview).pack(side="left", padx=10)
 		ttk.Label(toolbar, text="Draft edits stay in memory. Playback uses the timeline.").pack(side="left")
 		panes = ttk.Panedwindow(self.window, orient="horizontal")
@@ -99,11 +103,27 @@ class GraphWindow:
 		self.editor.insert("1.0", json.dumps(default_definition(animations), indent=2))
 		self.compile_draft()
 
+	def compile_definition(self, data):
+		definition = AnimationGraphDefinition(data)
+		tracks = {name: animation.sync_markers.snapshot()[1] for name, animation in zip(clip_resources(self.animations), self.animations) if animation.sync_markers is not None}
+		return definition, definition.compile(self.asset.skeleton, clip_resources(self.animations), sync_tracks=tracks)
+
+	def open_transitions(self):
+		if self.transition_window is not None:
+			self.transition_window.window.lift()
+			return
+		try:
+			text = self.editor.get("1.0", "end-1c")
+			definition, _ = self.compile_definition(json.loads(text))
+		except (ValueError, TypeError) as exc:
+			self.status.set(f"Cannot edit transitions: {exc}")
+			return
+		from .animation_graph_forms import TransitionWindow
+		self.transition_window = TransitionWindow(self, definition.data, text)
+
 	def compile_draft(self):
 		try:
-			definition = AnimationGraphDefinition(json.loads(self.editor.get("1.0", "end-1c")))
-			tracks = {name: animation.sync_markers.snapshot()[1] for name, animation in zip(clip_resources(self.animations), self.animations) if animation.sync_markers is not None}
-			graph = definition.compile(self.asset.skeleton, clip_resources(self.animations), sync_tracks=tracks)
+			definition, graph = self.compile_definition(json.loads(self.editor.get("1.0", "end-1c")))
 		except (ValueError, TypeError) as exc:
 			self.status.set(f"Cannot compile draft: {exc}")
 			return
@@ -125,9 +145,10 @@ class GraphWindow:
 		for name in graph.sample_slots:
 			self.ttk.Label(self.binding_frame, text=name).pack(anchor="w")
 			value = self.tk.StringVar(value=self.STATE_SAMPLE)
-			box = self.ttk.Combobox(self.binding_frame, textvariable=value, state="readonly", values=(self.STATE_SAMPLE, *graph.clip_ids))
+			grids = (f"{self.GRID_PREFIX}{space} / {role}>" for space, grid in graph.blend_spaces_2d.items() for role, slot in zip(("lower", "upper"), grid.sample_slots) if slot == graph.sample_slots[name])
+			box = self.ttk.Combobox(self.binding_frame, textvariable=value, state="readonly", values=(self.STATE_SAMPLE, *graph.clip_ids, *(f"{self.BLEND_PREFIX}{space}>" for space in graph.blend_spaces), *grids))
 			box.pack(fill="x")
-			box.bind("<<ComboboxSelected>>", lambda _: self.redraw())
+			box.bind("<<ComboboxSelected>>", lambda _, slot=name: self.change_binding(slot))
 			self.bindings[name] = value
 		self.change_state()
 		self.status.set("Compiled draft applied to this preview. No asset was written.")
@@ -171,6 +192,22 @@ class GraphWindow:
 	def change_fade(self, value):
 		self.redraw()
 
+	def change_binding(self, slot):
+		binding = self.bindings[slot].get()
+		for name, grid in self.graph.blend_spaces_2d.items():
+			lower, upper = (next(label for label, index in self.graph.sample_slots.items() if index == position) for position in grid.sample_slots)
+			labels = (f"{self.GRID_PREFIX}{name} / lower>", f"{self.GRID_PREFIX}{name} / upper>")
+			if binding in labels:
+				self.bindings[lower].set(labels[0])
+				self.bindings[upper].set(labels[1])
+		for name, grid in self.graph.blend_spaces_2d.items():
+			lower, upper = (next(label for label, index in self.graph.sample_slots.items() if index == position) for position in grid.sample_slots)
+			labels = (f"{self.GRID_PREFIX}{name} / lower>", f"{self.GRID_PREFIX}{name} / upper>")
+			if (self.bindings[lower].get() == labels[0]) != (self.bindings[upper].get() == labels[1]):
+				for item, label in zip((lower, upper), labels):
+					if self.bindings[item].get() == label: self.bindings[item].set(self.STATE_SAMPLE)
+		self.redraw()
+
 	def change_preview(self):
 		if self.graph is not None and self.preview_enabled.get(): self.change_state()
 		else: self.redraw()
@@ -182,15 +219,31 @@ class GraphWindow:
 		target = source if self.target_state is None else graph.state_clips[self.target_state]
 		fade = self.fade.get() if self.target_state is not None else 0
 		samples = []
-		for value in self.bindings.values():
-			ids = (source, target) if value.get() == self.STATE_SAMPLE else (graph.clip_ids[value.get()],) * 2
+		weights_for_plan = self.parameters[None, list(graph.weight_columns)].copy()
+		grid_pairs = {}
+		for name, grid in graph.blend_spaces_2d.items():
+			lower, upper = (next(label for label, index in graph.sample_slots.items() if index == position) for position in grid.sample_slots)
+			if self.bindings[lower].get() == f"{self.GRID_PREFIX}{name} / lower>" and self.bindings[upper].get() == f"{self.GRID_PREFIX}{name} / upper>":
+				ids, horizontal, vertical = grid.select(self.parameters[None])
+				grid_pairs[grid.sample_slots[0]] = (ids[0, 0], horizontal[0])
+				grid_pairs[grid.sample_slots[1]] = (ids[0, 1], horizontal[0])
+				weights_for_plan[0, grid.weight_slot] = vertical[0]
+		for slot, value in enumerate(self.bindings.values()):
+			binding = value.get()
+			if slot in grid_pairs:
+				ids, weights = grid_pairs[slot]
+			elif binding.startswith(self.BLEND_PREFIX) and binding.endswith(">"):
+				ids_array, weights_array = graph.blend_spaces[binding[len(self.BLEND_PREFIX):-1]].select(self.parameters[None])
+				ids, weights = tuple(int(clip) for clip in ids_array[0]), tuple(float(weight) for weight in weights_array[0])
+			else:
+				ids = (source, target) if binding == self.STATE_SAMPLE or binding.startswith(self.GRID_PREFIX) else (graph.clip_ids[binding],) * 2
+				weights = (1-fade, fade) if binding == self.STATE_SAMPLE or binding.startswith(self.GRID_PREFIX) else (1, 0)
 			times = [time % graph.clips[clip].duration if graph.clips[clip].duration > 0 else 0 for clip in ids]
-			mapping = graph.sync_mappings.get(ids) if value.get() == self.STATE_SAMPLE else None
+			mapping = graph.sync_mappings.get(ids) if binding == self.STATE_SAMPLE else None
 			if mapping is not None: times[1] = mapping.map([times[0]])[0][0]
-			weights = (1-fade, fade) if value.get() == self.STATE_SAMPLE else (1, 0)
 			samples.append((np.array([ids]), np.array([times]), np.array([weights])))
 		motions = [(None, np.array([False])) for _ in graph.root_motion_slots]
-		pose = graph.plan.evaluate(graph.clips, samples, self.parameters[None, list(graph.weight_columns)], root_motions=motions)
+		pose = graph.plan.evaluate(graph.clips, samples, weights_for_plan, root_motions=motions)
 		return model_matrices(self.asset.skeleton, *pose)[0]
 
 	def draw_diagram(self):

@@ -77,6 +77,111 @@ def test_definition_compiles_existing_runtime_resources_and_named_bindings():
 	with pytest.raises(ValueError): graph.parameter_defaults[0] = 99
 
 
+def test_named_blend_space_selects_runtime_pairs_for_existing_pose_plan():
+	rig, clips = resources()
+	data = definition()
+	data["blend_spaces"] = {"locomotion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}]}}
+	graph = AnimationGraphDefinition(data).compile(rig, clips)
+	space = graph.blend_spaces["locomotion"]
+	ids, weights = space.select([[0, 1, 0], [0.5, 1, 0], [2, 1, 0]])
+	np.testing.assert_array_equal(ids, [[0, 1]] * 3)
+	np.testing.assert_allclose(weights, [[1, 0], [0.5, 0.5], [0, 1]])
+	pose = graph.plan.evaluate(graph.clips, [(ids[1:2], np.zeros((1, 2)), weights[1:2]), (np.array([[2, 2]]), np.zeros((1, 2)), np.array([[1, 0]]))], [[0]], root_motions=[(None, np.array([False]))])
+	np.testing.assert_allclose(model_matrices(rig, *pose)[0, :, :3, 3], [[1, 0, 0], [1, 1, 0]])
+	with pytest.raises(TypeError): graph.blend_spaces["other"] = space
+	with pytest.raises(ValueError): space.positions[0] = 5
+	with pytest.raises(ValueError, match="blend-space column"): space.select([0.5])
+
+
+@pytest.mark.parametrize("value,match", [
+	({"parameter": "missing", "points": [{"position": 0, "clip": "idle"}]}, "parameter"),
+	({"parameter": "speed", "points": []}, "points"),
+	({"parameter": "speed", "points": [{"position": 0, "clip": "missing"}]}, "points\\[0\\].clip"),
+	({"parameter": "speed", "points": [{"position": 1, "clip": "idle"}, {"position": 0, "clip": "walk"}]}, "points\\[1\\].position"),
+	({"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 0, "clip": "walk"}]}, "points\\[1\\].position"),
+	({"parameter": "speed", "points": [{"position": float("nan"), "clip": "idle"}]}, "points\\[0\\].position"),
+])
+def test_blend_space_bad_drafts_leave_previous_compilation_intact(value, match):
+	rig, clips = resources()
+	data = definition()
+	data["blend_spaces"] = {"locomotion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}]}}
+	draft = AnimationGraphDefinition(data)
+	good = draft.compile(rig, clips)
+	draft.data["blend_spaces"]["locomotion"] = value
+	with pytest.raises(ValueError, match=match): draft.compile(rig, clips)
+	np.testing.assert_allclose(good.blend_spaces["locomotion"].select([[0.5, 1, 0]])[1], [[0.5, 0.5]])
+
+
+def grid_definition():
+	data = definition()
+	data["parameters"].update({"turn": 0, "vertical_mix": 0})
+	data["sample_slots"] = ["lower", "upper"]
+	data["weight_slots"] = ["vertical_mix"]
+	data["root_motion_slots"] = []
+	data["tasks"] = [
+		{"name": "lower", "op": "sample", "slot": "lower"},
+		{"name": "upper", "op": "sample", "slot": "upper"},
+		{"name": "output", "op": "blend", "base": "lower", "overlay": "upper", "weight": "vertical_mix"},
+	]
+	data["blend_spaces_2d"] = {"motion": {
+		"x_parameter": "speed", "y_parameter": "turn", "x_positions": [0, 1], "y_positions": [-1, 1],
+		"clips": [["idle", "walk"], ["upper", "walk"]], "sample_slots": ["lower", "upper"], "weight_slot": "vertical_mix",
+	}}
+	return data
+
+
+def test_named_2d_grid_selects_existing_pose_plan_inputs():
+	rig, clips = resources()
+	graph = AnimationGraphDefinition(grid_definition()).compile(rig, clips)
+	grid = graph.blend_spaces_2d["motion"]
+	ids, horizontal, vertical = grid.select([[0.5, 1, 0, 0, 0], [2, 1, 0, 2, 0]])
+	np.testing.assert_array_equal(ids[0], [[0, 1], [2, 1]])
+	np.testing.assert_allclose(horizontal[0], [0.5, 0.5])
+	np.testing.assert_allclose(vertical, [0.5, 1])
+	samples = [(ids[:1, row], np.zeros((1, 2)), horizontal[:1]) for row in (0, 1)]
+	pose = graph.plan.evaluate(graph.clips, samples, [[vertical[0]]])
+	np.testing.assert_allclose(model_matrices(rig, *pose)[0, :, :3, 3], [[1, 0, 0], [1, 1.5, 0]])
+	with pytest.raises(ValueError): grid.clip_ids[0, 0] = 2
+	with pytest.raises(ValueError, match="both blend-space columns"): grid.select([[0]])
+
+
+@pytest.mark.parametrize("field,value,match", [
+	("x_parameter", "missing", "x_parameter"),
+	("y_parameter", "speed", "axis parameters must differ"),
+	("x_positions", [1, 0], "x_positions"),
+	("y_positions", [], "y_positions"),
+	("clips", [["idle"]], "clips"),
+	("clips", [["idle", "missing"], ["upper", "walk"]], "clips\\[0\\]\\[1\\]"),
+	("sample_slots", ["lower", "lower"], "two distinct sample slots"),
+	("weight_slot", "missing", "weight_slot"),
+])
+def test_bad_2d_grid_preserves_previous_compilation(field, value, match):
+	rig, clips = resources()
+	draft = AnimationGraphDefinition(grid_definition())
+	good = draft.compile(rig, clips)
+	draft.data["blend_spaces_2d"]["motion"][field] = value
+	with pytest.raises(ValueError, match=match): draft.compile(rig, clips)
+	np.testing.assert_allclose(good.blend_spaces_2d["motion"].select([[0.5, 1, 0, 0, 0]])[2], [0.5])
+
+
+def test_2d_grids_cannot_share_vertical_weight_slot():
+	rig, clips = resources()
+	data = grid_definition()
+	data["sample_slots"] += ["other_lower", "other_upper"]
+	second = deepcopy(data["blend_spaces_2d"]["motion"])
+	second["sample_slots"] = ["other_lower", "other_upper"]
+	data["blend_spaces_2d"]["other"] = second
+	draft = AnimationGraphDefinition(data)
+	with pytest.raises(ValueError, match=r"blend_spaces_2d\.other\.weight_slot: already used by blend_spaces_2d\.motion"):
+		draft.compile(rig, clips)
+	data["parameters"]["other_mix"] = 0
+	data["weight_slots"].append("other_mix")
+	data["blend_spaces_2d"]["other"]["weight_slot"] = "other_mix"
+	graph = AnimationGraphDefinition(data).compile(rig, clips)
+	assert graph.blend_spaces_2d["motion"].weight_slot == 0
+	assert graph.blend_spaces_2d["other"].weight_slot == 1
+
+
 def test_draft_edits_and_failed_compiles_leave_existing_resources_unchanged():
 	rig, clips = resources()
 	data = definition()

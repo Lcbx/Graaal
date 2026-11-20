@@ -68,6 +68,20 @@ to the initial state, parameter defaults, zero fade and state-driven sample
 bindings. Invalid drafts preserve the previous compiled preview and controls.
 No graph or glTF file is saved.
 
+Choose **Edit transitions** to configure rules in a form using the current valid
+JSON draft. Select a rule to edit its source, target and fade duration, or choose
+**New rule**. Add, update or remove conditions in the form, then choose **Add
+rule** or **Update selected rule** to stage those fields. All conditions must
+match. **Higher priority** and **Lower priority** change rule order; the first
+matching rule wins. **Remove selected** removes a staged rule.
+
+**Write transitions to draft** validates and replaces the JSON text as one undoable
+edit. It preserves the other graph fields and leaves the compiled preview alone;
+choose **Compile draft** to apply it. Closing the form discards changes that have
+not been written. If the JSON text changes while the form is open, writing is
+blocked: close and reopen the form to use the latest draft. Parameters and states
+are chosen from the draft; add new ones in JSON before opening the form.
+
 Edit preview parameter values and choose **Apply parameters / evaluate conditions**
 to inspect the first matching transition and its configured duration. The
 **Manual transition weight** slider blends its source and target poses; it does
@@ -79,13 +93,54 @@ phase to the source markers. Root-motion extraction is disabled, so in-place
 tasks receive an empty instance mask. Event feedback
 still belongs to the selected timeline clip, rather than a graph event controller.
 
+To preview a 1D blend space, add a named `blend_spaces` entry to the JSON draft,
+then compile and choose `<blend: name>` in a sample binding. For example:
+
+```json
+"blend_spaces": {
+  "locomotion": {
+    "parameter": "speed",
+    "points": [{"position": 0, "clip": "1: 1_idle"}, {"position": 1, "clip": "2: 2_move"}]
+  }
+}
+```
+
+Declare `speed` in `parameters`. Apply preview parameters to move along the
+axis; values outside the points use the nearest clip. The binding supplies the
+selected pair to the existing pose plan at timeline time. Each slot can choose
+its own blend space, so the same graph can layer a masked clip over locomotion.
+For a 2D grid, define `blend_spaces_2d` with separate X/Y parameters, strictly
+increasing `x_positions` and `y_positions`, and a rectangular `clips` list in
+Y-row order. Give it `sample_slots` (two distinct existing slots) and a
+`weight_slot` (an existing layer weight parameter). The pose plan should sample
+both slots and blend their tasks using that weight. For example:
+
+```json
+"blend_spaces_2d": {
+  "motion": {
+    "x_parameter": "speed", "y_parameter": "turn",
+    "x_positions": [0, 1], "y_positions": [-1, 1],
+    "clips": [["1: 1_idle", "2: 2_move"], ["1: 1_idle", "2: 2_move"]],
+    "sample_slots": ["lower", "upper"], "weight_slot": "grid_mix"
+  }
+}
+```
+
+Choose `<grid: motion / lower>` in either paired sample binding; the other
+binding is set automatically. The grid selects both horizontal clip pairs and
+overrides `grid_mix` with the vertical blend weight for the viewport pose. Choosing
+a different binding on either slot disconnects the pair. The sample times use
+the timeline clock; clip phase, events and root motion remain application-owned.
+Give each named 2D grid its own weight slot so multiple grids can be previewed
+at once; shared slots fail compilation.
+
 Graph poses use the existing `PosePlan`, model matrices and CPU-skinned viewport.
 Camera framing uses the union of sampled clip bone bounds. Selecting a clip in
 the timeline turns graph preview off; enable **Preview graph in viewport** to
 restore it. Reopening the graph window retains its draft. Closing it returns to
 clip inspection; loading another asset discards the graph draft and closes it.
 See `python -m scenes.animation_graph_example` for ECS integration of the same
-definition format. Dedicated node-editing forms, blend-space authoring and
+definition format. Forms for other graph items and blend spaces, and
 persistence remain future work.
 
 To synchronize two clips, author at least two sync markers on each clip using

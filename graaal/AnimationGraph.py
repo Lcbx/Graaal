@@ -10,7 +10,7 @@ from .AnimationStateMachine import AnimationStateMachine
 from .AnimationEvents import EventTrack
 from .AnimationSync import SyncMapping
 from .PoseTasks import PoseOp, PosePlan
-from .SkeletalAnimation import Clip, Skeleton, subtree_mask
+from .SkeletalAnimation import Clip, Skeleton, blend_space_1d, blend_space_2d, subtree_mask
 
 
 def _record(value, allowed, required, path):
@@ -143,6 +143,96 @@ def _compile_sync(definitions, tracks, clips, clip_ids):
 
 
 @dataclass(frozen=True)
+class CompiledBlendSpace1D:
+	"""A named 1D selector; callers supply playback times for selected clips."""
+	parameter: int
+	positions: np.ndarray
+	clip_ids: np.ndarray
+
+	def select(self, parameters):
+		values = np.asarray(parameters, dtype=np.float64)
+		if values.ndim != 2 or self.parameter >= values.shape[1]: raise ValueError("parameters must contain the blend-space column")
+		return blend_space_1d(self.positions, self.clip_ids, values[:, self.parameter])
+
+
+def _compile_blend_spaces(definitions, parameters, clips):
+	result = {}
+	for name, value in _named(definitions, "blend_spaces").items():
+		path = f"blend_spaces.{name}"
+		_record(value, {"parameter", "points"}, ("parameter", "points"), path)
+		parameter = _reference(value["parameter"], parameters, path + ".parameter")
+		points = value["points"]
+		if not isinstance(points, (list, tuple)) or not points: raise ValueError(f"{path}.points: expected a nonempty list")
+		positions, ids = [], []
+		for i, point in enumerate(points):
+			item = f"{path}.points[{i}]"
+			_record(point, {"position", "clip"}, ("position", "clip"), item)
+			position = _number(point["position"], item + ".position")
+			if positions and position <= positions[-1]: raise ValueError(f"{item}.position: positions must increase strictly")
+			positions.append(position)
+			ids.append(_reference(point["clip"], clips, item + ".clip"))
+		position_array = np.array(positions, dtype=np.float64)
+		id_array = np.array(ids, dtype=np.int64)
+		position_array.flags.writeable = False
+		id_array.flags.writeable = False
+		result[name] = CompiledBlendSpace1D(parameter, position_array, id_array)
+	return MappingProxyType(result)
+
+
+@dataclass(frozen=True)
+class CompiledBlendSpace2D:
+	"""Two horizontal sample pairs and one vertical pose-plan weight."""
+	x_parameter: int
+	y_parameter: int
+	x_positions: np.ndarray
+	y_positions: np.ndarray
+	clip_ids: np.ndarray
+	sample_slots: tuple
+	weight_slot: int
+
+	def select(self, parameters):
+		values = np.asarray(parameters, dtype=np.float64)
+		if values.ndim != 2 or max(self.x_parameter, self.y_parameter) >= values.shape[1]: raise ValueError("parameters must contain both blend-space columns")
+		return blend_space_2d(self.x_positions, self.y_positions, self.clip_ids, values[:, [self.x_parameter, self.y_parameter]])
+
+
+def _compile_blend_spaces_2d(definitions, parameters, clips, samples, weights):
+	result = {}
+	weight_owners = {}
+	for name, value in _named(definitions, "blend_spaces_2d").items():
+		path = f"blend_spaces_2d.{name}"
+		_record(value, {"x_parameter", "y_parameter", "x_positions", "y_positions", "clips", "sample_slots", "weight_slot"}, ("x_parameter", "y_parameter", "x_positions", "y_positions", "clips", "sample_slots", "weight_slot"), path)
+		x_parameter = _reference(value["x_parameter"], parameters, path + ".x_parameter")
+		y_parameter = _reference(value["y_parameter"], parameters, path + ".y_parameter")
+		if x_parameter == y_parameter: raise ValueError(f"{path}.y_parameter: axis parameters must differ")
+		axes = []
+		for axis in ("x_positions", "y_positions"):
+			positions = value[axis]
+			if not isinstance(positions, (list, tuple)) or not positions: raise ValueError(f"{path}.{axis}: expected a nonempty list")
+			array = np.array([_number(point, f"{path}.{axis}[{i}]") for i, point in enumerate(positions)], dtype=np.float64)
+			if np.any(array[1:] <= array[:-1]): raise ValueError(f"{path}.{axis}: positions must increase strictly")
+			array.flags.writeable = False
+			axes.append(array)
+		grid = value["clips"]
+		if not isinstance(grid, (list, tuple)) or len(grid) != len(axes[1]): raise ValueError(f"{path}.clips: expected one row per y position")
+		rows = []
+		for y, row in enumerate(grid):
+			if not isinstance(row, (list, tuple)) or len(row) != len(axes[0]): raise ValueError(f"{path}.clips[{y}]: expected one clip per x position")
+			rows.append([_reference(clip, clips, f"{path}.clips[{y}][{x}]") for x, clip in enumerate(row)])
+		ids = np.array(rows, dtype=np.int64)
+		ids.flags.writeable = False
+		slots = value["sample_slots"]
+		if not isinstance(slots, (list, tuple)) or len(slots) != 2: raise ValueError(f"{path}.sample_slots: expected two distinct sample slots")
+		compiled_slots = tuple(_reference(slot, samples, f"{path}.sample_slots[{i}]") for i, slot in enumerate(slots))
+		if compiled_slots[0] == compiled_slots[1]: raise ValueError(f"{path}.sample_slots: expected two distinct sample slots")
+		weight = _reference(value["weight_slot"], weights, path + ".weight_slot")
+		if weight in weight_owners: raise ValueError(f"{path}.weight_slot: already used by blend_spaces_2d.{weight_owners[weight]}")
+		weight_owners[weight] = name
+		result[name] = CompiledBlendSpace2D(x_parameter, y_parameter, *axes, ids, compiled_slots, weight)
+	return MappingProxyType(result)
+
+
+@dataclass(frozen=True)
 class CompiledAnimationGraph:
 	"""Existing runtime resources plus read-only name-to-column/ID bindings."""
 	machine: AnimationStateMachine
@@ -158,13 +248,16 @@ class CompiledAnimationGraph:
 	weight_columns: tuple
 	root_motion_slots: Mapping
 	sync_mappings: Mapping
+	blend_spaces: Mapping
+	blend_spaces_2d: Mapping
 
 
 class AnimationGraphDefinition:
 	"""An editable copied dictionary; compilation never changes live resources.
 
-	Version 1 supports single-clip states and sample/in-place/blend/additive
-	tasks. The last task is the output; task inputs must refer backward.
+	Version 1 supports single-clip states, named 1D/2D blend selectors and
+	sample/in-place/blend/additive tasks. The last task is the output;
+	task inputs must refer backward.
 	Playback, sample times, events, physics and ECS integration remain external.
 	"""
 	def __init__(self, data):
@@ -177,7 +270,7 @@ class AnimationGraphDefinition:
 		compiled rules, metadata and pose buffers are independent of later edits.
 		Optional sync_tracks maps clip names to EventTracks used by sync_mappings.
 		"""
-		fields = {"version", "parameters", "states", "initial_state", "transitions", "sample_slots", "weight_slots", "root_motion_slots", "masks", "tasks", "sync_mappings"}
+		fields = {"version", "parameters", "states", "initial_state", "transitions", "sample_slots", "weight_slots", "root_motion_slots", "masks", "tasks", "sync_mappings", "blend_spaces", "blend_spaces_2d"}
 		data = _record(self.data, fields, ("version", "states", "initial_state", "sample_slots", "tasks"), "graph")
 		if type(data["version"]) is not int or data["version"] != 1: raise ValueError("graph.version: supported version is integer 1")
 		if not isinstance(skeleton, Skeleton): raise ValueError("skeleton: expected a Skeleton")
@@ -207,8 +300,10 @@ class AnimationGraphDefinition:
 		machine = _compile_transitions(data.get("transitions", []), state_ids, parameter_columns)
 		plan = _compile_tasks(skeleton, data["tasks"], samples, weights, motions, masks)
 		sync = _compile_sync(data.get("sync_mappings", []), sync_tracks, clips, clip_ids)
+		blend_spaces = _compile_blend_spaces(data.get("blend_spaces", {}), parameter_columns, clip_ids)
+		blend_spaces_2d = _compile_blend_spaces_2d(data.get("blend_spaces_2d", {}), parameter_columns, clip_ids, samples, weights)
 		return CompiledAnimationGraph(
 			machine, plan, MappingProxyType({clip_ids[name]: clip for name, clip in clips.items()}),
 			MappingProxyType(clip_ids), MappingProxyType(state_ids), MappingProxyType(state_clips), initial,
-			MappingProxyType(parameter_columns), defaults, MappingProxyType(samples), weight_columns, MappingProxyType(motions), sync,
+			MappingProxyType(parameter_columns), defaults, MappingProxyType(samples), weight_columns, MappingProxyType(motions), sync, blend_spaces, blend_spaces_2d,
 		)
