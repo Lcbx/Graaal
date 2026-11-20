@@ -15,9 +15,23 @@ The timeline automatically fits the animation duration when selecting a clip
 and follows panel resizing until zoom is adjusted manually. **Fit timeline**
 restores automatic fitting. Click or drag on the timeline to scrub; click a
 keyframe to see its value and interpolation in the status bar. Use Play/Pause,
-the zoom slider and the scrollbars to navigate. Add an event by entering its name and time, or click
-**Use playhead** to fill in the current time. Select an event in the list to
-move the playhead to it, and use **Remove selected** to remove it.
+the zoom slider and the scrollbars to navigate. Choose **Events** or **Sync markers**
+beside the marker controls. Add a marker by entering its name and time, or click
+**Use playhead** to fill in the current time. Select an event in the list or
+click its timeline marker to inspect it. Change its name or time and choose
+**Update selected**, or drag the marker to move it. Both marker rows remain
+visible; clicking a marker switches to its editor. Selection stays attached
+to the event when times are reordered; use the list to choose between events
+at the same time. Dragging clamps times to `[0, duration)`. Use **Remove
+selected** to remove the selected event.
+
+Selecting or dragging a marker pauses playback and moves the playhead to it.
+During playback, **Preview events** shows the last crossed markers using the
+runtime `EventTrack.between` rules, including loop crossings and stable ordering
+at coincident times. It shows up to eight occurrences from the last update
+that crossed events. Scrubbing and editing do not fire events. Playback takes
+fresh snapshots of the in-memory events; it does not change a running engine
+instance or write to the asset.
 
 The right viewport follows the playhead and shows the animated bones and a
 flat-shaded skinned mesh where supported by `load_skinned_gltf`. Its camera
@@ -33,8 +47,60 @@ shown in the viewport. The bone preview evaluates LINEAR, STEP and CUBICSPLINE
 TRS channels; morph weights are displayed as tracks but are not deformed in the
 viewport. glTF materials and textures are not shown in this CPU preview.
 
-Events are kept separately for each animation in memory. They are discarded
+Events and sync markers are kept separately for each animation in memory. They are discarded
 when the tool closes or a different file is opened; no asset is written. Event
 times must be at least zero and strictly less than the animation duration,
 matching `EventTrack`. Zero-duration animations can be inspected but cannot
-receive events. glTF sparse accessors are not supported by the current reader.
+receive markers. For imported rigs, sync-marker duration uses the baked runtime
+clip's endpoint. glTF sparse accessors are not supported by the current reader.
+
+For a supported skinned asset, open **Graph configuration**. The separate window
+has a JSON definition editor, a scrollable state/transition diagram, preview
+parameters and sample-slot bindings. Its starting draft has one state per clip;
+setting `advance` above `0.5` selects a transition to the next clip in the cycle.
+Choose a state in the list or diagram to inspect it in the existing viewport.
+
+Edit states, transition conditions, masks and layered tasks in the draft, then
+choose **Compile draft**. Validation uses
+[`AnimationGraphDefinition`](../graaal/skeletal_animation.md#editable-graph-definitions)
+and identifies invalid fields/tasks. Successful compilation resets the preview
+to the initial state, parameter defaults, zero fade and state-driven sample
+bindings. Invalid drafts preserve the previous compiled preview and controls.
+No graph or glTF file is saved.
+
+Edit preview parameter values and choose **Apply parameters / evaluate conditions**
+to inspect the first matching transition and its configured duration. The
+**Manual transition weight** slider blends its source and target poses; it does
+not run an automatic state controller or promote the target state. Sample slots
+can use that state/transition pair or a specific clip, allowing independent
+masked override and additive layers defined in the draft. Clips loop at the
+timeline's current time in seconds; configured sync mappings align the target
+phase to the source markers. Root-motion extraction is disabled, so in-place
+tasks receive an empty instance mask. Event feedback
+still belongs to the selected timeline clip, rather than a graph event controller.
+
+Graph poses use the existing `PosePlan`, model matrices and CPU-skinned viewport.
+Camera framing uses the union of sampled clip bone bounds. Selecting a clip in
+the timeline turns graph preview off; enable **Preview graph in viewport** to
+restore it. Reopening the graph window retains its draft. Closing it returns to
+clip inspection; loading another asset discards the graph draft and closes it.
+See `python -m scenes.animation_graph_example` for ECS integration of the same
+definition format. Dedicated node-editing forms, blend-space authoring and
+persistence remain future work.
+
+To synchronize two clips, author at least two sync markers on each clip using
+the same unique names in the same cyclic order. Their times must be distinct
+and in `[0, clip duration)`. Then add a requested pair to the graph draft, using
+the clip names shown in its sample bindings, for example with Greenman:
+
+```json
+"sync_mappings": [{"source": "1: 1_idle", "target": "2: 2_move"}]
+```
+
+Choose **Compile draft** to validate and apply fresh marker snapshots. The
+transition description shows **marker sync** when its pair has a mapping. Later
+marker edits stay separate from the compiled preview until recompilation; a
+failed compile preserves the previous mapping. Missing markers, duplicate names
+or times, incompatible cyclic ordering and clip-duration mismatches identify the
+invalid pair. Sync markers never fire as gameplay events. Mappings are
+directional; author the reverse pair separately if needed. No marker data is saved.

@@ -4,12 +4,11 @@ Run: python -m scenes.animation_graph_example
 """
 import numpy as np
 
-from graaal.AnimationStateMachine import AnimationStateMachine
+from graaal.AnimationGraph import AnimationGraphDefinition
 from graaal.ECS import ECS, component
 from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
 from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
-from graaal.PoseTasks import PosePlan
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices, subtree_mask
+from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
 
 
 @component
@@ -22,8 +21,6 @@ def create_scene():
 	world = ECS()
 	world.register(SkeletonRef, ClipPlayer, AnimationState, AnimationControls)
 	entities = world.create(2)
-	world.add(entities, SkeletonRef(0), ClipPlayer(0), AnimationState(0), AnimationControls())
-	world.get(AnimationControls)[entities].assign(speed=[1, 0], upper_weight=[1, 0])
 	translation = np.array([[0, 0, 0], [0, 1, 0], [0, -1, 0]], dtype=np.float32)
 	rotation = np.tile([0, 0, 0, 1], (3, 1))
 	scale = np.ones((3, 3))
@@ -31,12 +28,33 @@ def create_scene():
 	idle, walk, upper = (translation.copy() for _ in range(3))
 	walk[0, 0] = 2
 	upper[1, 1] = 3
-	clips = {i: Clip(pose[None], rotation[None], scale[None]) for i, pose in enumerate((idle, walk, upper))}
-	machine = AnimationStateMachine([(0, 1, 0, ">", 0.5, 0.5), (1, 0, 0, "<", 0.2, 0.5)])
-	control = EcsAnimationStateAdapter(world, machine, {0: 0, 1: 1})
-	animation = EcsAnimationAdapter(world, {0: rig}, clips)
-	plan = PosePlan(rig, [("sample", 0), ("in_place", 0, 0), ("sample", 1), ("blend", 1, 2, 0, subtree_mask(rig, 1))])
-	return world, entities, rig, clips, control, animation, plan
+	clips = {name: Clip(pose[None], rotation[None], scale[None]) for name, pose in zip(("idle", "walk", "upper"), (idle, walk, upper))}
+	definition = AnimationGraphDefinition({
+		"version": 1,
+		"parameters": {"speed": 0, "upper_weight": 0},
+		"states": {"idle": {"clip": "idle"}, "walk": {"clip": "walk"}},
+		"initial_state": "idle",
+		"transitions": [
+			{"source": "idle", "target": "walk", "conditions": [{"parameter": "speed", "comparison": ">", "threshold": 0.5}], "duration": 0.5},
+			{"source": "walk", "target": "idle", "conditions": [{"parameter": "speed", "comparison": "<", "threshold": 0.2}], "duration": 0.5},
+		],
+		"sample_slots": ["locomotion", "upper"],
+		"weight_slots": ["upper_weight"],
+		"root_motion_slots": ["locomotion"],
+		"masks": {"upper_body": {"root": 1}},
+		"tasks": [
+			{"name": "locomotion", "op": "sample", "slot": "locomotion"},
+			{"name": "in_place", "op": "in_place", "base": "locomotion", "slot": "locomotion"},
+			{"name": "upper", "op": "sample", "slot": "upper"},
+			{"name": "output", "op": "blend", "base": "in_place", "overlay": "upper", "weight": "upper_weight", "mask": "upper_body"},
+		],
+	})
+	graph = definition.compile(rig, clips)
+	world.add(entities, SkeletonRef(0), ClipPlayer(graph.state_clips[graph.initial_state]), AnimationState(graph.initial_state), AnimationControls())
+	world.get(AnimationControls)[entities].assign(speed=[1, 0], upper_weight=[1, 0])
+	control = EcsAnimationStateAdapter(world, graph.machine, graph.state_clips)
+	animation = EcsAnimationAdapter(world, {0: rig}, graph.clips)
+	return world, entities, rig, graph.clips, control, animation, graph.plan
 
 
 def step(world, rig, clips, control, animation, plan, dt):

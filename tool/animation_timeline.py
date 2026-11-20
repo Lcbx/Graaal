@@ -1,8 +1,9 @@
-"""Inspect glTF animation tracks and edit temporary event markers.
+"""Inspect glTF animation tracks and edit temporary event and sync markers.
 
 Run from the repository root: python -m tool.animation_timeline [file.gltf|file.glb]
 """
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 import argparse
 import time
@@ -33,6 +34,16 @@ class Animation:
 	events: EventTimeline | None
 	preview: object = None
 	clip: object = None
+	sync_markers: EventTimeline | None = None
+
+	def __post_init__(self):
+		duration = self.clip.duration if self.clip is not None else self.duration
+		if self.sync_markers is None and duration > 0: self.sync_markers = EventTimeline(EventTrack(duration, [], []))
+
+
+class MarkerKind(StrEnum):
+	EVENTS = "Events"
+	SYNC = "Sync markers"
 
 
 def load_animations(path):
@@ -98,6 +109,10 @@ class TimelineWindow:
 		self.clip = tk.StringVar()
 		self.event_name = tk.StringVar(value="event")
 		self.event_time = tk.StringVar(value="0.000")
+		self.marker_kind = tk.StringVar(value=MarkerKind.EVENTS)
+		self.event_preview = tk.StringVar(value="Preview events: none")
+		self.drag_event_id = None
+		self.graph_window = None
 		self.zoom = tk.DoubleVar(value=100)
 		self.auto_fit, self.bounds = True, None
 		self.show_mesh, self.show_bones = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
@@ -108,6 +123,7 @@ class TimelineWindow:
 		file_row = ttk.Frame(root, padding=8)
 		file_row.pack(fill="x")
 		ttk.Button(file_row, text="Open glTF / GLB", command=self.open_file).pack(side="left")
+		ttk.Button(file_row, text="Graph configuration", command=self.open_graph).pack(side="left", padx=5)
 		ttk.Label(file_row, textvariable=self.path).pack(side="left", padx=10, fill="x", expand=True)
 		clip_row = ttk.Frame(root, padding=(8, 0, 8, 8))
 		clip_row.pack(fill="x")
@@ -136,7 +152,8 @@ class TimelineWindow:
 		timeline_frame.columnconfigure(0, weight=1)
 		timeline_frame.rowconfigure(0, weight=1)
 		self.canvas.bind("<Button-1>", self.click_timeline)
-		self.canvas.bind("<B1-Motion>", self.click_timeline)
+		self.canvas.bind("<B1-Motion>", self.drag_timeline)
+		self.canvas.bind("<ButtonRelease-1>", self.end_drag)
 		self.canvas.bind("<Configure>", self.resize_timeline)
 		view_frame = ttk.Frame(panes, width=450)
 		panes.add(view_frame, weight=2)
@@ -151,12 +168,17 @@ class TimelineWindow:
 
 		event_row = ttk.Frame(root, padding=8)
 		event_row.pack(fill="x")
-		ttk.Label(event_row, text="Event name").pack(side="left")
+		marker_box = ttk.Combobox(event_row, textvariable=self.marker_kind, state="readonly", values=tuple(MarkerKind), width=13)
+		marker_box.pack(side="left", padx=(0, 8))
+		marker_box.bind("<<ComboboxSelected>>", self.change_marker_kind)
+		self.marker_name_label = ttk.Label(event_row, text="Event name")
+		self.marker_name_label.pack(side="left")
 		ttk.Entry(event_row, textvariable=self.event_name, width=20).pack(side="left", padx=5)
 		ttk.Label(event_row, text="Time (s)").pack(side="left")
 		ttk.Entry(event_row, textvariable=self.event_time, width=10).pack(side="left", padx=5)
 		ttk.Button(event_row, text="Use playhead", command=self.use_playhead).pack(side="left", padx=3)
-		ttk.Button(event_row, text="Add event", command=self.add_event).pack(side="left", padx=3)
+		ttk.Button(event_row, text="Add marker", command=self.add_event).pack(side="left", padx=3)
+		ttk.Button(event_row, text="Update selected", command=self.update_event).pack(side="left", padx=3)
 		ttk.Button(event_row, text="Remove selected", command=self.remove_event).pack(side="left", padx=3)
 		self.event_list = ttk.Treeview(root, columns=("time", "name"), show="headings", height=4, selectmode="browse")
 		self.event_list.heading("time", text="Time (s)")
@@ -165,6 +187,7 @@ class TimelineWindow:
 		self.event_list.column("name", width=300)
 		self.event_list.pack(fill="x", padx=8)
 		self.event_list.bind("<<TreeviewSelect>>", self.select_event)
+		ttk.Label(root, textvariable=self.event_preview, anchor="w", padding=(8, 4)).pack(fill="x")
 		ttk.Label(root, textvariable=self.status, anchor="w", padding=8).pack(fill="x")
 		if path is not None: self.load(path)
 		self.draw()
@@ -174,12 +197,26 @@ class TimelineWindow:
 	def animation(self):
 		return self.animations[self.animation_id] if 0 <= self.animation_id < len(self.animations) else None
 
+	@property
+	def marker_timeline(self):
+		if self.animation is None: return None
+		return self.animation.sync_markers if self.marker_kind.get() == MarkerKind.SYNC else self.animation.events
+
+	def change_marker_kind(self, event=None):
+		self.event_list.selection_remove(*self.event_list.selection())
+		self.drag_event_id = None
+		sync = self.marker_kind.get() == MarkerKind.SYNC
+		self.marker_name_label.configure(text="Sync marker name" if sync else "Event name")
+		self.event_list.heading("name", text="Sync marker" if sync else "Event")
+		self.refresh_events()
+		self.draw()
+
 	def open_file(self):
 		from tkinter import filedialog, messagebox
 		path = filedialog.askopenfilename(title="Open animated glTF", filetypes=[("glTF files", "*.gltf *.glb"), ("All files", "*")])
 		if path:
-			if any(animation.events and animation.events.snapshot()[0] for animation in self.animations):
-				if not messagebox.askyesno("Discard events?", "Opening another file will discard the current in-memory events. Continue?", parent=self.root): return
+			if any(track and track.snapshot()[0] for animation in self.animations for track in (animation.events, animation.sync_markers)):
+				if not messagebox.askyesno("Discard markers?", "Opening another file will discard the current in-memory events and sync markers. Continue?", parent=self.root): return
 			self.load(path)
 
 	def load(self, path):
@@ -187,7 +224,10 @@ class TimelineWindow:
 		except (OSError, ValueError, TypeError, IndexError, KeyError, AttributeError) as exc:
 			self.status.set(f"Could not load file: {exc}")
 			return
+		if self.graph_window is not None: self.graph_window.close()
 		self.animations, self.animation_id, self.position, self.playing = animations, -1, 0.0, False
+		self.drag_event_id = None
+		self.event_preview.set("Preview events: none")
 		self.play_button.configure(text="Play")
 		self.path.set(str(path))
 		self.clip_box.configure(values=[f"{i}: {clip.name}" for i, clip in enumerate(animations)])
@@ -200,9 +240,13 @@ class TimelineWindow:
 			self.refresh_events()
 			self.draw()
 
-	def select_animation(self, event=None):
+	def select_animation(self, event=None, *, graph_preview=False):
+		if self.graph_window is not None and not graph_preview: self.graph_window.preview_enabled.set(False)
+		self.event_list.selection_remove(*self.event_list.selection())
 		self.animation_id = self.clip_box.current()
 		self.position, self.playing = 0.0, False
+		self.drag_event_id = None
+		self.event_preview.set("Preview events: none")
 		self.play_button.configure(text="Play")
 		self.event_time.set("0.000")
 		animation = self.animation
@@ -212,6 +256,25 @@ class TimelineWindow:
 		self.auto_fit = True
 		self.refresh_events()
 		self.fit_timeline()
+
+	def open_graph(self):
+		if self.graph_window is not None:
+			self.graph_window.window.lift()
+			return
+		if not self.animations or self.animations[0].preview.asset is None:
+			self.status.set("Graph configuration requires a skinned asset supported by the runtime importer.")
+			return
+		from .animation_graph import GraphWindow
+		self.graph_window = GraphWindow(self.root, self.animations, select_clip=self.select_graph_clip, redraw=self.draw_viewport, closed=self.close_graph)
+		self.draw_viewport()
+
+	def select_graph_clip(self, clip):
+		self.clip_box.current(clip)
+		self.select_animation(graph_preview=True)
+
+	def close_graph(self):
+		self.graph_window = None
+		self.draw_viewport()
 
 	def fit_timeline(self):
 		self.auto_fit = True
@@ -238,53 +301,120 @@ class TimelineWindow:
 
 	def tick(self):
 		now = time.monotonic()
-		if self.playing and self.animation:
-			self.position = (self.position + now - self.last_tick) % self.animation.duration
-			self.move_playhead()
+		self.advance_playback(now - self.last_tick)
 		self.last_tick = now
 		self.root.after(33, self.tick)
 
+	def advance_playback(self, dt):
+		animation = self.animation
+		if not self.playing or not animation or animation.duration <= 0: return
+		end = self.position + dt
+		if animation.events:
+			_, track = animation.events.snapshot()
+			occurrences = track.between(self.position, end)
+			if occurrences:
+				self.event_preview.set("Preview events: " + "; ".join(f"{event.name} @ {event.time % animation.duration:.3f}s" for event in occurrences[-8:]))
+		self.position = end % animation.duration
+		self.move_playhead()
+
 	def use_playhead(self):
-		self.event_time.set(f"{self.position:.9f}")
+		self.event_time.set(f"{self.position:.17g}")
 
 	def add_event(self):
 		animation = self.animation
-		if not animation or animation.events is None:
-			self.status.set("Select an animation with a positive duration to add events.")
+		if not animation or self.marker_timeline is None:
+			self.status.set("Select an animation with a positive duration to add markers.")
 			return
-		try: animation.events.add(float(self.event_time.get()), self.event_name.get())
+		try: event_id = self.marker_timeline.add(float(self.event_time.get()), self.event_name.get())
 		except ValueError as exc:
-			self.status.set(f"Cannot add event: {exc}. Time must be in [0, {animation.duration:g}).")
+			self.status.set(f"Cannot add marker: {exc}. Time must be in [0, {self.marker_timeline.duration:g}).")
 			return
-		self.refresh_events()
+		self.refresh_events(event_id)
 		self.draw()
-		self.status.set("Event added in memory.")
+		self.status.set("Marker added in memory.")
+
+	def update_event(self):
+		selection = self.event_list.selection()
+		if not selection or self.marker_timeline is None: return
+		try: self.marker_timeline.update(int(selection[0]), time=float(self.event_time.get()), name=self.event_name.get())
+		except ValueError as exc:
+			self.status.set(f"Cannot update marker: {exc}. Time must be in [0, {self.marker_timeline.duration:g}).")
+			return
+		self.refresh_events(int(selection[0]))
+		self.select_event()
+		self.status.set("Marker updated in memory.")
 
 	def remove_event(self):
 		selection = self.event_list.selection()
-		if not selection or not self.animation or self.animation.events is None: return
-		self.animation.events.remove(int(selection[0]))
+		if not selection or self.marker_timeline is None: return
+		self.marker_timeline.remove(int(selection[0]))
+		self.drag_event_id = None
 		self.refresh_events()
 		self.draw()
 
-	def refresh_events(self):
+	def refresh_events(self, selected=None):
+		selection = self.event_list.selection()
+		if selected is None and selection: selected = int(selection[0])
 		self.event_list.delete(*self.event_list.get_children())
-		if not self.animation or self.animation.events is None: return
-		ids, track = self.animation.events.snapshot()
+		if self.marker_timeline is None: return
+		ids, track = self.marker_timeline.snapshot()
 		for event_id, event_time, name in zip(ids, track.times, track.names):
 			self.event_list.insert("", "end", iid=str(event_id), values=(f"{event_time:.9f}", name))
+		if selected in ids:
+			self.event_list.selection_set(str(selected))
+			self.event_list.see(str(selected))
 
 	def select_event(self, event=None):
 		selection = self.event_list.selection()
-		if not selection: return
-		ids, track = self.animation.events.snapshot()
-		self.position = float(track.times[ids.index(int(selection[0]))])
+		if not selection or self.marker_timeline is None: return
+		ids, track = self.marker_timeline.snapshot()
+		selected = ids.index(int(selection[0]))
+		self.position, self.playing = float(track.times[selected]), False
+		self.play_button.configure(text="Play")
+		self.event_name.set(track.names[selected])
 		self.use_playhead()
-		self.move_playhead()
+		self.draw()
 
 	def click_timeline(self, event):
+		self.drag_event_id = None
+		x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+		markers = [tag for item in self.canvas.find_overlapping(x-6, y-6, x+6, y+6) for tag in self.canvas.gettags(item) if tag.startswith(("event:", "sync:"))]
+		if markers:
+			selection = self.event_list.selection()
+			prefix = "sync" if self.marker_kind.get() == MarkerKind.SYNC else "event"
+			current = f"{prefix}:{selection[0]}" if selection else None
+			kind, selected = (current if current in markers else markers[-1]).split(":")
+			wanted = MarkerKind.SYNC if kind == "sync" else MarkerKind.EVENTS
+			if self.marker_kind.get() != wanted:
+				self.marker_kind.set(wanted)
+				self.change_marker_kind()
+			self.event_list.selection_set(selected)
+			self.select_event()
+			self.drag_event_id = int(selected)
+			return
+		self.scrub_timeline(event)
+
+	def drag_timeline(self, event):
+		if self.drag_event_id is None:
+			self.scrub_timeline(event)
+			return
+		animation = self.animation
+		if not animation or self.marker_timeline is None: return
+		x = self.canvas.canvasx(event.x)
+		self.position = float(np.clip((x - self.LABEL_WIDTH) / self.zoom.get(), 0, np.nextafter(self.marker_timeline.duration, 0)))
+		self.marker_timeline.update(self.drag_event_id, time=self.position)
+		self.refresh_events(self.drag_event_id)
+		self.use_playhead()
+		self.draw()
+
+	def end_drag(self, event=None):
+		self.drag_event_id = None
+
+	def scrub_timeline(self, event):
 		animation = self.animation
 		if not animation: return
+		self.playing = False
+		self.play_button.configure(text="Play")
 		x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 		self.position = min(max((x - self.LABEL_WIDTH) / self.zoom.get(), 0), animation.duration)
 		self.use_playhead()
@@ -312,8 +442,10 @@ class TimelineWindow:
 		if not animation or not len(animation.preview.nodes): return
 		width, height = max(canvas.winfo_width(), 1), max(canvas.winfo_height(), 1)
 		try:
-			model = pose_matrices(animation, self.position)
-			self.camera_position, self.camera_target = camera_from_bounds(self.bounds, width / height)
+			graph = self.graph_window
+			graph = graph if graph is not None and graph.preview_enabled.get() and graph.graph is not None else None
+			model = pose_matrices(animation, self.position, joint_model=graph.joint_model(self.position) if graph is not None else None)
+			self.camera_position, self.camera_target = camera_from_bounds(graph.bounds if graph is not None else self.bounds, width / height)
 			points = model[:, :3, 3]
 			screen, depth = project(points, self.camera_position, self.camera_target, width, height)
 			if self.show_mesh.get():
@@ -350,7 +482,7 @@ class TimelineWindow:
 			self.draw_viewport()
 			return
 		width = max(canvas.winfo_width(), self.LABEL_WIDTH + animation.duration * self.zoom.get() + 30)
-		height = max(canvas.winfo_height(), self.HEADER_HEIGHT + (len(animation.tracks) + 1) * self.ROW_HEIGHT + 10)
+		height = max(canvas.winfo_height(), self.HEADER_HEIGHT + (len(animation.tracks) + 2) * self.ROW_HEIGHT + 10)
 		self.draw_height = height
 		canvas.configure(scrollregion=(0, 0, width, height))
 		canvas.create_text(10, 20, anchor="w", fill="#e8eef9", text=f"{animation.name}  ({animation.duration:.3f} s)")
@@ -367,14 +499,17 @@ class TimelineWindow:
 			for key_time in track.times:
 				x = self.LABEL_WIDTH + key_time * self.zoom.get()
 				canvas.create_polygon(x, y - 5, x + 4, y, x, y + 5, x - 4, y, fill="#75c7ff", outline="")
-		event_y = self.HEADER_HEIGHT + len(animation.tracks) * self.ROW_HEIGHT + self.ROW_HEIGHT / 2
-		canvas.create_text(10, event_y, anchor="w", fill="#ffd17a", text="Events")
-		canvas.create_line(self.LABEL_WIDTH, event_y, width, event_y, fill="#45505f")
-		if animation.events:
-			_, track = animation.events.snapshot()
-			for event_time in track.times:
+		for row, (kind, timeline, prefix, color) in enumerate(((MarkerKind.EVENTS, animation.events, "event", "#ffc56c"), (MarkerKind.SYNC, animation.sync_markers, "sync", "#ab9bff"))):
+			event_y = self.HEADER_HEIGHT + (len(animation.tracks) + row + 0.5) * self.ROW_HEIGHT
+			canvas.create_text(10, event_y, anchor="w", fill=color, text=kind)
+			canvas.create_line(self.LABEL_WIDTH, event_y, width, event_y, fill="#45505f")
+			if timeline is None: continue
+			ids, track = timeline.snapshot()
+			selection = self.event_list.selection() if self.marker_kind.get() == kind else ()
+			for event_id, event_time in zip(ids, track.times):
 				x = self.LABEL_WIDTH + event_time * self.zoom.get()
-				canvas.create_oval(x - 4, event_y - 4, x + 4, event_y + 4, fill="#ffc56c", outline="")
+				selected = str(event_id) in selection
+				canvas.create_oval(x - 5, event_y - 5, x + 5, event_y + 5, fill="#fff1bb" if selected else color, outline="#ffffff" if selected else "", tags=f"{prefix}:{event_id}")
 		playhead = self.LABEL_WIDTH + self.position * self.zoom.get()
 		canvas.create_line(playhead, self.HEADER_HEIGHT - 5, playhead, height, fill="#ff7684", width=2, tags="playhead_line")
 		canvas.create_text(playhead + 4, 5, anchor="nw", fill="#ff9aa5", text=f"{self.position:.3f}s", tags="playhead_label")
@@ -382,7 +517,7 @@ class TimelineWindow:
 
 
 def main():
-	parser = argparse.ArgumentParser(description="Inspect glTF animation tracks and add temporary events")
+	parser = argparse.ArgumentParser(description="Inspect glTF animation tracks and edit temporary event/sync markers")
 	parser.add_argument("path", nargs="?", help="glTF or GLB file to open")
 	args = parser.parse_args()
 	import tkinter as tk

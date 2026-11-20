@@ -164,6 +164,88 @@ source and target clips have compatible root-motion resources. The adapter's
 system; this pose task only anchors the visual pose. Apply the task before any
 layer that should build on the in-place base.
 
+## Editable graph definitions
+
+`AnimationGraphDefinition` in `graaal.AnimationGraph` owns a copied, editable
+dictionary in `definition.data`. `definition.compile(skeleton, named_clips)`
+validates the draft and returns a `CompiledAnimationGraph` containing the existing
+`AnimationStateMachine` and `PosePlan`. It needs neither ECS nor graphics. Edits
+and failed compilation leave previously compiled resources unchanged; applying a
+new graph to live instances remains application-owned. This API performs no file I/O.
+
+```python
+from graaal.AnimationGraph import AnimationGraphDefinition
+
+definition = AnimationGraphDefinition({
+	"version": 1,
+	"states": {"idle": {"clip": "idle"}},
+	"initial_state": "idle",
+	"sample_slots": ["base"],
+	"tasks": [{"name": "base", "op": "sample", "slot": "base"}],
+})
+graph = definition.compile(skeleton, {"idle": idle_clip})
+```
+
+Version 1 fields are:
+
+| Field | Authoring value |
+| --- | --- |
+| `version` | Required integer `1`. |
+| `parameters` | Optional ordered name-to-finite-default mapping. |
+| `states` | Required nonempty ordered mapping of state names to `{"clip": clip_name}`. |
+| `initial_state` | Required state name. |
+| `transitions` | Optional ordered list of `{source, target, conditions, duration}` mappings. Conditions are `{parameter, comparison, threshold}` mappings; all must match. Fade durations must fit positive float32 playback storage. |
+| `sample_slots` | Required list of unique sample-slot names, populated by the caller. |
+| `weight_slots` | Optional list of parameter names used as layer weights; their defaults must be in `[0, 1]`. |
+| `root_motion_slots` | Optional list of names for caller-supplied in-place motion slots. |
+| `masks` | Optional named masks, either per-bone weights in `[0, 1]` or `{"root": bone_index}` subtree definitions. |
+| `tasks` | Required nonempty ordered task list; the final task is the output. |
+| `sync_mappings` | Optional list of `{source, target}` clip-name pairs; supplied marker tracks compile into `SyncMapping` resources. |
+
+Each task has a unique `name` and a `PoseOp` or string `op`. `sample` names a
+sample `slot`; `in_place` names an earlier `base` task and a root-motion `slot`.
+`blend` and `additive` name earlier `base` and `overlay` tasks, a weight-slot
+`weight`, and an optional named `mask` (`None` selects all bones). Forward and
+cyclic task references are rejected. Errors identify the editable field/task.
+Unknown fields and unsupported operations fail rather than being ignored.
+
+Insertion order determines IDs and columns within a compiled result. Use
+`graph.state_ids`, `clip_ids`, `parameter_columns`, `sample_slots` and
+`root_motion_slots` to bind application data. `state_clips` feeds
+`EcsAnimationStateAdapter`; `graph.clips` maps compiled clip IDs to the original
+shared `Clip` objects. All supplied clips must match the skeleton's bone count;
+the caller must also ensure matching bone order. Compiled metadata is read-only.
+
+Initialize parameter rows with `np.tile(graph.parameter_defaults, (count, 1))`
+and pass them to `graph.machine.select` or the existing state adapter. Fill the
+sample and motion slots in their compiled order, then call
+`graph.plan.evaluate(graph.clips, samples, parameters[:, graph.weight_columns], ...)`.
+That output uses the existing model/skin matrix and material-palette path.
+Compiled plans own reusable pose buffers with the usual `PosePlan` lifetime.
+See [animation_graph_example.py](../scenes/animation_graph_example.py) for an ECS
+locomotion controller and an independent masked upper-body layer compiled from
+one definition.
+
+For synchronized clip transitions, request `sync_mappings` in the definition
+and supply `sync_tracks={clip_name: event_track, ...}` to `compile`. Each requested
+pair needs distinct clips and marker tracks whose durations exactly match the
+runtime clips. The existing `SyncMapping` validates marker count, unique names,
+distinct times and cyclic ordering. Errors identify the pair and, for missing
+tracks or mismatched durations, its source or target. Unrequested tracks do not
+participate in compilation. Mappings are directional and keyed by compiled clip
+IDs in `graph.sync_mappings`. Pass that same mapping to both
+`EcsAnimationStateAdapter(..., sync_mappings=graph.sync_mappings)` and
+`EcsAnimationAdapter(..., sync_mappings=graph.sync_mappings)`; synchronized players
+must loop. For editable tracks, compile from `EventTimeline.snapshot()[1]` so
+subsequent edits stay separate from the existing runtime mapping.
+
+This first authoring version supports single-clip states, sample tasks, in-place
+root anchoring, masked blend/additive layers and clip-pair sync settings.
+Blend-space states and IK/phase authoring are not yet represented. The
+[timeline tool](../tool/README.md) provides an in-memory definition editor, state
+diagram and explicit layered-pose/transition previews using this API. Runtime
+blend-space, sync and IK APIs remain available for application-owned composition.
+
 ## Conditional state transitions
 
 `AnimationStateMachine` selects transitions from per-instance numeric

@@ -63,11 +63,13 @@ def sample_track(track, time):
 	return result
 
 
-def pose_matrices(animation, time):
+def pose_matrices(animation, time, *, joint_model=None):
 	preview = animation.preview
 	if not preview.nodes: return np.empty((0, 4, 4))
 	joints = {}
-	if animation.clip is not None:
+	if joint_model is not None:
+		joints = dict(zip(preview.asset.joint_nodes, joint_model))
+	elif animation.clip is not None:
 		# Imported clips use the same sampling and hierarchy evaluation as playback.
 		asset = preview.asset
 		joints = dict(zip(asset.joint_nodes, model_matrices(asset.skeleton, *sample_clip(animation.clip, [time], loop=False))[0]))

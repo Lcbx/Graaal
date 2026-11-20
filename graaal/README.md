@@ -80,6 +80,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | [ECS](ECS_API.md) | `component`, `array_field`, `columns` define data; `ECS.register/create/add/set/remove/delete` manage it; `ECS.query` joins stores. `ComponentAccessor.version/touch` track edits; `ComponentSelection.read/assign` gather and write; accessor `edit_dense` borrows store columns. |
 | `ecs_commands`, `ecs_schedule` | Re-exported by `ECS`: `CommandBuffer.flush/clear` apply or discard deferred edits; `DeferredEntities.resolve` retrieves created IDs; `Scheduler.add/compile/run` orders synchronous systems. |
 | `EcsAnimation` | `SkeletonRef`, `ClipPlayer`, and `EcsAnimationAdapter` advance ECS playback and return batched poses with generational entity handles. |
+| `AnimationGraph` | `AnimationGraphDefinition.compile` validates editable named states, transitions, layered tasks and clip-pair sync settings into existing state-machine, pose-plan and sync resources. |
 | `SkeletalGltf` | `load_skinned_gltf` imports a supported subset of skinned glTF and resamples joint tracks into CPU animation resources. |
 | `SkinMatrixBuffer` | `SkinMatrixBuffer` allocates stable GPU skin-matrix ranges for caller-owned IDs. |
 | `MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
