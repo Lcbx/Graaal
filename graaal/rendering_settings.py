@@ -10,6 +10,12 @@ from dataclasses import replace
 import glfw
 import numpy as np
 
+try:
+	from imgui_bundle import imgui
+except ModuleNotFoundError as error:
+	if error.name != "imgui_bundle": raise
+	imgui = None
+
 from graaal.TransparencyPass import DEBUG_VIEWS
 
 
@@ -25,8 +31,6 @@ DEBUG_VIEW_HELP = {
 
 
 def _item_tooltip(text):
-	from imgui_bundle import imgui
-
 	if imgui.is_item_hovered():
 		imgui.begin_tooltip()
 		imgui.push_text_wrap_pos(imgui.get_font_size()*30)
@@ -148,7 +152,8 @@ class RenderingSettings:
 		self.renderer.set_grazing_fade(replace(options, **{name: value}))
 
 	def draw_grazing(self):
-		from imgui_bundle import imgui
+		if imgui is None:
+			raise ModuleNotFoundError('Install UI with: python -m pip install -e ".[ui]"', name="imgui_bundle")
 		imgui.separator_text("Grazing fade")
 		fade = self.renderer.grazing_fade
 		changed, enabled = imgui.checkbox("Fade grazing surfaces (G)", fade.enabled)
@@ -250,7 +255,8 @@ class RenderingSettings:
 		if imgui.button("Reset blur (Home)"): self.reset()
 
 	def draw(self):
-		from imgui_bundle import imgui
+		if imgui is None:
+			raise ModuleNotFoundError('Install UI with: python -m pip install -e ".[ui]"', name="imgui_bundle")
 
 		self.sync_debug_view(self.renderer)
 		io = imgui.get_io()

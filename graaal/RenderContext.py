@@ -23,6 +23,7 @@ from wgpu import BufferUsage, TextureUsage  # type: ignore[import-untyped]
 from wgpu.utils.glfw_present_info import get_glfw_present_info  # type: ignore[import-untyped]
 
 from .utils import higher_pow2
+from .MeshArena import MeshArena
 from .ShaderSyntax import ShaderSyntax, SourceSpan, strip_comments
 from .ShaderShorthand import ShaderShorthand, MISSING
 
@@ -296,7 +297,6 @@ class _RenderContext:
 	@property
 	def mesh_arena(self):
 		if self._mesh_arena is None:
-			from .MeshArena import MeshArena
 			self._mesh_arena = MeshArena()
 		return self._mesh_arena
 

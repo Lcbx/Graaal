@@ -5,6 +5,7 @@ import weakref
 
 import numpy as np
 
+from .Assets import load_blue_noise
 from .RenderContext import (
     BufferUsage,
     ComputePipeline,
@@ -35,7 +36,6 @@ def get_default_blue_noise():
 			return texture
 		except RuntimeError:
 			pass
-	from .Assets import load_blue_noise
 	thresholds = load_blue_noise()
 	height, width = thresholds.shape
 	texture = Texture((width, height), format="r32float",

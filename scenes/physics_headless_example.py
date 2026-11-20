@@ -11,12 +11,7 @@ def run_scene(*, ticks=120, tick_hz=120.0, threads=1):
 	Requires the physics extra. Uses metres, seconds and xyzw quaternions.
 	The caller controls simulated time through ticks; no wall-clock pacing.
 	"""
-	try:
-		import pyjoltphysics as pj
-	except ModuleNotFoundError as error:
-		if error.name != "pyjoltphysics":
-			raise
-		raise ModuleNotFoundError('Install physics with: python -m pip install -e ".[physics]"') from error
+	import pyjoltphysics as pj
 
 	if not pj.selftest():
 		raise RuntimeError("pyjoltphysics native selftest failed")

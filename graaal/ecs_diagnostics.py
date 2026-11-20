@@ -46,8 +46,8 @@ def _references_clear(array: np.ndarray, rows: np.ndarray) -> bool:
 
 def check_world(world: ECS) -> None:
 	"""Raise AssertionError on inconsistent generations, pools, masks or references."""
-	# Import here to avoid a runtime cycle with the ECS facade.
 	from .ECS import MultiComponentStorage
+
 	current = world._current_entities
 	assert current.size == world._entity_masks.size, "world array capacities differ"
 	assert 0 <= world._next_entity_index <= current.size, "invalid next entity index"

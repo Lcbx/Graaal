@@ -7,8 +7,6 @@ import numpy as np
 from .DrawBatches import DrawBatches, FrustumCuller, RenderShader
 from .InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 from .Materials import MaterialBinding, MaterialLibrary, MaterialShader
-from .EcsMaterials import MaterialInstance, EcsMaterialAdapter
-from .MaterialTransform import MaterialTransform
 from .RenderContext import BufferUsage, GpuBuffer, Mesh, RenderContext, Texture, TextureUsage
 from .TransparencyData import VERTEX_DTYPE, SHADING_VERTEX_DTYPE, SKINNED_VERTEX_DTYPE, SKINNED_SHADING_VERTEX_DTYPE, MATERIAL_DTYPE
 from .TransparencyPass import TransparencyPass, record_transparency
@@ -268,3 +266,16 @@ def record_material_frame(renderer, commands, size, camera, output, *, frame=Non
 		renderer.draws.draw(render, renderer.visibility, name)
 	record_transparency(commands, oit, renderer.geometry[1], draw_transparent)
 	oit.compose(commands, output)
+
+
+def __getattr__(name):
+	# Legacy ECS exports are loaded only when explicitly requested.
+	if name == "MaterialTransform":
+		from .MaterialTransform import MaterialTransform
+		globals()[name] = MaterialTransform
+		return MaterialTransform
+	if name in ("MaterialInstance", "EcsMaterialAdapter"):
+		from . import EcsMaterials
+		globals().update(MaterialInstance=EcsMaterials.MaterialInstance, EcsMaterialAdapter=EcsMaterials.EcsMaterialAdapter)
+		return globals()[name]
+	raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

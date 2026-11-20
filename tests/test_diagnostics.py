@@ -1,19 +1,19 @@
 """CPU-only render diagnostics tests."""
-import sys
 from types import SimpleNamespace as NS
 from unittest.mock import Mock
 
 import pytest
 
 from graaal.Diagnostics import RenderMonitor, get_draw_counts, get_shader_sources, inspect_render_memory
+from graaal import RenderDiagnostics
 
 
 @pytest.fixture
 def renderer_types(monkeypatch):
 	class DrawBatches: pass
 	class MaterialRenderer: pass
-	monkeypatch.setitem(sys.modules, "graaal.DrawBatches", NS(DrawBatches=DrawBatches))
-	monkeypatch.setitem(sys.modules, "graaal.MaterialRenderer", NS(MaterialRenderer=MaterialRenderer))
+	monkeypatch.setattr(RenderDiagnostics, "DrawBatches", DrawBatches)
+	monkeypatch.setattr(RenderDiagnostics, "MaterialRenderer", MaterialRenderer)
 	return DrawBatches, MaterialRenderer
 
 
@@ -126,7 +126,6 @@ def test_render_monitor_records_submitted_work_without_gpu_timestamps(monkeypatc
 
 
 def test_render_monitor_keeps_gpu_samples_for_repeated_pass_labels(monkeypatch):
-	from graaal import GpuProfiler as gp
 	from graaal.RenderContext import RenderContext
 
 	class Profiler:
@@ -146,7 +145,7 @@ def test_render_monitor_keeps_gpu_samples_for_repeated_pass_labels(monkeypatch):
 		def render_pass(self, **kwargs): return Scope()
 		def finish(self, label=None): return object()
 
-	monkeypatch.setattr(gp, "GpuProfiler", Profiler)
+	monkeypatch.setattr(RenderDiagnostics, "GpuProfiler", Profiler)
 	monkeypatch.setattr(RenderContext, "device", NS(features=("timestamp-query",)), raising=False)
 	monkeypatch.setattr(RenderContext, "commands", lambda label=None: Commands())
 	monkeypatch.setattr(RenderContext, "submit", Mock())
@@ -161,7 +160,7 @@ def test_render_monitor_keeps_gpu_samples_for_repeated_pass_labels(monkeypatch):
 
 def test_render_memory_counts_buffer_capacity_and_texture_mips(monkeypatch):
 	import numpy as np
-	from graaal.Diagnostics import _resource_name
+	from graaal.RenderDiagnostics import _resource_name
 	from graaal.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
 
 	device = NS(create_buffer=lambda **kwargs: NS(size=kwargs["size"]), create_texture=lambda **kwargs: NS())

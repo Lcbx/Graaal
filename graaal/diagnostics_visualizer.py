@@ -7,6 +7,12 @@ from collections import deque
 
 import numpy as np
 
+try:
+	from imgui_bundle import imgui
+except ModuleNotFoundError as error:
+	if error.name != "imgui_bundle": raise
+	imgui = None
+
 
 def _size(value):
 	if value is None: return "unavailable"
@@ -24,7 +30,7 @@ class DiagnosticsVisualizer:
 
 	Call update(monitor.submit(...)) once per measured submission, then draw()
 	inside ImGui.render(). Set visible=False to hide it; the owner decides when
-	to collect reports. No UI or renderer module is imported until draw().
+	to collect reports. Updating reports works without the optional UI package.
 	"""
 	def __init__(self, *, visible=True, history_size=120, position=(480, 12)):
 		if type(history_size) is not int or history_size < 1:
@@ -50,9 +56,10 @@ class DiagnosticsVisualizer:
 		self.history.append(value)
 
 	def draw(self):
-		"""Draw inside the active ImGui frame; imports imgui only when used."""
+		"""Draw inside the active ImGui frame; requires the optional UI package."""
 		if not self.visible: return
-		from imgui_bundle import imgui
+		if imgui is None:
+			raise ModuleNotFoundError('Install UI with: python -m pip install -e ".[ui]"', name="imgui_bundle")
 
 		imgui.set_next_window_pos(self.position, imgui.Cond_.first_use_ever)
 		imgui.set_next_window_size((500, 620), imgui.Cond_.first_use_ever)

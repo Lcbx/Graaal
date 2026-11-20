@@ -2,7 +2,7 @@
 
 from dataclasses import field
 
-from .ECS import component
+from .ecs_types import component
 from .Math import Vec3, Vec4
 
 

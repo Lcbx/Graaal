@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
 
-
 if TYPE_CHECKING:
 	from pygltflib import GLTF2, Material
 
@@ -102,9 +101,9 @@ def load_gltf_scene(path: str | Path) -> tuple[list[GltfPrimitive], list[Materia
 	No renderer-specific fields, GPU resources, or scene paths are required.
 	"""
 	from PIL import Image
+	from pygltflib import GLTF2
 
 	path = Path(path)
-	from pygltflib import GLTF2
 	gltf = GLTF2().load(str(path))
 	materials = [*gltf.materials, None]
 	images = []
@@ -194,8 +193,8 @@ def load_blue_noise(path: str | Path | None = None) -> np.ndarray:
 
 def load_gltf_first_mesh(glb_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 	"""Read the first primitive in local space, without hierarchy/material baking."""
-	path = Path(glb_path)
 	from pygltflib import GLTF2
+	path = Path(glb_path)
 	gltf = GLTF2().load(str(path))
 	primitive = gltf.meshes[0].primitives[0]
 	attributes = primitive.attributes

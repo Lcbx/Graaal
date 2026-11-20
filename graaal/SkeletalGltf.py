@@ -1,4 +1,4 @@
-﻿"""CPU import of a supported subset of skinned glTF, independent of rendering."""
+"""CPU import of a supported subset of skinned glTF, independent of rendering."""
 from dataclasses import dataclass
 from pathlib import Path
 

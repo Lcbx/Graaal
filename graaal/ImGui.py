@@ -13,16 +13,15 @@ from pathlib import Path
 
 from .RenderContext import RenderContext
 
-
 class ImGui:
 	def __init__(self, context=RenderContext):
 		if context.window is None or context.canvas is None:
 			raise RuntimeError("Initialize a RenderContext window before creating ImGui")
-		# Optional for applications that do not use the UI plugin.
-		from imgui_bundle import imgui
+		from imgui_bundle import imgui, hello_imgui
 		from wgpu.utils.imgui import ImguiWgpuBackend
 
 		self.imgui = imgui
+		self._hello_imgui = hello_imgui
 		self.context = context
 		self._handlers = {}
 		self._backend = None
@@ -59,15 +58,13 @@ class ImGui:
 				imgui.set_current_context(previous)
 
 	def set_theme(self, name: str):
-		from imgui_bundle import hello_imgui
 		with self._activate():
-			self._tweaked_theme = hello_imgui.ImGuiTweakedTheme()
-			self._tweaked_theme.theme = hello_imgui.ImGuiTheme_[name]
+			self._tweaked_theme = self._hello_imgui.ImGuiTweakedTheme()
+			self._tweaked_theme.theme = self._hello_imgui.ImGuiTheme_[name]
 			self._apply_theme()
 
 	def _apply_theme(self):
-		from imgui_bundle import hello_imgui
-		hello_imgui.apply_tweaked_theme(self._tweaked_theme)
+		self._hello_imgui.apply_tweaked_theme(self._tweaked_theme)
 
 	def save_style(self, path: Path):
 		"""Save the active ImGuiStyle, including manual color edits, as JSON."""
@@ -108,11 +105,10 @@ class ImGui:
 	def _draw_theme_editor(self):
 		if not self._show_theme_editor:
 			return
-		from imgui_bundle import hello_imgui
 		visible, self._show_theme_editor = self.imgui.begin("Theme Editor", self._show_theme_editor)
 		try:
 			if visible:
-				if hello_imgui.show_theme_tweak_gui(self._tweaked_theme):
+				if self._hello_imgui.show_theme_tweak_gui(self._tweaked_theme):
 					self._apply_theme()
 				self.imgui.separator()
 				_, self._style_path = self.imgui.input_text("Style path", self._style_path)

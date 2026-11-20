@@ -90,7 +90,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `TransparencyData` | `load_transparency_scene` returns primitives, material records and images; `VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, `MATERIAL_DTYPE` define the rendering ABI. |
 | `DrawList` | `DrawList.build(lod_ids, shader_ids)` returns `.order` and `SourceBatch` ranges for CPU grouping. |
 | `Geometry` | `make_cube_mesh` creates a GPU mesh when called; importing the module needs no graphics backend. |
-| `Diagnostics` | `RenderMonitor` logs submitted commands, passes, draw/dispatch calls and resources; `inspect_render_memory` reports process and tracked resource memory. `WatchTimer` times CPU scopes; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. |
+| `Diagnostics` | `WatchTimer` times CPU scopes; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. Rendering diagnostics are re-exported on explicit access. |
 | `utils` | `cache_last` caches an instance method's most recent keyed call; `higher_pow2` returns the next strictly greater power of two. |
 
 | Rendering module | Useful APIs and purpose |
@@ -108,6 +108,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | [Materials](materials.md#useful-apis) | `MaterialShader` defines shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables, while renderer Jinja2 templates generate hook dispatch. |
 | `DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
 | `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
+| `RenderDiagnostics` | `RenderMonitor`, `get_draw_counts`, `get_shader_sources`, and `inspect_render_memory` inspect rendering. These names also remain available from `Diagnostics`, loaded on explicit access. |
 | `MaterialTransform` | CPU-only position, rotation and scale component used by material and physics adapters. |
 | `EcsMaterials` | `MaterialInstance` component; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
 | `ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
@@ -116,7 +117,12 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `diagnostics_visualizer` | `DiagnosticsVisualizer.update(report)` keeps bounded performance history; `draw()` shows passes, commands, and resource memory inside an ImGui frame. |
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without
-graphics dependencies. Asset decoders load their optional dependencies when called.
+graphics dependencies. Asset decoders and physics adapter construction load their
+optional backends when called; missing backends raise Python's normal import
+errors. Inline imports belong in setup, asset loading, or
+explicit diagnostic audits; recurring simulation, drawing, and command recording
+use module or instance references. `Diagnostics` CPU timers do not load rendering,
+and `MaterialRenderer` loads ECS compatibility exports only on explicit access.
 Built-in engine shaders are in `graaal/shaders/` and included in the installed
 package. `scenes/shaders/` contains only scene-specific examples. `Shader(filepath=...)`
 looks up shader includes beside the supplied file, then in the engine shader

@@ -6,7 +6,7 @@ from typing import get_type_hints
 
 import numpy as np
 
-from .ECS import as_entities, component
+from .ecs_types import as_entities, component
 from .Math import Vec3, Vec4
 
 
@@ -62,11 +62,7 @@ class EcsPhysicsAdapter:
 	The caller owns fixed time; dynamic ECS poses never become implicit inputs.
 	"""
 	def __init__(self, ecs, shapes, *, transform_type=None, settings=None):
-		try:
-			import pyjoltphysics as pj
-		except ModuleNotFoundError as error:
-			if error.name != "pyjoltphysics": raise
-			raise ModuleNotFoundError('Install physics with: python -m pip install -e ".[physics]"') from error
+		import pyjoltphysics as pj
 		if transform_type is None:
 			from .MaterialTransform import MaterialTransform
 			transform_type = MaterialTransform

@@ -3,7 +3,8 @@
 Install `python -m pip install -e ".[physics]"` from the repository root.
 The extra pins `pyjoltphysics==0.1.0a3`. Core ECS and physics component imports
 do not require this package or rendering dependencies. Constructing the adapter
-loads the native backend. Non-ECS applications use `pyjoltphysics.World` directly;
+loads the native backend; physics updates reuse the stored module reference.
+Non-ECS applications use `pyjoltphysics.World` directly;
 see [the standalone example](../scenes/physics_headless_example.py).
 
 ```python

@@ -25,9 +25,9 @@ assert ECS().create(1).size == 1
 try:
 	run_scene()
 except ModuleNotFoundError as error:
-	assert '.[physics]' in str(error), str(error)
+	assert error.name == 'pyjoltphysics', str(error)
 else:
-	raise AssertionError("Missing backend should give installation instructions")
+	raise AssertionError("Missing backend should raise ModuleNotFoundError")
 '''], capture_output=True, text=True, timeout=30)
 	assert result.returncode == 0, result.stdout + result.stderr
 

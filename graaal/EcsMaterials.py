@@ -2,7 +2,7 @@
 from dataclasses import field
 import numpy as np
 
-from .ECS import component
+from .ecs_types import component
 from .MaterialTransform import MaterialTransform
 from .Materials import MaterialBinding
 from .InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
