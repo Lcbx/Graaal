@@ -6,8 +6,8 @@ from typing import get_type_hints
 
 import numpy as np
 
-from .ecs_types import as_entities, component
-from .Math import Vec3, Vec4
+from .ecs_types import as_entities, component, _synchronous_callable
+from .Math import Vec3, Vec4, Quaternion
 
 
 @component
@@ -37,6 +37,42 @@ class Collider:
 	sensor: bool = False
 
 
+WORLD_ENTITY = np.uint64(0xffffffffffffffff)
+
+
+@component(multiples=True)
+class PhysicsJoint:
+	"""A keyed constraint from its owner's body to a target body or WORLD_ENTITY.
+
+	Anchors and axes are world-space at creation. Kind codes match native
+	fixed=0, ball=1, hinge=2, slider=3, distance=4, six-DoF=5.
+	"""
+	key: np.uint32 = 0
+	target: np.uint64 = WORLD_ENTITY
+	kind: np.uint8 = 0
+	anchor: Vec3 = (0, 0, 0)
+	to_anchor: Vec3 = (0, 0, 0)
+	axis: Vec3 = (1, 0, 0)
+	axis2: Vec3 = (0, 1, 0)
+	lower: np.dtype((np.float64, 6)) = (-np.inf,) * 6
+	upper: np.dtype((np.float64, 6)) = (np.inf,) * 6
+	limit_spring: np.dtype((np.float32, 2)) = (0, 0)
+	friction: np.float32 = 0
+	motor_mode: np.dtype((np.uint8, 6)) = (0,) * 6
+	motor_target: np.dtype((np.float64, 6)) = (0,) * 6
+	motor_max: np.dtype((np.float64, 6)) = (np.inf,) * 6
+	motor_frequency: np.float32 = 2
+	motor_damping: np.float32 = 1
+	break_force: np.float32 = 0
+	break_torque: np.float32 = 0
+	collide: bool = False
+	enabled: bool = True
+
+
+_JOINT_FIELDS = tuple(field.name for field in fields(PhysicsJoint))
+_JOINT_WRITABLE = ("motor_mode", "motor_target", "motor_max", "enabled")
+
+
 _BODY_FIELDS = tuple(field.name for field in fields(RigidBody))
 _BODY_DTYPE = np.dtype([(field.name, field.type) for field in fields(RigidBody)])
 
@@ -61,7 +97,7 @@ class EcsPhysicsAdapter:
 	objects. Call reconcile, prepare_inputs, step, pull in each fixed tick.
 	The caller owns fixed time; dynamic ECS poses never become implicit inputs.
 	"""
-	def __init__(self, ecs, shapes, *, transform_type=None, settings=None):
+	def __init__(self, ecs, shapes, *, transform_type=None, settings=None, interpolate=False, joint_type=None):
 		import pyjoltphysics as pj
 		if transform_type is None:
 			from .MaterialTransform import MaterialTransform
@@ -71,6 +107,17 @@ class EcsPhysicsAdapter:
 		self._has_scale = "scale" in get_type_hints(transform_type)
 		self.query = ecs.query(Collider, transform_type, optional=RigidBody)
 		self._shapes = dict(shapes)
+		self.joints = None if joint_type is None else ecs.get(joint_type)
+		self._joint_type = joint_type
+		self._joint_query = None if joint_type is None else ecs.query(joint_type)
+		self._joint_records = {}
+		self._joint_token = None
+		self._retired_bodies, self._retired_joints = {}, {}
+		self._subscriptions = {}
+		self._next_subscription = 1
+		self._events_tick = -1
+		self.event_dtype = np.dtype(pj.EVENT_DTYPE.descr + [("entity_a", np.uint64), ("entity_b", np.uint64), ("joint_key", np.uint32)])
+		self.events = np.empty(0, dtype=self.event_dtype)
 		if any(not isinstance(shape, pj.Shape) for shape in self._shapes.values()):
 			raise TypeError("shape registry values must be pyjoltphysics.Shape objects")
 		self.world = pj.World(settings if settings is not None else pj.WorldSettings(tick_hz=120))
@@ -84,6 +131,12 @@ class EcsPhysicsAdapter:
 		self._token = None
 		self.last_seq = 0
 		self._closed = False
+		self._interpolate = interpolate
+		self._pose_tick = self.world.tick
+		self._position = self._previous_position = np.empty((0, 3), dtype=np.float64)
+		self._rotation = self._previous_rotation = np.empty((0, 4), dtype=np.float32)
+		self._entity_order = np.empty(0, dtype=np.intp)
+		self._teleported = np.empty(0, dtype=np.uint32)
 
 	def __enter__(self):
 		return self
@@ -133,6 +186,11 @@ class EcsPhysicsAdapter:
 		return self._shape_cache[parts]
 
 	def reconcile(self, ecs=None, commands=None, dt=None):
+		"""Reconcile bodies first, then constraints referencing their current UIDs."""
+		changed = self._reconcile_bodies(ecs, commands, dt)
+		return self._reconcile_joints(changed) or changed
+
+	def _reconcile_bodies(self, ecs=None, commands=None, dt=None):
 		"""Validate declarations, batch create/remove/rebuild, and update settings.
 
 		Static poses change only through teleport. Shape/scale/motion/filter-bit
@@ -218,6 +276,7 @@ class EcsPhysicsAdapter:
 		)
 		# Validate creation arrays before submitting any destructive changes.
 		if len(spawn): batch.arrays(shape_id=self.world.add_shape)
+		self._retired_bodies.update((int(uid), self._owner_by_uid[int(uid)]) for uid in removed)
 		if self.world.reserved_bodies + len(spawn) > self.world.settings.max_bodies:
 			if self.world.reserved_bodies - len(removed) + len(spawn) > self.world.settings.max_bodies:
 				raise ValueError("physics declarations exceed max_bodies")
@@ -234,11 +293,216 @@ class EcsPhysicsAdapter:
 		kept_old, kept_new = old[~rebuild], new[~rebuild]
 		self._update_settings(uids[kept_new], self._values[kept_old], values[kept_new])
 		if np.any(preserve): self.transforms[entities[kept]].assign(position=position[kept], rotation=rotation[kept])
+		if self._interpolate:
+			current_position, current_rotation = position.astype(np.float64), rotation.astype(np.float32)
+			previous_position, previous_rotation = current_position.copy(), current_rotation.copy()
+			current_position[kept_new], current_rotation[kept_new] = self._position[kept_old], self._rotation[kept_old]
+			previous_position[kept_new], previous_rotation[kept_new] = self._previous_position[kept_old], self._previous_rotation[kept_old]
+			self._position, self._rotation = current_position, current_rotation
+			self._previous_position, self._previous_rotation = previous_position, previous_rotation
+			self._entity_order = np.argsort(entities)
 		self._entities, self._uids, self._values, self._geometry = entities, uids, values, geometry
 		self._uid_by_owner = dict(zip(map(int, entities), map(int, uids)))
 		self._owner_by_uid = dict(zip(map(int, uids), map(int, entities)))
 		self._token = token
 		return True
+
+	@property
+	def joint_ids(self):
+		"""(full owner handle, stable component key) -> native joint ID."""
+		return MappingProxyType({key: record[0] for key, record in self._joint_records.items()})
+
+	def _reconcile_joints(self, bodies_changed):
+		if self.joints is None: return False
+		token = self.joints.version()
+		if not bodies_changed and token == self._joint_token: return False
+		result = self._joint_query.fetch()
+		selection = result[self._joint_type].selection
+		owners = self.joints.owner_ids(selection)
+		values = {name: getattr(selection, name) for name in _JOINT_FIELDS}
+		if np.any(values["kind"] > 5): raise ValueError("unsupported joint kind")
+		for name in ("anchor", "to_anchor", "axis", "axis2", "motor_target", "limit_spring", "friction", "motor_frequency", "motor_damping", "break_force", "break_torque"):
+			if not np.all(np.isfinite(values[name])): raise ValueError(f"joint {name} must be finite")
+		if np.any(np.isnan(values["lower"])) or np.any(np.isnan(values["upper"])) or np.any(values["lower"] > values["upper"]):
+			raise ValueError("joint limits require lower <= upper")
+		if np.any(values["motor_mode"] > 2) or np.any(np.isnan(values["motor_max"])) or np.any(values["motor_max"] < 0):
+			raise ValueError("invalid joint motor settings")
+		for name in ("limit_spring", "friction", "motor_frequency", "motor_damping", "break_force", "break_torque"):
+			if np.any(values[name] < 0): raise ValueError(f"joint {name} must be nonnegative")
+		axial = np.isin(values["kind"], (2, 3, 5))
+		if np.any(np.linalg.norm(values["axis"][axial], axis=1) < 1e-6): raise ValueError("joint axis must have direction")
+		six = values["kind"] == 5
+		if np.any(np.linalg.norm(np.cross(values["axis"][six], values["axis2"][six]), axis=1) < 1e-6):
+			raise ValueError("six-DoF axes must not be parallel")
+		desired = {}
+		keys = list(zip(map(int, owners), map(int, values["key"])))
+		if len(set(keys)) != len(keys): raise ValueError("joint keys must be unique within each owner")
+		for i, key in enumerate(keys):
+			body = self._uid_by_owner.get(key[0])
+			target = int(values["target"][i])
+			to = 0 if target == WORLD_ENTITY else self._uid_by_owner.get(target)
+			if body is None or to is None: continue
+			if body == to: raise ValueError("joint cannot connect a body to itself")
+			row = {name: tuple(value[i]) if value.ndim > 1 else value[i].item() for name, value in values.items()}
+			signature = (body, to, *(row[name] for name in _JOINT_FIELDS if name not in _JOINT_WRITABLE))
+			desired[key] = (signature, row)
+		removed = [key for key, (_, signature, _) in self._joint_records.items() if key not in desired or signature != desired[key][0]]
+		created = [key for key, (signature, _) in desired.items() if key not in self._joint_records or self._joint_records[key][1] != signature]
+		descriptors = []
+		for key in created:
+			signature, row = desired[key]
+			motors = tuple(self.pj.Motor(mode=mode, target=target, max=limit, frequency=row["motor_frequency"], damping=row["motor_damping"]) if mode else None for mode, target, limit in zip(row["motor_mode"], row["motor_target"], row["motor_max"]))
+			arguments = {name: row[name] for name in ("anchor", "to_anchor", "axis", "axis2", "lower", "upper", "limit_spring", "friction", "break_force", "break_torque", "collide")}
+			descriptors.append(self.pj.Joint(row["kind"], signature[0], signature[1], **arguments, motors=motors))
+		if removed:
+			self._retired_joints.update((self._joint_records[key][0], (key, self._joint_records[key][2]["target"])) for key in removed)
+			self._seq(self.world.remove_joints([self._joint_records[key][0] for key in removed]))
+			for key in removed: del self._joint_records[key]
+		if created:
+			ids, seq = self.world.add_joints(descriptors)
+			self._seq(seq)
+			self._joint_records.update((key, (int(uid), *desired[key])) for key, uid in zip(created, ids))
+		motor_updates = {mode: [] for mode in range(3)}
+		enabled_ids, enabled = [], []
+		for key, (signature, row) in desired.items():
+			uid, _, old = self._joint_records[key]
+			if key in created or old["enabled"] != row["enabled"]:
+				enabled_ids.append(uid)
+				enabled.append(row["enabled"])
+			if key not in created:
+				for axis, mode in enumerate(row["motor_mode"]):
+					if any(old[name][axis] != row[name][axis] for name in ("motor_mode", "motor_target", "motor_max")):
+						motor_updates[mode].append((uid, axis, row["motor_target"][axis], row["motor_max"][axis]))
+			self._joint_records[key] = (uid, signature, row)
+		for mode, changes in motor_updates.items():
+			if changes:
+				ids, axes, targets, limits = map(list, zip(*changes))
+				self._seq(self.world.set_joint_motors(ids, mode, target=targets, max=limits, axis=axes))
+		if enabled_ids: self._seq(self.world.set_joints_enabled(enabled_ids, enabled))
+		self._joint_token = token
+		return True
+
+	def set_joint_motor(self, entities, keys, *, mode=None, target=np.nan, max_force=np.nan, axis=0):
+		self._check()
+		entities = as_entities(entities)
+		keys = np.broadcast_to(np.asarray(keys), entities.shape)
+		if keys.dtype.kind not in "iu" or np.any(keys < 0) or np.any(keys > 0xffffffff): raise ValueError("joint keys must be uint32 integers")
+		ids = [self._joint_records[(int(owner), int(key))][0] for owner, key in zip(entities, keys)]
+		return self._seq(self.world.set_joint_motors(ids, mode, target=target, max=max_force, axis=axis))
+
+	def entities_of(self, uids):
+		"""Resolve current body UIDs to live full handles; WORLD_ENTITY means absent."""
+		self._check()
+		return self._resolve_owners(uids, self._owner_by_uid)
+
+	def _resolve_owners(self, uids, mapping):
+		wanted = np.asarray(uids)
+		if wanted.size == 0: return np.full(wanted.shape, WORLD_ENTITY, dtype=np.uint64)
+		if wanted.dtype.kind not in "iu": raise TypeError("body UIDs must be integers")
+		if np.any(wanted < 0) or np.any(wanted > 0xffffffff): raise ValueError("body UIDs must fit uint32")
+		result = np.full(wanted.shape, WORLD_ENTITY, dtype=np.uint64)
+		if mapping:
+			keys = np.array(sorted(mapping), dtype=np.uint32)
+			owners = np.array([mapping[int(key)] for key in keys], dtype=np.uint64)
+			indices = np.searchsorted(keys, wanted)
+			rows = np.minimum(indices, len(keys) - 1)
+			valid = (indices < len(keys)) & (keys[rows] == wanted)
+			result[valid] = owners[rows[valid]]
+		result[~self.ecs.is_alive(result.reshape(-1)).reshape(result.shape)] = WORLD_ENTITY
+		return result
+
+	def query_filter(self, *, exclude=(), group=0xffffffff, mask=0xffffffff, triggers=False, characters=True):
+		self._check()
+		uids = [self._uid_by_owner[int(owner)] for owner in as_entities(exclude) if int(owner) in self._uid_by_owner]
+		return self.pj.QueryFilter(group=group, mask=mask, exclude=uids, triggers=triggers, characters=characters)
+
+	def _query_filter(self, filter, exclude):
+		if filter is None: return self.query_filter(exclude=exclude)
+		extra = self.query_filter(exclude=exclude).exclude
+		return self.pj.QueryFilter(group=filter.group, mask=filter.mask, exclude=(*filter.exclude, *extra), triggers=filter.triggers, characters=filter.characters)
+
+	def raycast(self, origin, direction, max_distance=1000.0, *, filter=None, exclude=()):
+		self._check()
+		return self.world.raycast(origin, direction, max_distance, self._query_filter(filter, exclude))
+
+	def raycast_batch(self, origins, directions, max_distance=1000.0, *, filter=None, exclude=()):
+		self._check()
+		return self.world.raycast_batch(origins, directions, max_distance, self._query_filter(filter, exclude))
+
+	def sweep(self, shape, start, end, *, orientation=(0, 0, 0, 1), filter=None, exclude=(), all_hits=False):
+		self._check()
+		shape = shape if isinstance(shape, self.pj.Shape) else self._shapes[int(shape)]
+		return self.world.sweep(shape, start, end, orientation, self._query_filter(filter, exclude), all_hits)
+
+	def overlap(self, shape, position, *, orientation=(0, 0, 0, 1), filter=None, exclude=()):
+		self._check()
+		shape = shape if isinstance(shape, self.pj.Shape) else self._shapes[int(shape)]
+		return self.world.overlap(shape, position, orientation, self._query_filter(filter, exclude))
+
+	def set_filter_table(self, collides):
+		self._check()
+		return self._seq(self.world.set_filter_table(collides))
+
+	@property
+	def materials(self):
+		return self.world.materials
+
+	@property
+	def events_dropped(self):
+		return self.world.stats()["events_dropped"]
+
+	def subscribe(self, callback, *, kind=None, entity=None):
+		"""Call callback(ecs, commands, event_batch) on the dispatching thread."""
+		self._check()
+		_synchronous_callable(callback, "physics event callback")
+		if kind is not None: kind = self.pj.EventKind(kind)
+		if entity is not None:
+			owners = as_entities(entity)
+			if len(owners) != 1: raise ValueError("subscription entity must be a single handle")
+			entity = int(owners[0])
+		token = self._next_subscription
+		self._next_subscription += 1
+		self._subscriptions[token] = (callback, kind, entity)
+		return token
+
+	def unsubscribe(self, token):
+		self._subscriptions.pop(token, None)
+
+	def dispatch_events(self, ecs=None, commands=None, dt=None):
+		"""Drain once per tick and route native records, preserving removal identity."""
+		self._check(ecs, dt)
+		if self._events_tick == self.world.tick: return self.events
+		raw = self.world.drain_events()
+		events = np.zeros(len(raw), dtype=self.event_dtype)
+		for name in raw.dtype.names: events[name] = raw[name]
+		events["entity_a"] = events["entity_b"] = WORLD_ENTITY
+		body_events = np.isin(raw["kind"], (self.pj.EventKind.CONTACT, self.pj.EventKind.TRIGGER, self.pj.EventKind.STATE))
+		owners = self._retired_bodies | self._owner_by_uid
+		events["entity_a"][body_events] = self._resolve_owners(raw["a"][body_events], owners)
+		pair = np.isin(raw["kind"], (self.pj.EventKind.CONTACT, self.pj.EventKind.TRIGGER, self.pj.EventKind.CHARACTER))
+		events["entity_b"][pair] = self._resolve_owners(raw["b"][pair], owners)
+		joint_owners = self._retired_joints | {record[0]: (key, record[2]["target"]) for key, record in self._joint_records.items()}
+		joint = raw["kind"] == self.pj.EventKind.JOINT
+		if joint_owners:
+			events["entity_a"][joint] = self._resolve_owners(raw["a"][joint], {uid: key[0] for uid, (key, _) in joint_owners.items()})
+			events["entity_b"][joint] = self._resolve_owners(raw["a"][joint], {uid: target for uid, (_, target) in joint_owners.items()})
+			events["joint_key"][joint] = np.array([joint_owners.get(int(uid), ((0, 0), 0))[0][1] for uid in raw["a"][joint]], dtype=np.uint32)
+		events.flags.writeable = False
+		self.events = events
+		self._events_tick = self.world.tick
+		self._retired_bodies.clear()
+		self._retired_joints.clear()
+		own_commands = commands is None
+		commands = self.ecs.commands() if own_commands else commands
+		for callback, kind, entity in tuple(self._subscriptions.values()):
+			# A prior callback may delete an owner; never route to its recycled slot.
+			live_a, live_b = self.ecs.is_alive(events["entity_a"]), self.ecs.is_alive(events["entity_b"])
+			selected = live_a | live_b
+			if kind is not None: selected &= events["kind"] == kind
+			if entity is not None: selected &= (live_a & (events["entity_a"] == entity)) | (live_b & (events["entity_b"] == entity))
+			if np.any(selected): callback(self.ecs, commands, events[selected])
+		if own_commands: commands.flush()
+		return self.events
 
 	def _update_settings(self, uids, previous, values):
 		def changed(*names):
@@ -292,6 +556,7 @@ class EcsPhysicsAdapter:
 				self._seq(getattr(self.world, kind)(uids[live], **{name: None if array is None else array[live] for name, array in values.items()}))
 				if kind == "set_transforms":
 					self.transforms[entities[live]].assign(position=values["positions"][live], rotation=values["orientations"][live])
+					if self._interpolate: self._teleported = np.union1d(self._teleported, uids[live])
 			self._pending.pop(0)
 
 	def step(self, ecs=None, commands=None, dt=None):
@@ -306,17 +571,56 @@ class EcsPhysicsAdapter:
 		rows = snapshot.rows_of(self._uids)
 		if snapshot.applied_seq >= self.last_seq and np.any(rows < 0):
 			raise RuntimeError("owned physics body disappeared; do not remove adapter bodies through world")
+		if self._interpolate:
+			advanced = snapshot.tick != self._pose_tick
+			if advanced:
+				self._previous_position[:] = self._position
+				self._previous_rotation[:] = self._rotation
+			found = rows >= 0
+			self._position[found], self._rotation[found] = snapshot.position[rows[found]], snapshot.orientation[rows[found]]
+			if advanced:
+				snap = np.isin(self._uids, self._teleported) if snapshot.tick == self._pose_tick + 1 else np.ones(len(rows), dtype=bool)
+				self._previous_position[snap], self._previous_rotation[snap] = self._position[snap], self._rotation[snap]
+				self._teleported = np.empty(0, dtype=np.uint32)
+				self._pose_tick = snapshot.tick
 		mask = (rows >= 0) & (self._values["motion"] == 2) & np.isin(rows, snapshot.changed)
 		mask &= self.ecs.is_alive(self._entities) & self.ecs.has(self._entities, self.transform_type) & self.ecs.has(self._entities, Collider)
 		if np.any(mask):
 			self.transforms[self._entities[mask]].assign(position=snapshot.position[rows[mask]], rotation=snapshot.orientation[rows[mask]])
 
+	def render_transforms(self, entities, *, alpha):
+		"""Return interpolated TRS copies in requested entity order, without ECS writes.
+
+		Requires interpolate=True. Alpha is the caller's accumulator / fixed_dt
+		in [0, 1]. Static and non-physics owners use their ordinary ECS transform.
+		"""
+		self._check()
+		if not self._interpolate: raise RuntimeError("enable interpolate=True to read render transforms")
+		if np.ndim(alpha) != 0 or not np.isfinite(alpha) or not 0 <= alpha <= 1:
+			raise ValueError("interpolation alpha must be finite and in [0, 1]")
+		entities = as_entities(entities)
+		pose = self.transforms[entities]
+		if len(pose) != len(entities): raise ValueError("render owners must have live transform components")
+		position, rotation = pose.position, pose.rotation
+		scale = pose.scale if self._has_scale else np.ones((len(entities), 3), dtype=position.dtype)
+		if len(self._entities):
+			indices = np.searchsorted(self._entities[self._entity_order], entities)
+			rows = self._entity_order[np.minimum(indices, len(self._entity_order) - 1)]
+			moving = (self._entities[rows] == entities) & (self._values["motion"][rows] != 0) & self.ecs.has(entities, Collider)
+			selected = rows[moving]
+			position[moving] = self._previous_position[selected] * (1 - alpha) + self._position[selected] * alpha
+			rotation[moving] = Quaternion.slerp_batch(self._previous_rotation[selected], self._rotation[selected], alpha)
+		return position, rotation, scale
+
 	def close(self):
 		"""Join the native thread and clear ownership and queued commands; idempotent."""
 		if self._closed: return
 		try:
+			if self._joint_records and self.world.error is None:
+				self.world.remove_joints([record[0] for record in self._joint_records.values()])
 			if len(self._uids) and self.world.error is None:
 				self.world.remove_bodies(self._uids)
+			if self.world.error is None:
 				self.world.flush()
 		finally:
 			self.world.stop()
@@ -324,4 +628,13 @@ class EcsPhysicsAdapter:
 			self._shape_cache.clear()
 			self._uid_by_owner.clear()
 			self._owner_by_uid.clear()
+			self._joint_records.clear()
+			self._retired_bodies.clear()
+			self._retired_joints.clear()
+			self._subscriptions.clear()
+			self.events = np.empty(0, dtype=self.event_dtype)
+			self._position = self._previous_position = np.empty((0, 3), dtype=np.float64)
+			self._rotation = self._previous_rotation = np.empty((0, 4), dtype=np.float32)
+			self._entity_order = np.empty(0, dtype=np.intp)
+			self._teleported = np.empty(0, dtype=np.uint32)
 			self._closed = True

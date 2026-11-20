@@ -75,9 +75,19 @@ green toward red as more boxes overlap it, returning toward green as they leave.
 both `physics` and `render` extras for the window. Run the same simulation without
 graphics with `python -m scenes.physics_example --headless --frames 240`, or
 render offscreen with `python -m scenes.physics_example --offscreen --frames 2`.
-The caller drives 120 Hz scheduler ticks; rendering reads the latest tick pose.
+The caller drives 120 Hz scheduler ticks; rendering interpolates the previous
+and current poses using the caller's remaining accumulator time. Gameplay and
+sensor occupancy use the latest physical tick.
 See the [physics guide](../graaal/physics.md) for commands and supported collider
-combinations. Event handling in this scene drains native events directly.
+combinations. The scene schedules routed event dispatch after every physics tick.
+
+Run `python -m scenes.physics_queries_example` for native ray batches driving
+the existing foot-IK pose tasks over a triangle-mesh terrain. It also demonstrates
+ray and shape-sweep hit resolution to ECS owners. Query misses disable foot
+correction; the original `foot_ik_example` remains usable with analytic terrain.
+Run `python -m scenes.physics_joints_example` for hinge and slider motors with
+limits, reversed motor targets and a breakable fixed attachment. Both examples
+need the `physics` extra and run without graphics.
 
 ## Rendering and transparency settings
 

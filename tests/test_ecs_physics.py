@@ -348,3 +348,147 @@ def test_rebuild_does_not_turn_static_pose_edits_into_moves(setup):
 	np.testing.assert_allclose(state(physics, dynamic).position, before)
 	np.testing.assert_allclose(ecs.get(MaterialTransform)[[static]].position, [[4, 5, 0]])
 	np.testing.assert_allclose(ecs.get(MaterialTransform)[[dynamic]].position, before)
+
+
+@pytest.fixture
+def render_setup(pj):
+	ecs = ECS()
+	ecs.register(Collider, RigidBody, MaterialTransform)
+	with EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, settings=pj.WorldSettings(threads=1, gravity=(0, 0, 0)), interpolate=True) as physics:
+		yield ecs, physics
+
+
+def test_interpolation_preserves_gameplay_pose_and_owner_order(render_setup):
+	ecs, physics = render_setup
+	box = spawn(ecs)
+	other = ecs.create(1)[0]
+	ecs.add(other, MaterialTransform(position=(9, 2, 3), scale=(2, 3, 4)))
+	physics.set_velocity([box], linear=(12, 0, 0))
+	tick(physics)
+	tick(physics)
+	latest = state(physics, box).position.copy()
+	token = ecs.get(MaterialTransform).version()
+	owners = [other, box, box]
+	for alpha in (0, 0.25, 0.5, 1):
+		position, rotation, scale = physics.render_transforms(owners, alpha=alpha)
+		np.testing.assert_allclose(position[1:, 0], 0.1 + 0.1 * alpha, atol=1e-6)
+		np.testing.assert_allclose(position[0], [9, 2, 3])
+		np.testing.assert_allclose(scale[0], [2, 3, 4])
+		np.testing.assert_allclose(np.linalg.norm(rotation, axis=1), 1)
+		position[:] = 1000
+	np.testing.assert_allclose(ecs.get(MaterialTransform)[[box]].position, latest)
+	assert ecs.get(MaterialTransform).version() == token
+	# Reading the same native tick again must not erase its interpolation interval.
+	physics.pull()
+	np.testing.assert_allclose(physics.render_transforms([box], alpha=0)[0][:, 0], [0.1], atol=1e-6)
+
+
+def test_interpolation_rotation_uses_shortest_unit_quaternion_path(render_setup):
+	ecs, physics = render_setup
+	box = spawn(ecs)
+	physics.set_velocity([box], angular=(0, 12, 0))
+	tick(physics)
+	rotation = state(physics, box).orientation[0]
+	half_angle = np.arctan2(rotation[1], rotation[3]) / 2
+	expected = [0, np.sin(half_angle), 0, np.cos(half_angle)]
+	np.testing.assert_allclose(physics.render_transforms([box], alpha=0.5)[1], [expected], atol=1e-6)
+	# q and -q describe the same rotation; a sign flip must not spin the body.
+	physics._previous_rotation[:] = -physics._rotation
+	np.testing.assert_allclose(abs(np.sum(physics.render_transforms([box], alpha=0.5)[1][0] * rotation)), 1, atol=1e-6)
+
+
+def test_interpolation_teleport_and_rebuild_reset_only_affected_bodies(render_setup):
+	ecs, physics = render_setup
+	boxes = [spawn(ecs, position=(x, 5, 0)) for x in (0, 5)]
+	physics.set_velocity(boxes, linear=(12, 0, 0))
+	tick(physics)
+	physics.teleport(boxes[:1], (20, 5, 0))
+	tick(physics)
+	current = state(physics, boxes).position
+	position = physics.render_transforms(boxes, alpha=0)[0]
+	np.testing.assert_allclose(position[0], current[0])
+	np.testing.assert_allclose(position[1], [5.1, 5, 0], atol=1e-6)
+	ecs.get(MaterialTransform)[boxes[:1]].scale = (2, 2, 2)
+	tick(physics)
+	np.testing.assert_allclose(physics.render_transforms(boxes[:1], alpha=0)[0], current[:1], atol=1e-6)
+
+
+def test_interpolation_survives_uid_rows_and_generational_handle_reuse(render_setup):
+	ecs, physics = render_setup
+	removed = spawn(ecs)
+	kept = spawn(ecs, position=(5, 5, 0))
+	physics.set_velocity([removed, kept], linear=[[12, 0, 0], [24, 0, 0]])
+	tick(physics)
+	ecs.delete(removed)
+	new = spawn(ecs, position=(20, 5, 0))
+	physics.set_velocity([new], linear=(12, 0, 0))
+	tick(physics)
+	position = physics.render_transforms([kept, new, kept], alpha=0.5)[0]
+	np.testing.assert_allclose(position[:, 0], [5.3, 20.05, 5.3], atol=2e-6)
+	with pytest.raises(ValueError, match="live transform"): physics.render_transforms([removed], alpha=0.5)
+
+
+def test_interpolation_static_fallback_and_skipped_ticks(render_setup):
+	ecs, physics = render_setup
+	static = spawn(ecs, position=(5, 5, 0), body=False)
+	box = spawn(ecs)
+	physics.set_velocity([box], linear=(12, 0, 0))
+	tick(physics)
+	physics.teleport([static], (8, 5, 0))
+	tick(physics)
+	np.testing.assert_allclose(physics.render_transforms([static], alpha=0)[0], [[8, 5, 0]])
+	physics.world.run_ticks(3)
+	physics.pull()
+	np.testing.assert_allclose(physics.render_transforms([box], alpha=0)[0], state(physics, box).position)
+
+
+def test_interpolation_custom_transform_and_validation(pj):
+	ecs = ECS()
+	ecs.register(Collider, RigidBody, Transform)
+	box = ecs.create(1)[0]
+	ecs.add(box, Transform((0, 5, 0)), Collider(0), RigidBody())
+	with EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, transform_type=Transform, settings=pj.WorldSettings(threads=1, gravity=(0, 0, 0)), interpolate=True) as physics:
+		physics.set_velocity([box], linear=(12, 0, 0))
+		tick(physics)
+		position, rotation, scale = physics.render_transforms([box], alpha=0.5)
+		np.testing.assert_allclose(position[:, 0], [0.05], atol=1e-6)
+		np.testing.assert_array_equal(scale, [[1, 1, 1]])
+		for alpha in (-0.1, 1.1, np.nan, np.inf, [0.5]):
+			with pytest.raises(ValueError, match="alpha"): physics.render_transforms([box], alpha=alpha)
+		assert physics.render_transforms([], alpha=0.5)[0].shape == (0, 3)
+	with EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, transform_type=Transform) as physics:
+		with pytest.raises(RuntimeError, match="interpolate=True"): physics.render_transforms([box], alpha=0.5)
+
+
+def test_interpolation_history_releases_native_views_and_handles_sleep(render_setup):
+	ecs, physics = render_setup
+	box = spawn(ecs)
+	physics.set_velocity([box], linear=(12, 0, 0))
+	tick(physics)
+	snapshot = physics.world.latest()
+	assert not np.shares_memory(physics._position, snapshot.position)
+	assert not np.shares_memory(physics._rotation, snapshot.orientation)
+	physics.set_velocity([box], linear=(0, 0, 0))
+	tick(physics)
+	physics.world.run_ticks(120)
+	physics.pull()
+	assert not state(physics, box).awake[0]
+	tick(physics)
+	assert len(physics.world.latest().changed) == 0
+	np.testing.assert_allclose(physics.render_transforms([box], alpha=0)[0], state(physics, box).position)
+	physics.close()
+	assert physics._position.nbytes == physics._previous_position.nbytes == 0
+	assert physics._rotation.nbytes == physics._previous_rotation.nbytes == 0
+
+
+def test_interpolation_kinematic_targets_do_not_feed_back(render_setup):
+	ecs, physics = render_setup
+	box = spawn(ecs)
+	ecs.get(RigidBody)[[box]].motion = 1
+	tick(physics)
+	ecs.get(MaterialTransform)[[box]].position = (3, 5, 0)
+	tick(physics)
+	np.testing.assert_allclose(physics.render_transforms([box], alpha=0.5)[0], [[1.5, 5, 0]], atol=1e-6)
+	np.testing.assert_allclose(ecs.get(MaterialTransform)[[box]].position, [[3, 5, 0]])
+	tick(physics)
+	np.testing.assert_allclose(state(physics, box).position, [[3, 5, 0]], atol=1e-6)

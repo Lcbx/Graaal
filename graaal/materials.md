@@ -57,6 +57,15 @@ This non-exhaustive map covers the material modules. Import from
 | `MaterialTransform` | CPU-only position, rotation and scale component shared by rendering and physics. |
 | `EcsMaterials` | `MaterialInstance` stores mesh/material references and overrides. `EcsMaterialAdapter.sync` extracts changed ECS data; `touch_materials(*dicts)` marks nested edits for repacking. |
 
+`EcsMaterialAdapter(..., transform_source=callback)` can supply render-only
+poses, such as [physics interpolation](physics.md#render-interpolation).
+The callback receives full entity handles in material-instance order (owners
+may repeat) and returns position `(n, 3)`, xyzw rotation `(n, 4)` and scale
+`(n, 3)` arrays. Sync samples it every frame, including frames with no ECS
+changes, while material packing retains its version checks. The source does
+not write ECS transforms; switching it back to `None` restores ECS poses on
+the next sync. The renderer continues to apply its own instance reordering.
+
 The default adapter uses `TransparencyPass` for rendering and `DrawBatches` for
 grouping/culling. See the [engine API overview](README.md#modules-and-useful-apis)
 for lower-level resources and commands.

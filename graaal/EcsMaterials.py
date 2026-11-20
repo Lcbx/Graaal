@@ -24,11 +24,13 @@ class EcsMaterialAdapter:
 	material component accessor. Transform field writes use normal ECS versions.
 	Empty selections and multiple material instances per entity are supported.
 	"""
-	def __init__(self, renderer, world, *, material_type=MaterialInstance, transform_type=MaterialTransform):
+	def __init__(self, renderer, world, *, material_type=MaterialInstance, transform_type=MaterialTransform, transform_source=None):
 		self.renderer = renderer
 		self.materials, self.transforms = world.get(material_type), world.get(transform_type)
 		self.query = world.query(material_type, transform_type)
 		self.material_type = material_type
+		self.transform_source = transform_source
+		self._source_token = None
 		self._material_token = self._transform_token = None
 		self._revision = 0
 		self._dirty_materials = []
@@ -49,11 +51,17 @@ class EcsMaterialAdapter:
 			(self.transforms.layout_version, self.transforms.version()))
 
 	def _transforms(self, owners):
-		selection = self.transforms[owners]
+		if self.transform_source is None:
+			selection = self.transforms[owners]
+			position, rotation, scale = selection.position, selection.rotation, selection.scale
+		else:
+			position, rotation, scale = map(np.asarray, self.transform_source(owners))
+			if position.shape != (len(owners), 3) or rotation.shape != (len(owners), 4) or scale.shape != (len(owners), 3):
+				raise ValueError("transform_source must return position (n, 3), rotation (n, 4), scale (n, 3) in owner order")
 		values = np.zeros(len(owners), dtype=MESH_INSTANCE_DTYPE)
-		values["iPosition"] = selection.position
-		values["iRotation"] = pack_quaternion(selection.rotation)
-		values["iScale"] = pack_scale(selection.scale)
+		values["iPosition"] = position
+		values["iRotation"] = pack_quaternion(rotation)
+		values["iScale"] = pack_scale(scale)
 		return values
 
 	def sync(self):
@@ -62,9 +70,10 @@ class EcsMaterialAdapter:
 		membership = (self.materials.membership_version, self.transforms.membership_version)
 		material_changed = material_token != self._material_token or membership != getattr(self, "_membership", None)
 		if not material_changed:
-			if transform_token == self._transform_token: return False
+			if transform_token == self._transform_token and self.transform_source is None and self._source_token is None: return False
 			self.renderer.update_transforms(self._transforms(self._owners))
 			self._transform_token = transform_token
+			self._source_token = self.transform_source
 			return True
 		selection = self.query.fetch()[self.material_type].selection
 		owners = self.materials.owner_ids(selection)
@@ -90,4 +99,5 @@ class EcsMaterialAdapter:
 		self._membership = membership
 		self._material_token, self._transform_token = self._tokens()
 		self._dirty_materials = []
+		self._source_token = self.transform_source
 		return True

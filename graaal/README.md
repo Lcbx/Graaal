@@ -21,7 +21,7 @@ and attributes use snake_case. Constants use UPPER_SNAKE_CASE.
 | [Dictionary materials](materials.md) | Plain WGSL materials, shared parameters, instance overrides, and Jinja inheritance |
 | [Benchmarks](../scenes/benchmarks/README.md) | Reproduction commands and diagnostic options |
 | [Skeletal animation](skeletal_animation.md) | CPU skeleton and clip conventions, sampling, and pose evaluation |
-| [Physics](physics.md) | Optional Jolt rigid bodies, collider lifecycle, transform authority, and fixed scheduling |
+| [Physics](physics.md) | Optional Jolt rigid bodies, interpolated rendering, routed events, queries, filters, joints, and fixed scheduling |
 
 ## Architecture and maintenance contracts
 

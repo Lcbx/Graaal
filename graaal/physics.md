@@ -25,6 +25,7 @@ with EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, settings=pj.WorldSettings(threa
 	schedule.add("physics_input", physics.prepare_inputs, phase="fixed_update", after="physics_sync")
 	schedule.add("physics_step", physics.step, phase="fixed_update", after="physics_input")
 	schedule.add("physics_output", physics.pull, phase="fixed_update", after="physics_step")
+	schedule.add("physics_events", physics.dispatch_events, phase="fixed_update", after="physics_output")
 	schedule.run(1 / 60, fixed_steps=2, fixed_dt=1 / 120)
 	physics.add_impulse([box], [2, 0, 0])
 	schedule.run(1 / 120, fixed_steps=1, fixed_dt=1 / 120)
@@ -95,10 +96,186 @@ the native world; `pull` reports missing owned UIDs rather than indexing row -1.
 Removing bodies through ECS also removes their native attached constraints.
 
 Snapshots are read-only native views. Resolve UIDs each snapshot, copy data
-needed beyond its lifetime, and release snapshots promptly. Drain native events
-after stepping; event UIDs are native body IDs and can include removed bodies.
-Entity event routing, joint components, and render interpolation are future
-phases. Rendering currently consumes the latest fixed-tick ECS pose.
+needed beyond its lifetime, and release snapshots promptly. Schedule
+`dispatch_events` after `pull` once per fixed tick to drain and route events.
+
+## Events and entity identity
+
+`physics.events` is a read-only structured NumPy batch, replaced on every
+dispatch tick. It preserves all native fields and adds `entity_a`, `entity_b`
+(full uint64 handles) and `joint_key` (uint32, meaningful for joint events).
+`WORLD_ENTITY` is the maximum uint64 value and means world/unresolved ownership;
+entity zero is a valid owner. Native `a`/`b` IDs retain their original namespace:
+body IDs for contacts/triggers/state, joint ID in `a` for joint events, character
+ID in `a` for character events. Characters created directly on the native world
+have unresolved `entity_a`; their contacted body can still resolve `entity_b`.
+Ragdoll bone and character-owner mappings belong to their later integration phases.
+
+```python
+def on_contact(ecs, commands, events):
+	for event in events:
+		print(event["entity_a"], event["entity_b"], event["phase"])
+
+subscription = physics.subscribe(on_contact, kind=pj.EventKind.CONTACT, entity=box)
+# Later: physics.unsubscribe(subscription)
+```
+
+Subscriptions accept an optional kind and one full entity handle. Callbacks run
+synchronously on the dispatching/scheduler thread and receive matching batches.
+CONTACT, TRIGGER, STATE, CHARACTER and JOINT records remain inspectable in
+`events`, including records without known owners. Subscriptions deliver rows
+with at least one live owner; an entity filter only matches a live endpoint.
+The same tick is never delivered twice, even if `dispatch_events` is called again.
+
+Begin/end records are the default; `RigidBody.flags |= int(pj.BodyFlag.REPORT)`
+opts into persist records. `physics.events_dropped` exposes the native cumulative
+overflow counter. Contact `impulse` is an estimate, not the solver's final impulse.
+
+Removal records retain the old UID-to-owner association until dispatch. A live
+entity that lost its collider can still receive END(reason=REMOVED). A deleted
+owner resolves to `WORLD_ENTITY`, while a live counterpart can receive the end
+record. Recycled indices never substitute a new generation into old events.
+Joint end records likewise preserve the removed component's owner and key.
+
+Use the supplied command buffer for structural edits. Scheduler commands become
+visible at the fixed-tick boundary, or after an explicit `flush_after=True` system;
+event-driven physics inputs therefore affect the next tick by default. Direct
+dispatch without a command buffer creates one and flushes it after all listeners.
+Do not also call `world.drain_events()` while using routed events: the dispatcher
+owns the drain and releases its retired-ID metadata there.
+
+## Queries, filters and materials
+
+`raycast(origin, direction, max_distance=...)` and
+`raycast_batch(origins, directions, max_distance=...)` return native hit records
+with UID, distance, point, normal and sub-shape identity. Use
+`entities_of(hit.uid)` or `entities_of(hits.uid)` to resolve live owners; unknown
+UIDs and ray misses resolve to `WORLD_ENTITY`. Batch shapes and native IDs remain
+unchanged, so advanced native calls can consume the same results.
+
+```python
+hit = physics.raycast((0, 10, 0), (0, -1, 0), 20, exclude=[box])
+if hit is not None:
+	print(physics.entities_of(hit.uid).item(), hit.point, hit.normal)
+```
+
+`sweep(shape, start, end, all_hits=False)` returns the first native shape hit
+or a list when `all_hits=True`. `overlap(shape, position)` returns ascending
+body UIDs. A shape is a `pj.Shape` or an integer **asset key** from the adapter's
+shape mapping. Both methods accept an xyzw `orientation` keyword.
+
+All wrappers accept `exclude=entities` and an optional native `filter`.
+`query_filter(exclude=..., group=..., mask=..., triggers=False, characters=True)`
+builds that filter from current UIDs. A saved filter captures its exclusions at
+construction; use each query's `exclude` argument to follow later body rebuilds.
+Queries use actual native state from the last completed tick, including for
+interpolated renderers. Queued creations and moves become queryable after a tick
+or an explicit native `flush()`.
+
+`set_filter_table(bool_matrix)` queues the native symmetric collision-filter
+table. Bodies select its rows through `RigidBody.filter`; group/mask bitsets
+remain the native collision rules. `physics.materials` exposes the native table:
+`material_id = physics.materials.define(friction=0.1, restitution=0.2)` and
+`physics.materials.pair(a, b, friction=0.3)` configure it. Bodies select material
+indices through `RigidBody.material`. No additional layer/material system is used.
+
+See [physics_queries_example.py](../scenes/physics_queries_example.py) for ray
+batches replacing the analytic foot-IK ground query with a static collision mesh.
+`foot_ik_example.create_demo(ground_query=...)` accepts world-space foot positions
+and expects per-foot heights and normals. Missing/nonfinite hits disable foot
+correction for that sample. The example does not add character locomotion physics.
+
+## Joints
+
+Register `PhysicsJoint` and construct the adapter with `joint_type=PhysicsJoint`
+to enable constraint reconciliation. The default body-only adapter remains usable
+without registering this component. Each joint lives on its source body entity.
+`target` is another full entity handle, or `WORLD_ENTITY` for a world attachment.
+Creation waits until both referenced bodies exist. Multiple joints on an owner
+need distinct explicit `key` values; the default key is zero.
+
+```python
+from graaal.EcsPhysics import PhysicsJoint, WORLD_ENTITY
+
+ecs.register(PhysicsJoint)
+ecs.add(box, PhysicsJoint(key=1, kind=2, target=WORLD_ENTITY, anchor=(0, 3, 0), axis=(0, 0, 1), lower=(-0.5,) * 6, upper=(0.5,) * 6))
+# Construct this world's adapter with joint_type=PhysicsJoint.
+```
+
+Kind codes are fixed=0, ball=1, hinge=2, slider=3, distance=4 and six-DoF=5.
+Anchors and axes are world-space when the constraint is applied. Limits and motor
+columns have six entries: hinge/slider/distance use slot zero; six-DoF uses
+translation xyz then rotation xyz. Limits default to free `(-inf, inf)` axes;
+`(0, 0)` locks an axis. `limit_spring` is frequency/damping; friction and
+break-force/torque thresholds use native units, with zero disabling breakage.
+
+Motor modes are off=0, velocity=1 and position=2. `motor_target`, `motor_max`
+and `motor_mode` contain six values; `motor_frequency`/`motor_damping` are shared
+spring settings per joint. Changing mode/target/max or `enabled` uses native
+setter batches. `set_joint_motor(entities, keys, mode=..., target=..., max_force=...,
+axis=0)` sends an explicit batch against current keyed joints; it does not edit
+their declarative component columns. Keys can broadcast from one scalar.
+
+Topology, anchors, axes, limits, springs and break thresholds recreate constraints.
+A body rebuild also recreates attached constraints against replacement UIDs;
+their native angle/position reference is established again at creation. Removal
+of either body removes the native joint. `joint_ids` maps `(owner, key)` to current
+native IDs; snapshots expose native joint values/state through `world.latest().joints`.
+A broken joint remains broken until its component is removed and reconciled, then
+created again; it is not silently respawned each tick. Close removes constraints
+and bodies and applies pending removals before joining the native thread.
+
+Run [physics_joints_example.py](../scenes/physics_joints_example.py) for hinge and
+slider motors, limits and a breakable fixed attachment. Native regression tests
+are in [test_ecs_physics_interactions.py](../tests/test_ecs_physics_interactions.py).
+
+## Render interpolation
+
+Construct the adapter with `interpolate=True` to retain two ticks of owned
+pose copies. After every fixed tick, call `pull` even when no body changed:
+sleeping bodies still need their interpolation interval advanced. No native
+snapshot views are retained by the adapter. Interpolation is off by default
+for headless applications that only need the latest gameplay state.
+
+`physics.render_transforms(entities, alpha=...)` returns position, rotation and
+scale arrays in the requested full-handle order, including duplicate owners.
+`alpha` must be finite and within `[0, 1]`: zero selects the previous tick and
+one selects the current tick. Positions use linear interpolation and rotations
+use shortest-path spherical interpolation. This introduces the usual one-tick
+presentation delay. Gameplay, ECS transforms and native queries remain at the
+actual latest tick. Non-physics and static owners use their ECS transforms;
+kinematic render interpolation never writes into controller targets.
+
+For an existing renderer and shape mapping:
+
+```python
+from graaal.EcsMaterials import EcsMaterialAdapter
+
+physics = EcsPhysicsAdapter(ecs, shapes, interpolate=True)
+alpha = 0.0
+drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=alpha))
+# Each frame: advance the fixed schedule, then set alpha = accumulator / fixed_dt.
+# The caller owns this accumulator; Scheduler has no interpolation clock.
+drawing.sync()
+```
+
+Use the complete accumulator loop in [physics_example.py](../scenes/physics_example.py).
+The material adapter samples this source every sync, even on frames with zero
+physics ticks, and preserves the renderer's instance order. Material packing
+still follows its normal change versions. Other renderers can consume the TRS
+arrays directly; the physics adapter imports no rendering tool.
+
+Teleports reset only the affected bodies' history to the applied native pose.
+New/rebuilt UIDs start from their creation pose; history follows UIDs through
+native row compaction and full entity handles through slot reuse. If native
+time skips multiple ticks between pulls, interpolation snaps to the new pose
+because intervening tick poses are unavailable. Returned arrays are detached;
+release them when no longer needed. Close releases retained pose history.
+
+Run `python -m scenes.benchmarks.benchmark_physics --bodies 100 1000` to measure
+each fixed callback, render-pose preparation, and UID/gather/conversion/scatter
+costs. This headless benchmark uses isolated moving boxes and reports CPU wall
+times; it does not measure GPU frame rate or collision-heavy workloads.
 
 At body capacity, the pinned backend needs removals applied before additions
 can reserve space. Reconciliation uses `flush()` for that case without advancing

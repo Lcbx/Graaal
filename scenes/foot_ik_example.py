@@ -27,7 +27,8 @@ def terrain_normal(x):
 	return np.column_stack((-0.25 * np.cos(x), np.ones_like(x), np.zeros_like(x)))
 
 
-def create_demo():
+def create_demo(ground_query=None):
+	"""Optional ground_query(world_points) returns heights and normals per foot."""
 	rig = Skeleton([-1, 0, 1], [[0, 2, 0], [0, -1, 0], [0, -1, 0]], [[0, 0, 0, 1]] * 3, np.ones((3, 3)), np.tile(np.eye(4), (3, 1, 1)))
 	translations = np.tile(rig.translation, (3, 1, 1))
 	translations[:, 0, 0] = [0, 0.25, 0.5]
@@ -40,7 +41,7 @@ def create_demo():
 	animation = EcsAnimationAdapter(world, {0: rig}, {0: clip}, root_motions={(0, 0): RootMotion(rig, clip)})
 	pre = PosePlan(rig, [(PoseOp.SAMPLE, 0), (PoseOp.IN_PLACE, 0, 0)])
 	post = PosePlan(rig, [(PoseOp.INPUT, 0), (PoseOp.TWO_BONE_IK, 0, (0, 1, 2), 0, 0), (PoseOp.ALIGN_AXIS, 1, 2, 1, 0, (0, 1, 0))])
-	frames = {"pre": [], "goals": [], "batches": []}
+	frames = {"pre": [], "goals": [], "ground_hits": [], "batches": []}
 
 	def prepare_pose(world, commands, dt):
 		frames["pre"] = []
@@ -54,20 +55,29 @@ def create_demo():
 			character = world.get(Character)[request.entities]
 			character.assign(x=character.x + request.matrices[:, 0, 3])
 		frames["goals"] = []
+		frames["ground_hits"] = []
 		for owners, pose in frames["pre"]:
 			character = world.get(Character)[owners]
 			model = model_matrices(rig, *pose)
 			root = model[:, 0, :3, 3]
 			target = model[:, 2, :3, 3].copy()
-			target[:, 1] = terrain_height(character.x + target[:, 0])
+			points = target.copy()
+			points[:, 0] += character.x
+			if ground_query is None:
+				height, normal = terrain_height(points[:, 0]), terrain_normal(points[:, 0])
+			else:
+				height, normal = ground_query(points)
+			valid = np.isfinite(height) & np.all(np.isfinite(normal), axis=1) & (np.linalg.norm(normal, axis=1) > 1e-6)
+			target[valid, 1] = height[valid]
+			normal = np.where(valid[:, None], normal, [0, 1, 0])
 			pole = root + [0, 0, 1]
-			normal = terrain_normal(character.x + target[:, 0])
 			frames["goals"].append(((target, pole), (normal,)))
+			frames["ground_hits"].append(valid)
 
 	def finalize_pose(world, commands, dt):
 		frames["batches"] = []
-		for (owners, base), goals in zip(frames["pre"], frames["goals"]):
-			weights = world.get(Character)[owners].ik_weight[:, None]
+		for (owners, base), goals, hits in zip(frames["pre"], frames["goals"], frames["ground_hits"]):
+			weights = world.get(Character)[owners].ik_weight[:, None] * hits[:, None]
 			pose = post.evaluate({}, [], weights, poses=[base], goals=goals)
 			matrices = skin_matrices(rig, model_matrices(rig, *pose))
 			frames["batches"].append((owners, matrices))

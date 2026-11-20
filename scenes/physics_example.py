@@ -38,6 +38,7 @@ def make_schedule(ecs, physics, platform):
 	schedule.add("platform", move_platform, phase="fixed_update")
 	for name, callback, after in (("physics_sync", physics.reconcile, "platform"), ("physics_input", physics.prepare_inputs, "physics_sync"), ("physics_step", physics.step, "physics_input"), ("physics_output", physics.pull, "physics_step")):
 		schedule.add(name, callback, phase="fixed_update", after=after)
+	schedule.add("physics_events", physics.dispatch_events, phase="fixed_update", after="physics_output")
 	return schedule
 
 
@@ -66,7 +67,7 @@ def run_headless(ticks=240):
 		inside = np.empty(0, dtype=np.uint32)
 		for _ in range(ticks):
 			schedule.run(1 / 120, fixed_steps=1, fixed_dt=1 / 120)
-			events = physics.world.drain_events()
+			events = physics.events
 			inside = update_sensor_occupants(physics, sensor, boxes, inside, events)
 			contacts += np.count_nonzero(events["kind"] == pj.EventKind.CONTACT)
 			triggers += np.count_nonzero(events["kind"] == pj.EventKind.TRIGGER)
@@ -99,7 +100,7 @@ def run_scene(*, offscreen=False, frames=None):
 	from graaal.RenderContext import RenderContext, Texture, TextureUsage
 
 	ecs, boxes, floor, obstacle, platform, sensor = make_world()
-	physics = EcsPhysicsAdapter(ecs, {0: pj.Shape.box()})
+	physics = EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, interpolate=True)
 	try:
 		if offscreen:
 			RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
@@ -115,28 +116,28 @@ def run_scene(*, offscreen=False, frames=None):
 		sensor_material = {"base_color": (0.1, 0.9, 0.3, 0.15), "alpha_mode": 2}
 		ecs.add(sensor, MaterialInstance(sensor_mesh, sensor_material))
 		renderer = MaterialRenderer(meshes=[mesh, sensor_mesh])
-		drawing = EcsMaterialAdapter(renderer, ecs)
+		accumulator, displayed = 0.0, 0
+		drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * 120))
 		schedule = make_schedule(ecs, physics, platform)
 		inside = np.empty(0, dtype=np.uint32)
 		def update_sensor(world, commands, dt):
 			nonlocal inside
 			previous = len(inside)
-			inside = update_sensor_occupants(physics, sensor, boxes, inside, physics.world.drain_events())
+			inside = update_sensor_occupants(physics, sensor, boxes, inside, physics.events)
 			if len(inside) == previous: return
 			weight = 1 - 0.65 ** len(inside)
 			sensor_material["base_color"] = (0.1 + 0.9 * weight, 0.9 - 0.75 * weight, 0.3 - 0.25 * weight, 0.15)
 			drawing.touch_materials(sensor_material)
-		schedule.add("sensor_tint", update_sensor, phase="fixed_update", after="physics_output")
+		schedule.add("sensor_tint", update_sensor, phase="fixed_update", after="physics_events")
 		camera = Camera((12, 10, 16), (0, 2, 0), (0, 1, 0), 50, near=0.1, far=100)
 		size = (640, 480)
 		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
-		accumulator, displayed = 0.0, 0
 		if offscreen and frames is None: frames = 1
 		while frames is None or displayed < frames:
 			if not offscreen and not RenderContext.window_loop(): break
 			accumulator += 1 / 60 if offscreen else min(RenderContext.frame_time, 0.1)
 			fixed_steps = int(accumulator * 120)
-			accumulator -= fixed_steps / 120
+			accumulator = max(0.0, accumulator - fixed_steps / 120)
 			schedule.run(1 / 60 if offscreen else RenderContext.frame_time, fixed_steps=fixed_steps, fixed_dt=1 / 120)
 			drawing.sync()
 			commands = RenderContext.commands("physics")
