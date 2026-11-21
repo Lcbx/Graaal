@@ -182,14 +182,14 @@ def _compile_blend_spaces(definitions, parameters, clips):
 
 @dataclass(frozen=True)
 class CompiledBlendSpace2D:
-	"""Two horizontal sample pairs and one vertical pose-plan weight."""
+	"""Two horizontal sample pairs, optionally bound to pose-plan slots."""
 	x_parameter: int
 	y_parameter: int
 	x_positions: np.ndarray
 	y_positions: np.ndarray
 	clip_ids: np.ndarray
 	sample_slots: tuple
-	weight_slot: int
+	weight_slot: int | None
 
 	def select(self, parameters):
 		values = np.asarray(parameters, dtype=np.float64)
@@ -202,7 +202,7 @@ def _compile_blend_spaces_2d(definitions, parameters, clips, samples, weights):
 	weight_owners = {}
 	for name, value in _named(definitions, "blend_spaces_2d").items():
 		path = f"blend_spaces_2d.{name}"
-		_record(value, {"x_parameter", "y_parameter", "x_positions", "y_positions", "clips", "sample_slots", "weight_slot"}, ("x_parameter", "y_parameter", "x_positions", "y_positions", "clips", "sample_slots", "weight_slot"), path)
+		_record(value, {"x_parameter", "y_parameter", "x_positions", "y_positions", "clips", "sample_slots", "weight_slot"}, ("x_parameter", "y_parameter", "x_positions", "y_positions", "clips"), path)
 		x_parameter = _reference(value["x_parameter"], parameters, path + ".x_parameter")
 		y_parameter = _reference(value["y_parameter"], parameters, path + ".y_parameter")
 		if x_parameter == y_parameter: raise ValueError(f"{path}.y_parameter: axis parameters must differ")
@@ -222,6 +222,11 @@ def _compile_blend_spaces_2d(definitions, parameters, clips, samples, weights):
 			rows.append([_reference(clip, clips, f"{path}.clips[{y}][{x}]") for x, clip in enumerate(row)])
 		ids = np.array(rows, dtype=np.int64)
 		ids.flags.writeable = False
+		if "sample_slots" not in value and "weight_slot" not in value:
+			result[name] = CompiledBlendSpace2D(x_parameter, y_parameter, *axes, ids, (), None)
+			continue
+		for field in ("sample_slots", "weight_slot"):
+			if field not in value: raise ValueError(f"{path}.{field}: sample_slots and weight_slot must be supplied together")
 		slots = value["sample_slots"]
 		if not isinstance(slots, (list, tuple)) or len(slots) != 2: raise ValueError(f"{path}.sample_slots: expected two distinct sample slots")
 		compiled_slots = tuple(_reference(slot, samples, f"{path}.sample_slots[{i}]") for i, slot in enumerate(slots))
@@ -257,12 +262,13 @@ class CompiledAnimationGraph:
 	blend_spaces_2d: Mapping
 	state_blend_spaces: Mapping
 	input_plan: PosePlan
+	state_blend_spaces_2d: Mapping
 
 
 class AnimationGraphDefinition:
 	"""An editable copied dictionary; compilation never changes live resources.
 
-	Version 1 supports single-clip and 1D blend states, named 1D/2D selectors and
+	Version 1 supports single-clip and 1D/2D blend states, named selectors and
 	sample/in-place/blend/additive tasks. The last task is the output;
 	task inputs must refer backward.
 	Playback, sample times, events, physics and ECS integration remain external.
@@ -305,18 +311,23 @@ class AnimationGraphDefinition:
 		sync = _compile_sync(data.get("sync_mappings", []), sync_tracks, clips, clip_ids)
 		blend_spaces = _compile_blend_spaces(data.get("blend_spaces", {}), parameter_columns, clip_ids)
 		blend_spaces_2d = _compile_blend_spaces_2d(data.get("blend_spaces_2d", {}), parameter_columns, clip_ids, samples, weights)
-		state_clips, state_blend_spaces = {}, {}
+		state_clips, state_blend_spaces, state_blend_spaces_2d = {}, {}, {}
 		for name, state in states.items():
 			path = f"states.{name}"
-			_record(state, {"clip", "blend_space"}, (), path)
-			if not state: raise ValueError(f"{path}: expected exactly one of clip or blend_space")
-			if len(state) != 1: raise ValueError(f"{path}.blend_space: cannot be combined with clip")
+			_record(state, {"clip", "blend_space", "blend_space_2d"}, (), path)
+			if not state: raise ValueError(f"{path}: expected exactly one of clip, blend_space or blend_space_2d")
+			if len(state) != 1:
+				field = "blend_space_2d" if "blend_space_2d" in state else "blend_space"
+				raise ValueError(f"{path}.{field}: cannot be combined with another state source")
 			if "clip" in state: state_clips[state_ids[name]] = _reference(state["clip"], clip_ids, path + ".clip")
-			else:
+			elif "blend_space" in state:
 				_reference(state["blend_space"], blend_spaces, path + ".blend_space")
 				state_blend_spaces[state_ids[name]] = state["blend_space"]
+			else:
+				_reference(state["blend_space_2d"], blend_spaces_2d, path + ".blend_space_2d")
+				state_blend_spaces_2d[state_ids[name]] = state["blend_space_2d"]
 		return CompiledAnimationGraph(
 			machine, plan, MappingProxyType({clip_ids[name]: clip for name, clip in clips.items()}),
 			MappingProxyType(clip_ids), MappingProxyType(state_ids), MappingProxyType(state_clips), initial,
-			MappingProxyType(parameter_columns), defaults, MappingProxyType(samples), weight_columns, MappingProxyType(motions), sync, blend_spaces, blend_spaces_2d, MappingProxyType(state_blend_spaces), input_plan,
+			MappingProxyType(parameter_columns), defaults, MappingProxyType(samples), weight_columns, MappingProxyType(motions), sync, blend_spaces, blend_spaces_2d, MappingProxyType(state_blend_spaces), input_plan, MappingProxyType(state_blend_spaces_2d),
 		)

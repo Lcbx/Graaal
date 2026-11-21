@@ -6,7 +6,7 @@ import pytest
 from graaal.Animation.AnimationEvents import EventTrack
 from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, blend_poses, sample_clip_pairs
-from tools.animation_graph_playback import GraphPlayback, state_sample
+from tools.animation_graph_playback import GraphPlayback, state_pose, state_sample
 
 
 def graph(*, sync=False, duration=0.25, static=False):
@@ -239,3 +239,77 @@ def test_clip_sync_mapping_does_not_retime_a_blend_state():
 	assert player.target_time == 0.125 and player.target_speed == 1
 	player.advance(0.375, [1, 1])
 	assert player.state == 1 and player.time == 0.5 and player.speed == 1
+
+
+def grid_graph(initial="grid", *, static=False, x_positions=(0, 1), y_positions=(-1, 1)):
+	base = blend_graph(static=static)
+	clips = {name: clip for name, clip in zip(("idle", "walk", "other"), base.clips.values())}
+	clip = clips["other"]
+	clips["extra"] = Clip(clip.translation + [4, 0, 0], np.tile([0, 0, 0, -1], (len(clip.translation), 1, 1)), clip.scale, fps=1 / 3)
+	cells = [["idle", "walk"], ["other", "extra"]]
+	data = {
+		"version": 1, "parameters": {"move": 0, "x": 0.25, "y": 0},
+		"states": {"idle": {"clip": "idle"}, "line": {"blend_space": "motion"}, "grid": {"blend_space_2d": "motion"}, "other": {"blend_space_2d": "reverse"}},
+		"blend_spaces": {"motion": {"parameter": "x", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}]}},
+		"blend_spaces_2d": {name: {"x_parameter": "x", "y_parameter": "y", "x_positions": list(x_positions), "y_positions": list(y_positions), "clips": [row[:len(x_positions)] for row in rows[:len(y_positions)]]} for name, rows in (("motion", cells), ("reverse", cells[::-1]))},
+		"initial_state": initial,
+		"transitions": [
+			{"source": a, "target": b, "conditions": [{"parameter": "move", "comparison": comparison, "threshold": 0}], "duration": duration}
+			for a, b, comparison, duration in (("idle", "grid", ">", 0.5), ("grid", "line", ">", 0.25), ("grid", "other", "<", 0.5), ("other", "idle", "==", 0.25), ("line", "grid", "<", 0.25))
+		],
+		"sample_slots": ["base"], "tasks": [{"name": "output", "op": "sample", "slot": "base"}],
+	}
+	return AnimationGraphDefinition(data).compile(base.plan.skeleton, clips)
+
+
+def test_2d_state_preserves_nested_quaternion_blending_and_each_clip_loop():
+	compiled = grid_graph()
+	player = GraphPlayback(compiled)
+	player.reset(time=1.75)
+	player.advance(0.5, [0, 0.25, 0])
+	assert player.time == 2.25
+	lower = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[0, 1]], [[0.75, 0.25]], [[0.75, 0.25]])
+	upper = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[2, 3]], [[0.25, 2.25]], [[0.75, 0.25]])
+	expected = blend_poses(compiled.plan.skeleton, lower, upper, [0.5])
+	before = player.pose([0, 0.25, 0])
+	for actual, reference in zip(before, expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	# Clamp to a different corner without resetting any clocks.
+	player.advance(0, [0, 5, 5])
+	np.testing.assert_allclose(player.pose([0, 5, 5])[0], [[[13.5, 0, 0]]])
+	for actual, reference in zip(before, expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	with pytest.raises(ValueError, match="pose"): player.sample()
+	with pytest.raises(ValueError, match="state_pose"): state_sample(compiled, 2, 0, [0, 0, 0])
+
+
+@pytest.mark.parametrize("source,move,target,step", [("idle", 1, "grid", 0.25), ("line", -1, "grid", 0.125), ("grid", 1, "line", 0.125), ("grid", -1, "other", 0.25), ("other", 0, "idle", 0.125)])
+def test_2d_fades_with_clip_1d_and_2d_states_promote_without_restarting(source, move, target, step):
+	compiled = grid_graph(source)
+	player = GraphPlayback(compiled)
+	player.reset(time=2.75)
+	start = player.time
+	parameters = [move, 0.25, 0]
+	player.advance(step, parameters)
+	assert player.target_state == compiled.state_ids[target] and player.target_time == step
+	expected = blend_poses(compiled.plan.skeleton, state_pose(compiled, player.state, start + step, parameters), state_pose(compiled, player.target_state, step, parameters), [0.5])
+	for actual, reference in zip(player.pose(parameters), expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	# Changed conditions do not interrupt the fade or select a second edge.
+	player.advance(step + 0.125, [-move, 0.75, 1])
+	assert player.state == compiled.state_ids[target] and player.target_state is None
+	np.testing.assert_allclose(player.time, 2 * step + 0.125)
+	for actual, reference in zip(player.pose([-move, 0.75, 1]), state_pose(compiled, player.state, player.time, [-move, 0.75, 1])):
+		np.testing.assert_allclose(actual, reference, atol=1e-6)
+
+
+@pytest.mark.parametrize("x,y,expected", [((0, 1), (-1, 1), 5), ((0, 1), (-1,), 1), ((0,), (-1, 1), 4), ((0,), (-1,), 0)])
+def test_static_and_degenerate_2d_states(x, y, expected):
+	player = GraphPlayback(grid_graph(static=True, x_positions=x, y_positions=y))
+	player.advance(2.1, [0, 0.25, 0])
+	np.testing.assert_allclose(player.pose([0, 0.25, 0])[0], [[[expected, 0, 0]]])
+	assert player.time == 2.1
+	player.advance(0.125, [1, 0.25, 0])
+	before = player.__dict__.copy()
+	for dt, parameters in ((-1, [1, 0, 0]), (0.1, [1, 0]), (0.1, [1, np.nan, 0])):
+		with pytest.raises(ValueError): player.advance(dt, parameters)
+		assert player.__dict__ == before
+	player.reset(2, 5.5)
+	assert player.time == 5.5 and player.target_state is None and player.speed == 1

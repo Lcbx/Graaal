@@ -7,6 +7,7 @@ from graaal.Animation.SkeletalAnimation import blend_poses, sample_clip_pairs
 
 def state_sample(graph, state, time, parameters):
 	"""Select a state's clip pair at a shared seconds clock, wrapping each clip."""
+	if state in graph.state_blend_spaces_2d: raise ValueError("2D blend states require state_pose()")
 	if state in graph.state_blend_spaces:
 		ids, weights = graph.blend_spaces[graph.state_blend_spaces[state]].select(np.asarray(parameters)[None])
 	else:
@@ -15,17 +16,31 @@ def state_sample(graph, state, time, parameters):
 	return ids, times, weights
 
 
+def state_pose(graph, state, time, parameters):
+	"""Evaluate a state, blending 2D grid rows horizontally and then vertically."""
+	skeleton = graph.plan.skeleton
+	if state not in graph.state_blend_spaces_2d:
+		return sample_clip_pairs(skeleton, graph.clips, *state_sample(graph, state, time, parameters))
+	grid = graph.blend_spaces_2d[graph.state_blend_spaces_2d[state]]
+	ids, horizontal, vertical = grid.select(np.asarray(parameters)[None])
+	poses = []
+	for row in (0, 1):
+		times = np.array([[time % graph.clips[int(clip)].duration if graph.clips[int(clip)].duration > 0 else 0.0 for clip in ids[0, row]]])
+		poses.append(sample_clip_pairs(skeleton, graph.clips, ids[:, row], times, horizontal))
+	return blend_poses(skeleton, *poses, vertical)
+
+
 def transition_pose(graph, source, target, source_time, target_time, weight, parameters):
 	"""Blend complete state poses before authored masks and additive layers."""
 	skeleton = graph.plan.skeleton
-	base = sample_clip_pairs(skeleton, graph.clips, *state_sample(graph, source, source_time, parameters))
+	base = state_pose(graph, source, source_time, parameters)
 	if target is None: return base
-	overlay = sample_clip_pairs(skeleton, graph.clips, *state_sample(graph, target, target_time, parameters))
+	overlay = state_pose(graph, target, target_time, parameters)
 	return blend_poses(skeleton, base, overlay, [weight])
 
 
 class GraphPlayback:
-	"""Advance clip and 1D blend states without ECS, events or root motion.
+	"""Advance clip and 1D/2D blend states without ECS, events or root motion.
 
 	All clips loop. Transitions cannot be interrupted; each advance selects at
 	most one edge. Marker synchronization ends at promotion, retaining the target
@@ -38,7 +53,7 @@ class GraphPlayback:
 	def _time(self, state, time):
 		if not np.isfinite(time): raise ValueError("playback time must be finite")
 		# Keep a blend's clock unwrapped so unequal clip loops remain continuous.
-		if state in self.graph.state_blend_spaces: return float(time)
+		if state not in self.graph.state_clips: return float(time)
 		duration = self.graph.clips[self.graph.state_clips[state]].duration
 		return float(time % duration) if duration > 0 else 0.0
 
@@ -89,7 +104,7 @@ class GraphPlayback:
 
 	def sample(self):
 		"""Return a clip-only transition triple; use pose() for blend states."""
-		if self.state in self.graph.state_blend_spaces or self.target_state in self.graph.state_blend_spaces:
+		if self.state not in self.graph.state_clips or (self.target_state is not None and self.target_state not in self.graph.state_clips):
 			raise ValueError("blend-state transitions require pose()")
 		source = self.graph.state_clips[self.state]
 		target = source if self.target_state is None else self.graph.state_clips[self.target_state]

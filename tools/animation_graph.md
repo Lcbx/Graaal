@@ -46,7 +46,7 @@ to inspect the first matching transition and its configured duration. The
 promoting the target state.
 
 Enable **Automatic state playback**, apply parameters and choose **Play** to run
-the compiled clip and 1D blend states. The first matching rule starts a fade using its
+the compiled clip and 1D/2D blend states. The first matching rule starts a fade using its
 configured duration. Its target starts at time zero, or at the corresponding
 marker phase when a sync mapping exists. Both clips advance during the fade;
 completion promotes the target with its current time and speed. Applied parameter
@@ -62,35 +62,38 @@ slider is disabled in automatic mode. All preview clips loop, including targets
 after promotion; marker synchronization ends when the fade completes, retaining
 the target speed at that endpoint. Static clips can still transition.
 
-To use a named 1D blend as a state, replace that state's `clip` entry in JSON:
+To use a named blend space as a state, replace that state's `clip` entry in JSON:
 
 ```json
 "states": {
   "idle": {"clip": "1: 1_idle"},
-  "moving": {"blend_space": "locomotion"}
+  "moving": {"blend_space": "locomotion"},
+  "turning": {"blend_space_2d": "motion"}
 }
 ```
 
-Define `locomotion` in `blend_spaces` as shown below, then compile. State/transition
-bindings evaluate its pair from the applied parameters in both manual and
-automatic modes. During a fade, each state's clip pair is blended first, then
-the state poses are crossfaded before authored masks and additive layers.
+Define `locomotion` in `blend_spaces` and `motion` in `blend_spaces_2d` as shown
+below, then compile. Each state must name exactly one source. State/transition
+bindings evaluate its blend from the applied parameters in both manual and
+automatic modes. A 2D state blends its two horizontal clip pairs, then blends
+the row poses vertically. During a fade, the complete state poses are crossfaded
+before authored masks and additive layers.
 Parameter changes update active blend weights without restarting clocks or fades.
 
 A blend state's clock measures elapsed seconds and remains unwrapped; each
 selected clip loops at its own duration. This preserves clip clocks when the
 selected pair changes or clips have unequal durations. Static clips sample time
-zero. The clip dropdown shows the state's first blend point as the representative
-asset for the viewport. Marker synchronization applies only between two clip
-states; blend states use independent source/target clocks during fades. 2D blend
-states and synchronization within a blend space remain future work. These state
+zero. The clip dropdown shows the state's first 1D point or first grid cell as the
+representative asset for the viewport. Marker synchronization applies only between two clip
+states; blend states use independent source/target clocks during fades.
+Synchronization within a blend space remains future work. These state
 definitions also round-trip through JSON project saves.
 
 Sample slots can use the state/transition pair or a specific clip, allowing
 independent masked override and additive layers defined in the draft. Other
 bindings use the displayed source-state clock, which follows the target clock
-after promotion. In manual mode both state clips use the graph clock, with sync
-mappings aligning target phase. Root-motion extraction is disabled, so in-place
+after promotion. In manual mode both state poses use the graph clock, with sync
+mappings aligning target phase between clip states. Root-motion extraction is disabled, so in-place
 tasks receive an empty instance mask. This graph preview does not dispatch events.
 
 Choose **Edit 1D blends** to add, rename, update or remove named 1D blend
@@ -120,15 +123,17 @@ Choose **Edit 2D grids** to configure named rectangular grids in a form. Select
 separate X/Y parameters, enter comma-separated increasing axis positions and
 choose **Apply axes**. Existing cell assignments at unchanged coordinates are
 kept; new cells initially use the first imported clip. Select each cell and
-assign its clip, then choose the two sample slots and a weight slot. **Write 2D
+assign its clip. For direct sample bindings, enable **Bind sample slots** and
+choose two sample slots and a weight slot. Disable it for a grid used only by
+states; no extra sample or weight slots are needed. **Write 2D
 grids to draft** validates the full graph and changes the in-memory JSON as one
 undoable edit. Choose **Compile draft** to update the preview. Concurrent JSON
 edits block writing until the form is reopened.
 
 You can also define `blend_spaces_2d` in JSON with separate X/Y parameters, strictly
 increasing `x_positions` and `y_positions`, and a rectangular `clips` list in
-Y-row order. Give it `sample_slots` (two distinct existing slots) and a
-`weight_slot` (an existing layer weight parameter). The pose plan should sample
+Y-row order. For direct sample bindings, give it `sample_slots` (two distinct
+existing slots) and a `weight_slot` (an existing layer weight parameter). The pose plan should sample
 both slots and blend their tasks using that weight. For example:
 
 ```json
@@ -148,7 +153,12 @@ overrides `grid_mix` with the vertical blend weight for the viewport pose. Choos
 a different binding on either slot disconnects the pair. The sample times use
 the graph clock; clip phase, events and root motion remain application-owned.
 Give each named 2D grid its own weight slot so multiple grids can be previewed
-at once; shared slots fail compilation.
+at once; shared slots fail compilation. Omit both `sample_slots` and
+`weight_slot` for a grid used only by a `blend_space_2d` state. Such grids do not
+appear in the sample-binding dropdowns; choose the state with a state/transition
+binding to preview them. A grid can serve both uses when bindings are declared;
+state evaluation keeps its internal vertical weight separate from authored
+layer weights. One-row, one-column and single-cell grids are supported.
 
 Graph poses use the existing `PosePlan`, model matrices and CPU-skinned viewport.
 Camera framing uses the union of sampled clip bone bounds. Selecting a clip in

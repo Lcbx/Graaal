@@ -208,6 +208,7 @@ class BlendGridWindow:
 		self.x_parameter, self.y_parameter = tk.StringVar(), tk.StringVar()
 		self.x_positions, self.y_positions = tk.StringVar(value="0"), tk.StringVar(value="0")
 		self.lower_slot, self.upper_slot, self.weight_slot = tk.StringVar(), tk.StringVar(), tk.StringVar()
+		self.bind_slots = tk.BooleanVar(value=True)
 		row = ttk.Frame(body)
 		row.pack(fill="x")
 		ttk.Label(row, text="Name").pack(side="left")
@@ -222,11 +223,15 @@ class BlendGridWindow:
 			ttk.Label(row, text=label).pack(side="left")
 			ttk.Entry(row, textvariable=variable, width=30).pack(side="left", padx=5)
 		ttk.Button(row, text="Apply axes", command=self.set_axes).pack(side="left", padx=5)
+		ttk.Checkbutton(body, text="Bind sample slots", variable=self.bind_slots, command=self.change_bind_slots).pack(anchor="w")
 		row = ttk.Frame(body)
 		row.pack(fill="x")
+		self.slot_boxes = []
 		for label, variable, values in (("Lower slot", self.lower_slot, data["sample_slots"]), ("Upper slot", self.upper_slot, data["sample_slots"]), ("Weight slot", self.weight_slot, data.get("weight_slots", []))):
 			ttk.Label(row, text=label).pack(side="left")
-			ttk.Combobox(row, textvariable=variable, values=tuple(values), state="readonly", width=15).pack(side="left", padx=5)
+			box = ttk.Combobox(row, textvariable=variable, values=tuple(values), state="readonly", width=15)
+			box.pack(side="left", padx=5)
+			self.slot_boxes.append(box)
 		ttk.Label(body, text="Cells: Y rows, X columns. Select a cell to assign an imported clip.").pack(anchor="w", pady=(10, 0))
 		self.cells = ttk.Treeview(body, columns=("y", "x", "clip"), show="headings", height=8, selectmode="browse")
 		for column in ("y", "x", "clip"):
@@ -255,6 +260,9 @@ class BlendGridWindow:
 			self.grids.insert("", "end", iid=key, values=(key, grid["x_parameter"], grid["y_parameter"], f"{len(grid['x_positions'])} × {len(grid['y_positions'])}"))
 		if name is not None: self.grids.selection_set(name)
 
+	def change_bind_slots(self):
+		for box in self.slot_boxes: box.configure(state="readonly" if self.bind_slots.get() else "disabled")
+
 	def refresh_cells(self, selected=None):
 		self.cells.delete(*self.cells.get_children())
 		for y, row in enumerate(self.clip_grid):
@@ -277,6 +285,8 @@ class BlendGridWindow:
 		self.lower_slot.set(slots[0] if slots else "")
 		self.upper_slot.set(slots[1] if len(slots) > 1 else "")
 		self.weight_slot.set(next(iter(self.data.get("weight_slots", [])), ""))
+		self.bind_slots.set(len(slots) > 1 and bool(self.data.get("weight_slots")))
+		self.change_bind_slots()
 		self.clip.set(next(iter(self.host.graph.clip_ids), ""))
 		self.clip_grid = [[self.clip.get()]]
 		self.refresh_cells()
@@ -287,10 +297,13 @@ class BlendGridWindow:
 		self.selected_name = selection[0]
 		grid = self.data["blend_spaces_2d"][self.selected_name]
 		self.name.set(self.selected_name)
-		for key in ("x_parameter", "y_parameter", "weight_slot"):
+		for key in ("x_parameter", "y_parameter"):
 			getattr(self, key).set(grid[key])
-		self.lower_slot.set(grid["sample_slots"][0])
-		self.upper_slot.set(grid["sample_slots"][1])
+		self.weight_slot.set(grid.get("weight_slot", ""))
+		self.lower_slot.set(grid.get("sample_slots", ("", ""))[0])
+		self.upper_slot.set(grid.get("sample_slots", ("", ""))[1])
+		self.bind_slots.set("sample_slots" in grid)
+		self.change_bind_slots()
 		self.axis_x, self.axis_y = list(grid["x_positions"]), list(grid["y_positions"])
 		self.x_positions.set(", ".join(f"{value:.17g}" for value in self.axis_x))
 		self.y_positions.set(", ".join(f"{value:.17g}" for value in self.axis_y))
@@ -352,8 +365,8 @@ class BlendGridWindow:
 		candidate["blend_spaces_2d"][name] = {
 			"x_parameter": self.x_parameter.get(), "y_parameter": self.y_parameter.get(),
 			"x_positions": self.axis_x.copy(), "y_positions": self.axis_y.copy(), "clips": deepcopy(self.clip_grid),
-			"sample_slots": [self.lower_slot.get(), self.upper_slot.get()], "weight_slot": self.weight_slot.get(),
 		}
+		if self.bind_slots.get(): candidate["blend_spaces_2d"][name].update(sample_slots=[self.lower_slot.get(), self.upper_slot.get()], weight_slot=self.weight_slot.get())
 		try: self.host.compile_definition(candidate)
 		except (ValueError, TypeError) as exc:
 			self.status.set(f"Cannot stage grid: {exc}")

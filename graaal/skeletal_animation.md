@@ -202,7 +202,7 @@ Version 1 fields are:
 | --- | --- |
 | `version` | Required integer `1`. |
 | `parameters` | Optional ordered name-to-finite-default mapping. |
-| `states` | Required nonempty ordered mapping of state names to either `{"clip": clip_name}` or `{"blend_space": named_1d_space}`. Each state has exactly one source. |
+| `states` | Required nonempty ordered mapping of state names to `{"clip": clip_name}`, `{"blend_space": named_1d_space}` or `{"blend_space_2d": named_grid}`. Each state has exactly one source. |
 | `initial_state` | Required state name. |
 | `transitions` | Optional ordered list of `{source, target, conditions, duration}` mappings. Conditions are `{parameter, comparison, threshold}` mappings; all must match. Fade durations must fit positive float32 playback storage. |
 | `sample_slots` | Required list of unique sample-slot names, populated by the caller. |
@@ -212,7 +212,7 @@ Version 1 fields are:
 | `tasks` | Required nonempty ordered task list; the final task is the output. |
 | `sync_mappings` | Optional list of `{source, target}` clip-name pairs; supplied marker tracks compile into `SyncMapping` resources. |
 | `blend_spaces` | Optional named 1D selectors: `{parameter, points: [{position, clip}, ...]}`. Positions must increase strictly. |
-| `blend_spaces_2d` | Optional named rectangular grids: `{x_parameter, y_parameter, x_positions, y_positions, clips, sample_slots, weight_slot}`. `clips` has one row per Y point and one clip per X point. |
+| `blend_spaces_2d` | Optional named rectangular grids: `{x_parameter, y_parameter, x_positions, y_positions, clips}`. `clips` has one row per Y point and one clip per X point. Optional `sample_slots` and `weight_slot` must be supplied together to bind the grid to pose-plan samples. |
 
 Each task has a unique `name` and a `PoseOp` or string `op`. `sample` names a
 sample `slot`; `in_place` names an earlier `base` task and a root-motion `slot`.
@@ -226,10 +226,11 @@ Insertion order determines IDs and columns within a compiled result. Use
 `root_motion_slots` to bind application data. `state_clips` contains only clip
 states and feeds `EcsAnimationStateAdapter` for clip-only graphs.
 `state_blend_spaces` maps blend-state IDs to names in `graph.blend_spaces`;
-the existing ECS state adapter does not play these states. `graph.clips` maps
-compiled clip IDs to the original shared `Clip` objects. All supplied clips must
-match the skeleton's bone count;
-the caller must also ensure matching bone order. Compiled metadata is read-only.
+`state_blend_spaces_2d` does the same for `graph.blend_spaces_2d`. These maps
+are separate, so 1D spaces and 2D grids can share names. The existing ECS state
+adapter does not play blend states. `graph.clips` maps compiled clip IDs to the
+original shared `Clip` objects. All supplied clips must match the skeleton's bone
+count; the caller must also ensure matching bone order. Compiled metadata is read-only.
 
 Initialize parameter rows with `np.tile(graph.parameter_defaults, (count, 1))`
 and pass them to `graph.machine.select` or the existing state adapter. Fill the
@@ -241,7 +242,7 @@ For externally composed state poses, `graph.input_plan` has the same authored
 operations with sample tasks replaced by `PoseOp.INPUT`. Supply local TRS tuples
 in sample-slot order through `poses=...`, and pass an empty sample list:
 `graph.input_plan.evaluate(graph.clips, (), weights, poses=local_poses, ...)`.
-This lets a controller blend each state's selected clip pair, crossfade the two
+This lets a controller compose each state's selected clips, crossfade the two
 state poses, then apply the authored masks, in-place operations and additive
 layers. Both plans own separate reusable buffers.
 See [animation_graph_example.py](../scenes/animation_graph_example.py) for an ECS
@@ -257,8 +258,9 @@ sample-slot triple to `graph.plan.evaluate`. This selector owns neither playback
 nor event traversal; layer masks still apply in the pose plan. See the graph
 tool's sample bindings for a live preview example.
 
-A `blend_spaces_2d` entry binds two distinct sample slots and one existing
-`weight_slot`. Its compiled selector returns `ids, horizontal, vertical =
+A `blend_spaces_2d` entry can bind two distinct sample slots and one existing
+`weight_slot`, or omit both bindings for state evaluation. Its compiled selector
+returns `ids, horizontal, vertical =
 graph.blend_spaces_2d[name].select(parameter_rows)`, using the existing
 `blend_space_2d`. Supply `ids[:, 0]` and `ids[:, 1]` as the two sample-slot ID
 pairs, each with `horizontal` weights and caller-owned times. Set the named
@@ -268,9 +270,15 @@ be distinct; axes must be finite and strictly increasing. The named weight-slot
 parameter is a placeholder for standalone graph evaluation and must have a
 default in `[0, 1]`; its preview value is replaced by the selector's vertical
 weight when the grid is bound. This leaves the existing pose evaluator in charge
-of the final local-pose blend. Each named 2D grid must use a distinct weight slot;
-compilation rejects shared slots so simultaneously active grids cannot overwrite
-one another's vertical blend weight.
+of the final local-pose blend. Each grid with sample bindings must use a distinct
+weight slot; compilation rejects shared slots so simultaneously active grids
+cannot overwrite one another's vertical blend weight.
+For an unbound grid, compiled `sample_slots` is `()` and `weight_slot` is `None`;
+selection still returns the same clip IDs and horizontal/vertical weights.
+2D state playback blends the two horizontal pairs, then blends those row poses
+vertically before crossfading complete state poses. State evaluation uses its
+own weights and does not change authored layer-weight parameters, including when
+the referenced grid also declares sample bindings.
 
 For synchronized clip transitions, request `sync_mappings` in the definition
 and supply `sync_tracks={clip_name: event_track, ...}` to `compile`. Each requested
@@ -285,13 +293,12 @@ IDs in `graph.sync_mappings`. Pass that same mapping to both
 must loop. For editable tracks, compile from `EventTimeline.snapshot()[1]` so
 subsequent edits stay separate from the existing runtime mapping.
 
-This authoring version supports single-clip and named 1D blend states, 1D/2D blend-space
+This authoring version supports single-clip and named 1D/2D blend states, blend-space
 sample bindings, in-place root anchoring, masked blend/additive layers and
-clip-pair sync settings. 2D blend states and IK/phase authoring
-are not yet represented. The
+clip-pair sync settings. IK/phase authoring is not yet represented. The
 [graph tool](../tools/animation_graph.md) provides a definition editor,
 transition/condition forms, state diagram, manual layered-pose inspection and
-automatic clip/1D blend-state playback using this API. Blend states use a shared
+automatic clip/1D/2D blend-state playback using this API. Blend states use a shared
 seconds clock with independent clip looping; blend-state synchronization and ECS
 graph playback remain application-owned. The standalone tools share
 explicit [JSON project persistence](../tools/animation_project.md) for graph

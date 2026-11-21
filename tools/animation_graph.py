@@ -279,7 +279,9 @@ class GraphWindow:
 	def state_clip(self, state):
 		"""Choose a representative imported clip for the shared asset viewport."""
 		if state in self.graph.state_clips: return self.graph.state_clips[state]
-		return int(self.graph.blend_spaces[self.graph.state_blend_spaces[state]].clip_ids[0])
+		if state in self.graph.state_blend_spaces:
+			return int(self.graph.blend_spaces[self.graph.state_blend_spaces[state]].clip_ids[0])
+		return int(self.graph.blend_spaces_2d[self.graph.state_blend_spaces_2d[state]].clip_ids[0, 0])
 
 	def apply_parameters(self):
 		if self.graph is None: return
@@ -332,12 +334,14 @@ class GraphWindow:
 	def change_binding(self, slot):
 		binding = self.bindings[slot].get()
 		for name, grid in self.graph.blend_spaces_2d.items():
+			if not grid.sample_slots: continue
 			lower, upper = (next(label for label, index in self.graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			labels = (f"{self.GRID_PREFIX}{name} / lower>", f"{self.GRID_PREFIX}{name} / upper>")
 			if binding in labels:
 				self.bindings[lower].set(labels[0])
 				self.bindings[upper].set(labels[1])
 		for name, grid in self.graph.blend_spaces_2d.items():
+			if not grid.sample_slots: continue
 			lower, upper = (next(label for label, index in self.graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			labels = (f"{self.GRID_PREFIX}{name} / lower>", f"{self.GRID_PREFIX}{name} / upper>")
 			if (self.bindings[lower].get() == labels[0]) != (self.bindings[upper].get() == labels[1]):
@@ -407,7 +411,7 @@ class GraphWindow:
 			self.draw_diagram()
 		else:
 			state = self.graph.state_ids[self.state.get()] if self.preview_enabled.get() else None
-			if state in self.graph.state_blend_spaces: self.position += dt
+			if state is not None and state not in self.graph.state_clips: self.position += dt
 			else:
 				duration = self.animations[self.animation_id].clip.duration
 				self.position = (self.position + dt) % duration if duration > 0 else 0.0
@@ -434,6 +438,7 @@ class GraphWindow:
 		weights_for_plan = self.parameters[None, list(graph.weight_columns)].copy()
 		grid_pairs = {}
 		for name, grid in graph.blend_spaces_2d.items():
+			if not grid.sample_slots: continue
 			lower, upper = (next(label for label, index in graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			if self.bindings[lower].get() == f"{self.GRID_PREFIX}{name} / lower>" and self.bindings[upper].get() == f"{self.GRID_PREFIX}{name} / upper>":
 				ids, horizontal, vertical = grid.select(self.parameters[None])

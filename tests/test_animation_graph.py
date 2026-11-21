@@ -181,6 +181,47 @@ def test_named_2d_grid_selects_existing_pose_plan_inputs():
 	with pytest.raises(ValueError, match="both blend-space columns"): grid.select([[0]])
 
 
+def test_2d_state_bindings_and_unbound_grids_keep_independent_snapshots():
+	rig, clips = resources()
+	data = grid_definition()
+	data["states"]["walk"] = {"blend_space_2d": "motion"}
+	data["blend_spaces"] = {"motion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}]}}
+	data["states"]["line"] = {"blend_space": "motion"}
+	grid = data["blend_spaces_2d"]["motion"]
+	del grid["sample_slots"], grid["weight_slot"]
+	draft = AnimationGraphDefinition(data)
+	graph = draft.compile(rig, clips)
+	assert graph.state_clips == {0: 0} and graph.state_blend_spaces == {2: "motion"}
+	assert graph.state_blend_spaces_2d == {1: "motion"}
+	assert graph.blend_spaces_2d["motion"].sample_slots == () and graph.blend_spaces_2d["motion"].weight_slot is None
+	with pytest.raises(TypeError): graph.state_blend_spaces_2d[1] = "other"
+	draft.data["blend_spaces_2d"]["motion"]["clips"][0][0] = "upper"
+	draft.data["states"]["walk"]["blend_space_2d"] = "missing"
+	with pytest.raises(ValueError, match="states.walk.blend_space_2d"): draft.compile(rig, clips)
+	assert graph.blend_spaces_2d["motion"].clip_ids[0, 0] == 0
+	assert graph.state_blend_spaces_2d[1] == "motion"
+
+
+@pytest.mark.parametrize("state,error", [
+	({"blend_space_2d": "missing"}, "states.walk.blend_space_2d"),
+	({"blend_space_2d": {}}, "states.walk.blend_space_2d"),
+	({"clip": "walk", "blend_space_2d": "motion"}, "states.walk.blend_space_2d"),
+	({"blend_space": "motion", "blend_space_2d": "motion"}, "states.walk.blend_space_2d"),
+])
+def test_invalid_2d_states_report_their_field(state, error):
+	data = grid_definition()
+	data["states"]["walk"] = state
+	with pytest.raises(ValueError, match=error): AnimationGraphDefinition(data).compile(*resources())
+
+
+@pytest.mark.parametrize("missing", ["sample_slots", "weight_slot"])
+def test_grid_slot_bindings_must_be_supplied_together(missing):
+	data = grid_definition()
+	del data["blend_spaces_2d"]["motion"][missing]
+	with pytest.raises(ValueError, match=f"blend_spaces_2d.motion.{missing}:.*together"):
+		AnimationGraphDefinition(data).compile(*resources())
+
+
 @pytest.mark.parametrize("field,value,match", [
 	("x_parameter", "missing", "x_parameter"),
 	("y_parameter", "speed", "axis parameters must differ"),
