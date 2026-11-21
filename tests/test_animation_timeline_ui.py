@@ -5,8 +5,9 @@ import numpy as np
 import pytest
 
 from graaal.AnimationEvents import EventTimeline, EventTrack
-from tool.animation_preview import Preview
-from tool.animation_timeline import Animation, MarkerKind, TimelineWindow
+from tools.animation_preview import Preview
+from tools.animation_asset import Animation
+from tools.animation_timeline import MarkerKind, TimelineWindow
 
 
 @pytest.fixture

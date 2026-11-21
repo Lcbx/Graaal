@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("pygltflib")
 
-from tool.animation_timeline import Animation, Track, load_animations
-from tool.animation_preview import Preview, animation_bounds, camera_from_bounds, mesh_triangles, pose_matrices, project
+from tools.animation_asset import Animation, Track, load_animations
+from tools.animation_preview import Preview, animation_bounds, camera_from_bounds, mesh_triangles, pose_matrices, project
 from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip
 
 

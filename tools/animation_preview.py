@@ -1,4 +1,4 @@
-"""CPU pose and camera helpers for the timeline viewport."""
+"""CPU pose and camera helpers shared by the animation tools."""
 from dataclasses import dataclass
 
 import numpy as np
