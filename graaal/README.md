@@ -91,7 +91,7 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `TransparencyData` | `load_transparency_scene` returns primitives, material records and images; `VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, `MATERIAL_DTYPE` define the rendering ABI. |
 | `DrawList` | `DrawList.build(lod_ids, shader_ids)` returns `.order` and `SourceBatch` ranges for CPU grouping. |
 | `Geometry` | `make_cube_mesh` creates a GPU mesh when called; importing the module needs no graphics backend. |
-| `Diagnostics` | `WatchTimer` times CPU scopes; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. Rendering diagnostics are re-exported on explicit access. |
+| `Diagnostics` | `WatchTimer` times CPU scopes; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. `inspect_physics(world)` copies native physics statistics. Rendering diagnostics are re-exported on explicit access. |
 | `utils` | `cache_last` caches an instance method's most recent keyed call; `higher_pow2` returns the next strictly greater power of two. |
 
 | Rendering module | Useful APIs and purpose |
@@ -436,6 +436,13 @@ The widget shows CPU recording and GPU pass timings, a timing history, encoded
 draw/dispatch counts, CPU and tracked GPU memory, and expandable command and
 resource details. It imports ImGui only in `draw()` and does not own the monitor.
 The materials scene toggles recording and this widget with **P**.
+
+For native physics counters and timing means, use
+`report["physics"] = inspect_physics(physics.world)` from `graaal.Diagnostics`
+before updating the widget. A report containing only `physics` also works.
+Physics has a separate history; native times are averages since the last native
+`reset_stats()`, rather than render-frame costs. See [physics diagnostics](physics.md#diagnostics-and-performance)
+for collection and ownership rules.
 
 The report contains ordered command buffers, named render/compute passes, encoded
 draw and dispatch calls, resources used through engine bindings and attachments,

@@ -1,4 +1,4 @@
-"""ImGui view of RenderMonitor submission reports.
+"""ImGui view of render reports and optional native physics statistics.
 
 The widget owns only presentation state. Feed it reports after submission and
 call draw() inside an ImGui.render callback; it creates no GPU resources.
@@ -31,6 +31,8 @@ class DiagnosticsVisualizer:
 	Call update(monitor.submit(...)) once per measured submission, then draw()
 	inside ImGui.render(). Set visible=False to hide it; the owner decides when
 	to collect reports. Updating reports works without the optional UI package.
+	A report may also contain physics=inspect_physics(world), with or without
+	render commands. Native mean tick timings have their own bounded history.
 	"""
 	def __init__(self, *, visible=True, history_size=120, position=(480, 12)):
 		if type(history_size) is not int or history_size < 1:
@@ -40,12 +42,17 @@ class DiagnosticsVisualizer:
 		self.report = None
 		self.paused = False
 		self.history = deque(maxlen=history_size)
+		self.physics_history = deque(maxlen=history_size)
 		self._history_source = None
 
 	def update(self, report):
-		"""Keep one report plus a bounded history of the measured command spans."""
+		"""Keep a report and separate bounded render/physics timing histories."""
 		if self.paused: return
 		self.report = report
+		physics = report.get("physics")
+		if physics is not None:
+			self.physics_history.append(physics["stats"]["tick_ms"])
+		if "commands" not in report: return
 		commands = report.get("commands", ())
 		gpu = report.get("gpu_timing_available", False) and any(entry.get("gpu_span_ms") is not None for entry in commands)
 		source = "GPU pass span" if gpu else "CPU recording"
@@ -68,14 +75,29 @@ class DiagnosticsVisualizer:
 			if not expanded: return
 			_, self.paused = imgui.checkbox("Pause display", self.paused)
 			if self.report is None:
-				imgui.text_disabled("No report yet. Submit work through RenderMonitor.")
+				imgui.text_disabled("No report yet. Supply a render or physics report.")
 				return
-			self._draw_summary(imgui)
-			self._draw_passes(imgui)
-			self._draw_commands(imgui)
-			self._draw_resources(imgui)
+			if "commands" in self.report:
+				self._draw_summary(imgui)
+				self._draw_passes(imgui)
+				self._draw_commands(imgui)
+				self._draw_resources(imgui)
+			self._draw_physics(imgui)
 		finally:
 			imgui.end()
+
+	def _draw_physics(self, imgui):
+		physics = self.report.get("physics")
+		if physics is None or not imgui.collapsing_header("Physics"): return
+		stats = physics["stats"]
+		imgui.text(f"Tick: {physics['tick']} at {physics['tick_hz']:g} Hz   Lockstep: {physics['lockstep']}")
+		imgui.text_disabled("Native timing means since reset_stats(); separate from render-frame times.")
+		if self.physics_history:
+			values = np.asarray(self.physics_history, dtype=np.float32)
+			imgui.plot_lines("Native mean tick (ms)", values, overlay_text=f"latest {values[-1]:.2f} ms", graph_size=(0, 60))
+		# Preserve backend names, including counters added by later bindings.
+		for name, value in stats.items():
+			imgui.text(f"{name}: {_ms(value) if name.endswith('_ms') else value}")
 
 	def _draw_summary(self, imgui):
 		report = self.report

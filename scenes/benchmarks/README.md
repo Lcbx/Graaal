@@ -37,28 +37,67 @@ root motion, events or graph blending; timings depend on the machine and workloa
 
 ```powershell
 python -m scenes.benchmarks.benchmark_physics --bodies 100 1000 --threads 1 --warmup 30 --repeat 240 --output physics_cpu.json
+python -m scenes.benchmarks.benchmark_physics --workloads isolated colliding compounds ragdolls --bodies 100 1000 --ragdolls 10 20 --threads 1 2 4 --warmup 60 --repeat 240 --output physics_workloads.json
 ```
 
-Install the `physics` extra. This headless workload uses isolated unit boxes,
-gravity disabled, sleeping disabled, shared linear/angular velocities, and
-120 Hz scheduler ticks. It compares interpolation disabled and enabled, with
-median/p95 wall times for reconciliation, input submission, native stepping,
-pose readback, and render-pose preparation. Creation is measured separately;
-warmup ticks are excluded. `sync` combines reconcile, inputs and pull; the
-fixed-tick total includes scheduler overhead and native stepping. Render-pose
-preparation is separate from that total.
+Install the `physics` extra. All workloads use 120 Hz lockstep scheduler ticks,
+sleeping disabled and native contact persist reporting. The default workload
+remains `isolated`; choose one or more with `--workloads`:
+
+| Workload | Simulation |
+| --- | --- |
+| `isolated` | Spaced unit boxes, gravity disabled, shared linear/angular velocities. |
+| `colliding` | Stacked unit boxes falling onto a static floor under gravity. |
+| `compounds` | The same stack with two adjacent half-box colliders per body. |
+| `ragdolls` | Tilted native humanoids falling limp onto a shared floor, with self collision. |
+
+`--bodies` selects moving body counts for the first three workloads;
+`--ragdolls` selects humanoid counts (default 10 and 20). Each collision workload
+adds one static floor. Ragdolls use the backend's humanoid prefab; the report
+records its bone count and native total body count. These are passive ragdolls,
+not animation-following or learned controllers.
+
+Every case compares interpolation disabled and enabled, reporting median/p95
+CPU wall times for reconciliation, input submission, native stepping, pose
+readback and event routing. `sync` combines reconcile, inputs, pull and
+`dispatch_events`; `fixed_tick` also includes native stepping and scheduler
+overhead. Event routing is now measured inside the fixed tick, unlike the
+historical baseline below. Creation measures declaration reconciliation and
+native command submission; native application happens in the first tick.
+Warmup ticks are excluded from both wall-time samples and native timing means.
+
+Render transforms for interpolated rigid bodies and final skinning for ragdolls
+are measured separately from the fixed tick. Ragdoll skinning runs in both modes;
+interpolation adds previous/current bone-pose sampling. No renderer or GPU is
+created. `native` contains the [native diagnostics](../../graaal/physics.md#diagnostics-and-performance).
+`contact_events` counts contact records, including persist/end records, and
+`contact_ticks` counts measured ticks with any contact records; neither is a
+unique contact-pair count. `events_dropped` counts overflow during the measured
+window. Check these fields before interpreting a case as collision-heavy.
 
 The `io` probe separately measures UID lookup, NumPy gather, float64-to-float32
 conversion and ECS scatter on one snapshot, releasing the snapshot afterward.
 It excludes physics stepping and render packing; it reassigns identical ECS
-poses after the timed simulation. Results depend on the platform and workload;
-they do not establish GPU frame rate or collision-heavy physics performance.
+poses after the timed simulation. This probe applies to rigid bodies only;
+ragdoll bone poses are converted through final skinning instead. Results depend
+on the platform and workload and do not establish GPU frame rate.
 
-On Windows x64, CPython 3.14.10, NumPy 2.5.5 and pyjoltphysics 0.1.0a3, one
+Historically, on Windows x64, CPython 3.14.10, NumPy 2.5.5 and pyjoltphysics 0.1.0a3, one
 local 240-sample run at 1,000 bodies measured median 0.55 ms per fixed tick with
 interpolation enabled (0.30 ms sync, 0.24 ms native step), plus 0.26 ms for
-render-pose preparation. Conversion alone measured roughly 0.001 ms. These are
+render-pose preparation. Conversion alone measured roughly 0.001 ms. This older
+isolated-box result excluded event routing from the measured tick. These are
 observations, not CI thresholds; rerun on the target machine before tuning.
+
+A subsequent 48-case run on the same software versions used 60 warmup and 240
+measured ticks across all four workloads, both sizes, 1/2/4 threads and both
+interpolation modes. With interpolation enabled, 1,000-box fixed-tick medians
+were 3.28/2.67/2.10 ms at 1/2/4 threads; compounds measured 3.35/2.69/2.07 ms.
+Render transforms cost about 0.27 ms separately. All collision cases reported
+contacts in every measured tick without event overflow. Twenty ragdolls were
+dominated by Python input preparation, with substantial run-to-run variation;
+see the [physics status](../../implementation_plans/physics_integration_plan.md#phase-6-workload-measurements)
+for the measurements and limitations before making tuning decisions.
 
 ## Transparency
 

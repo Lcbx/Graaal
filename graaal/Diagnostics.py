@@ -8,7 +8,7 @@ from time import perf_counter as get_time
 from typing import Callable, ClassVar
 
 
-__all__ = ["WatchTimer", "setup_gc_monitor", "setup_memory_monitor", "RenderMonitor", "get_draw_counts", "get_shader_sources", "inspect_render_memory"]
+__all__ = ["WatchTimer", "setup_gc_monitor", "setup_memory_monitor", "inspect_physics", "RenderMonitor", "get_draw_counts", "get_shader_sources", "inspect_render_memory"]
 
 
 def __getattr__(name):
@@ -19,6 +19,16 @@ def __getattr__(name):
 			globals()[exported] = getattr(RenderDiagnostics, exported)
 		return globals()[name]
 	raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def inspect_physics(world) -> dict:
+	"""Copy native world statistics without stepping, draining events or retaining snapshots.
+
+	Pass a standalone pyjoltphysics.World or an adapter's world on its owning
+	thread. Native timing means cover ticks since world.reset_stats(), not one
+	render frame. Statistics keep their native names and units.
+	"""
+	return dict(tick=world.tick, tick_hz=world.settings.tick_hz, lockstep=world.lockstep, stats=dict(world.stats()))
 
 
 class WatchTimer:

@@ -1,6 +1,7 @@
 """Optional ECS body, character and ragdoll ownership over standalone Jolt."""
 
-from dataclasses import fields
+from copy import deepcopy
+from dataclasses import dataclass, fields
 from types import MappingProxyType
 from typing import get_type_hints
 
@@ -126,6 +127,23 @@ def _rotations(value):
 		raise ValueError("rotation must be a unit xyzw quaternion")
 
 
+@dataclass(frozen=True)
+class _PhysicsState:
+	"""Opaque same-adapter checkpoint; contains no borrowed native snapshot views."""
+	adapter: object
+	tick: int
+	native: bytes
+	uids: np.ndarray
+	entities: np.ndarray
+	values: np.ndarray
+	geometry: tuple
+	joints: tuple
+	revision: int
+	position: np.ndarray
+	rotation: np.ndarray
+	pending: list
+
+
 class EcsPhysicsAdapter:
 	"""Own a lockstep Jolt world and full-handle ECS/body UID mappings.
 
@@ -182,6 +200,7 @@ class EcsPhysicsAdapter:
 		self._pending = []
 		self._token = None
 		self.last_seq = 0
+		self._checkpoint_revision = 0
 		self._closed = False
 		self._interpolate = interpolate
 		self._pose_tick = self.world.tick
@@ -607,7 +626,9 @@ class EcsPhysicsAdapter:
 		keys = np.broadcast_to(np.asarray(keys), entities.shape)
 		if keys.dtype.kind not in "iu" or np.any(keys < 0) or np.any(keys > 0xffffffff): raise ValueError("joint keys must be uint32 integers")
 		ids = [self._joint_records[(int(owner), int(key))][0] for owner, key in zip(entities, keys)]
-		return self._seq(self.world.set_joint_motors(ids, mode, target=target, max=max_force, axis=axis))
+		seq = self._seq(self.world.set_joint_motors(ids, mode, target=target, max=max_force, axis=axis))
+		self._checkpoint_revision += 1
+		return seq
 
 	def entities_of(self, uids):
 		"""Resolve current body UIDs to live full handles; WORLD_ENTITY means absent."""
@@ -681,7 +702,9 @@ class EcsPhysicsAdapter:
 
 	def set_filter_table(self, collides):
 		self._check()
-		return self._seq(self.world.set_filter_table(collides))
+		seq = self._seq(self.world.set_filter_table(collides))
+		self._checkpoint_revision += 1
+		return seq
 
 	@property
 	def materials(self):
@@ -780,6 +803,89 @@ class EcsPhysicsAdapter:
 
 	def set_velocity(self, entities, linear=None, angular=None):
 		self._queue("set_velocities", entities, linear=linear, angular=angular)
+
+	def reset_bodies(self, entities, positions, orientations=(0, 0, 0, 1), *, linear=(0, 0, 0), angular=(0, 0, 0)):
+		"""Queue selected regular bodies' poses/velocities, replacing their pending inputs.
+
+		Call between ticks after native submissions have applied. Other owners'
+		commands and interpolation history are preserved; constraints are not reset.
+		"""
+		self._check()
+		owners = as_entities(entities).copy()
+		if len(np.unique(owners)) != len(owners): raise ValueError("reset owners must be distinct")
+		if any(int(owner) not in self._uid_by_owner for owner in owners) or not np.all(self.ecs.is_alive(owners) & self.ecs.has(owners, Collider) & self.ecs.has(owners, self.transform_type)):
+			raise ValueError("reset requires live reconciled regular body owners")
+		position = _vectors(positions, len(owners), 3, "positions")
+		rotation = _vectors(orientations, len(owners), 4, "orientations")
+		_rotations(rotation)
+		velocity = _vectors(linear, len(owners), 3, "linear")
+		spin = _vectors(angular, len(owners), 3, "angular")
+		snapshot = self.world.latest()
+		if not self.world.lockstep or snapshot is None or snapshot.applied_seq != self.world.submitted_seq:
+			raise RuntimeError("apply native submissions before resetting bodies")
+		pending = []
+		for kind, queued, values in self._pending:
+			keep = ~np.isin(queued, owners)
+			if np.any(keep): pending.append((kind, queued[keep], {name: None if value is None else value[keep] for name, value in values.items()}))
+		pending.append(("set_transforms", owners, dict(positions=position, orientations=rotation)))
+		pending.append(("set_velocities", owners.copy(), dict(linear=velocity, angular=spin)))
+		self._pending = pending
+
+	def _checkpoint_joints(self):
+		return tuple((key, record[0], tuple(np.asarray(record[2][name]).tobytes() for name in _JOINT_FIELDS)) for key, record in sorted(self._joint_records.items()))
+
+	def _checkpoint_snapshot(self):
+		self._check()
+		snapshot = self.world.latest()
+		if not self.world.lockstep or snapshot is None or snapshot.applied_seq != self.world.submitted_seq or self._events_tick != self.world.tick:
+			raise RuntimeError("checkpoints require applied native submissions and dispatched events between ticks")
+		stats = self.world.stats()
+		if self._ragdolls or self._characters or self._character_pending or any(stats[name] for name in ("ragdolls", "characters", "vehicles", "soft_bodies")):
+			raise NotImplementedError("checkpoints support regular bodies and joints; native control state is not captured")
+		if self._tokens() != self._token or (self.joints is not None and self.joints.version() != self._joint_token):
+			raise RuntimeError("reconcile physics declarations before checkpoint operations")
+		if not np.array_equal(np.sort(snapshot.uid), np.sort(self._uids)) or set(snapshot.joints.id) != {record[0] for record in self._joint_records.values()}:
+			raise ValueError("checkpoints require exclusively adapter-owned bodies and joints")
+		return snapshot
+
+	def save_state(self):
+		"""Capture regular body/joint state, ECS targets and queued adapter inputs.
+
+		Requires a completed tick and unchanged configuration/topology on restore.
+		Native ticks, event delivery, external clocks and command buffers are not
+		rewound. Characters and ragdolls require unavailable native control state.
+		"""
+		snapshot = self._checkpoint_snapshot()
+		pose = self.transforms[self._entities]
+		return _PhysicsState(
+			self, self.world.tick, self.world.save_state(), snapshot.uid.copy(), self._entities.copy(), self._values.copy(),
+			tuple(self._geometry), self._checkpoint_joints(), self._checkpoint_revision, pose.position, pose.rotation, deepcopy(self._pending),
+		)
+
+	def restore_state(self, state):
+		"""Restore a same-adapter checkpoint without stepping; return its saved tick.
+
+		Replace Python input queues and snap render history to restored poses.
+		The caller restores its own animation/gameplay clocks using the returned tick.
+		"""
+		if not isinstance(state, _PhysicsState) or state.adapter is not self: raise ValueError("checkpoint belongs to a different physics adapter")
+		snapshot = self._checkpoint_snapshot()
+		if not np.array_equal(snapshot.uid, state.uids) or not np.array_equal(self._entities, state.entities) or not np.array_equal(self._values, state.values) or tuple(self._geometry) != state.geometry or self._checkpoint_joints() != state.joints or self._checkpoint_revision != state.revision:
+			raise ValueError("checkpoint body/joint topology and configuration must remain unchanged")
+		rejected = self.world.stats()["rejected"]
+		self._seq(self.world.restore_state(state.native))
+		self.world.flush()
+		if self.world.stats()["rejected"] != rejected: raise RuntimeError("native physics checkpoint was rejected")
+		self.transforms[self._entities].assign(position=state.position, rotation=state.rotation)
+		self._pending = deepcopy(state.pending)
+		self._pose_tick = -1
+		self._teleported = np.empty(0, dtype=np.uint32)
+		self.pull()
+		self.world.drain_events()
+		self.events = np.empty(0, dtype=self.event_dtype)
+		self.events.flags.writeable = False
+		self._events_tick = self.world.tick
+		return state.tick
 
 	def add_impulse(self, entities, impulses, points=None):
 		self._queue("add_impulses", entities, impulses=impulses, points=points)

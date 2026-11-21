@@ -493,10 +493,103 @@ time skips multiple ticks between pulls, interpolation snaps to the new pose
 because intervening tick poses are unavailable. Returned arrays are detached;
 release them when no longer needed. Close releases retained pose history.
 
+## Diagnostics and performance
+
+Collect native statistics explicitly on the world's owning thread:
+
+```python
+from graaal.Diagnostics import inspect_physics
+
+report = {"physics": inspect_physics(physics.world)}
+print(report["physics"]["stats"])
+```
+
+Standalone applications pass their native `pj.World` directly. Inspection copies
+the statistics without stepping, flushing commands, draining events, retaining
+snapshots or resetting counters. The result contains `tick`, `tick_hz`, `lockstep`
+and `stats`, preserving every native statistic name and unit. Native timing
+means (`tick_ms`, `step_ms`, `publish_ms`, `events_ms`, etc.) cover ticks since
+`world.reset_stats()`; they are not per-render-frame measurements. Body counts,
+`events_dropped`, snapshot `pool`, and query count/wait statistics remain visible.
+
+Feed this report to `DiagnosticsVisualizer.update(report)` for a physics-only
+panel, or attach `report["physics"]` to a `RenderMonitor` submission report before
+updating the widget. The panel shows every native counter and a separate bounded
+history of reported mean tick costs. Collection and history updates work without
+the UI extra; drawing requires it. Diagnostics do not add callbacks to physics.
+
 Run `python -m scenes.benchmarks.benchmark_physics --bodies 100 1000` to measure
-each fixed callback, render-pose preparation, and UID/gather/conversion/scatter
-costs. This headless benchmark uses isolated moving boxes and reports CPU wall
-times; it does not measure GPU frame rate or collision-heavy workloads.
+each fixed callback (including event routing), render-pose preparation, and
+UID/gather/conversion/scatter costs. The default workload uses isolated moving
+boxes. Add `--workloads colliding compounds ragdolls --ragdolls 10 20 --threads 1 2 4`
+for gravity-driven stacks, two-shape compounds and passive native humanoids.
+Ragdoll final skinning is timed separately. Native timing means exclude warmup;
+contact activity and dropped-event counts help validate the measured workload.
+See [benchmark contracts and commands](../scenes/benchmarks/README.md#physics-synchronization).
+All timings are headless CPU measurements and do not establish GPU frame rate.
+
+## Checkpoints and selective resets
+
+Regular body/joint worlds can capture a same-adapter, in-memory checkpoint after
+a complete fixed tick (`pull` and `dispatch_events` included):
+
+```python
+checkpoint = physics.save_state()
+# Advance fixed ticks, using the same bodies and joint configuration.
+checkpoint_tick = physics.restore_state(checkpoint)
+```
+
+The opaque checkpoint owns native state bytes, full entity handles, ECS transform
+targets and copies of queued adapter body inputs. Restore applies native state
+with `flush()` without advancing time, restores targets and pending inputs, mirrors
+dynamic poses, and snaps render interpolation to the restored poses. The checkpoint
+is reusable. Body UIDs/order, full entity generations, collider geometry, body
+settings and joint configuration must remain unchanged. Invalid ownership or
+configuration is rejected before native restore; damaged native bytes are rejected
+by the backend. Foreign adapters and unreconciled declarations are rejected.
+
+Both operations require lockstep, applied native submissions and dispatched events.
+Python body inputs queued through the adapter may remain pending and are captured;
+native command queues are not captured. Keep native tracks, scheduled callbacks,
+future native commands, world settings, material/filter tables and direct native
+configuration changes out of checkpoint replay. Adapter motor/filter changes
+invalidate earlier checkpoints. Checkpoints are not portable save-game files and
+do not capture the rest of the ECS or application command buffers.
+
+`restore_state` returns the saved native tick as a marker; the native tick/sequence
+counters remain monotonic. Capture and restore caller-owned animation/gameplay
+clocks, accumulator, random state and other control state separately. Restoration
+clears the exposed event batch without invoking subscribers; event delivery and
+gameplay side effects are not rewound. This is physical-state replay, not a
+deterministic replay of application events.
+
+The pinned backend omits character state and native ragdoll modes/strengths from
+its state bytes. Worlds containing ragdolls, characters, vehicles, soft bodies or
+unowned native resources are therefore rejected by this checkpoint API. Pose
+readback alone cannot recover character jump/slide timers, held controls or
+ragdoll transitions. Full control-state replay remains unsupported.
+
+For selected regular bodies, `reset_bodies` replaces pose and velocity inputs:
+
+```python
+physics.reset_bodies([box], positions=(0, 3, 0))
+# Next prepare_inputs()/step()/pull() applies the reset.
+```
+
+Optional `orientations` defaults to identity; `linear` and `angular` default to
+zero. Numeric arrays broadcast or align with distinct live, reconciled full
+handles. Resetting discards earlier queued adapter inputs for those owners while
+preserving other owners' queued inputs and interpolation history. Only selected
+history snaps when the reset applies. Static and kinematic ECS targets update too.
+Validation completes before queues change. Apply native submissions before queuing
+a reset; no tick is advanced by the call. Contacts and constraints can still affect
+other bodies when simulation resumes; constraint state and training episodes are
+not reset. Characters and ragdolls are not accepted as regular body reset owners.
+
+See [test_physics_replay.py](../tests/test_physics_replay.py) for contact/constraint
+trajectories, queued input replay, generation guards and selective history resets.
+
+## Capacity and shutdown
 
 At body capacity, the pinned backend needs removals applied before additions
 can reserve space. Reconciliation validates body, ragdoll and character declarations against

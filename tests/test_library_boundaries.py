@@ -130,9 +130,12 @@ class ForbidBackends(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, ForbidBackends())
 from graaal import Assets, SkeletalGltf, Geometry, EcsPhysics, PhysicsRagdoll, Diagnostics
 from graaal.__main__ import simulate
-from graaal.Diagnostics import WatchTimer
+from graaal.Diagnostics import WatchTimer, inspect_physics
 assert simulate().shape == (2, 3)
 with WatchTimer('cpu'): pass
+from types import SimpleNamespace as NS
+native = NS(tick=0, settings=NS(tick_hz=120), lockstep=True, stats=lambda: {'tick_ms': 0.0})
+assert inspect_physics(native)['stats'] == {'tick_ms': 0.0}
 assert 'graaal.RenderDiagnostics' not in sys.modules
 assert Assets.load_blue_noise().shape == (64, 64)
 """], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
