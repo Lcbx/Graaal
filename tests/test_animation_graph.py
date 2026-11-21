@@ -93,6 +93,42 @@ def test_named_blend_space_selects_runtime_pairs_for_existing_pose_plan():
 	with pytest.raises(ValueError, match="blend-space column"): space.select([0.5])
 
 
+@pytest.mark.parametrize("op", [PoseOp.BLEND, PoseOp.ADDITIVE])
+def test_blend_states_compile_separate_bindings_and_pose_input_plan(op):
+	rig, clips = resources()
+	data = definition()
+	data["tasks"][-1]["op"] = op
+	data["blend_spaces"] = {"motion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}]}}
+	data["states"]["walk"] = {"blend_space": "motion"}
+	draft = AnimationGraphDefinition(data)
+	graph = draft.compile(rig, clips)
+	assert graph.state_clips == {0: 0} and graph.state_blend_spaces == {1: "motion"}
+	with pytest.raises(TypeError): graph.state_blend_spaces[1] = "other"
+	local = [sample_clip_pairs(rig, graph.clips, *sample) for sample in samples(graph)]
+	expected = tuple(value.copy() for value in evaluate(graph))
+	actual = graph.input_plan.evaluate(graph.clips, (), [[0.5]], poses=local, root_motions=[(None, np.array([False]))])
+	for value, reference in zip(actual, expected): np.testing.assert_allclose(value, reference)
+	# Both compiled plans retain their own reusable output storage.
+	evaluate(graph)
+	for value, reference in zip(actual, expected): np.testing.assert_array_equal(value, reference)
+	draft.data["states"]["walk"]["blend_space"] = "missing"
+	with pytest.raises(ValueError, match=r"states.walk.blend_space"): draft.compile(rig, clips)
+	assert graph.state_blend_spaces[1] == "motion"
+
+
+@pytest.mark.parametrize("state,error", [
+	({}, "states.walk"),
+	({"blend_space": "missing"}, "states.walk.blend_space"),
+	({"blend_space": {}}, "states.walk.blend_space"),
+	({"clip": "walk", "blend_space": "motion"}, "states.walk.blend_space"),
+	({"blend_space_2d": "motion"}, "states.walk.blend_space_2d"),
+])
+def test_invalid_blend_state_reports_its_field(state, error):
+	data = definition()
+	data["states"]["walk"] = state
+	with pytest.raises(ValueError, match=error): AnimationGraphDefinition(data).compile(*resources())
+
+
 @pytest.mark.parametrize("value,match", [
 	({"parameter": "missing", "points": [{"position": 0, "clip": "idle"}]}, "parameter"),
 	({"parameter": "speed", "points": []}, "points"),
@@ -143,6 +179,47 @@ def test_named_2d_grid_selects_existing_pose_plan_inputs():
 	np.testing.assert_allclose(model_matrices(rig, *pose)[0, :, :3, 3], [[1, 0, 0], [1, 1.5, 0]])
 	with pytest.raises(ValueError): grid.clip_ids[0, 0] = 2
 	with pytest.raises(ValueError, match="both blend-space columns"): grid.select([[0]])
+
+
+def test_2d_state_bindings_and_unbound_grids_keep_independent_snapshots():
+	rig, clips = resources()
+	data = grid_definition()
+	data["states"]["walk"] = {"blend_space_2d": "motion"}
+	data["blend_spaces"] = {"motion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}]}}
+	data["states"]["line"] = {"blend_space": "motion"}
+	grid = data["blend_spaces_2d"]["motion"]
+	del grid["sample_slots"], grid["weight_slot"]
+	draft = AnimationGraphDefinition(data)
+	graph = draft.compile(rig, clips)
+	assert graph.state_clips == {0: 0} and graph.state_blend_spaces == {2: "motion"}
+	assert graph.state_blend_spaces_2d == {1: "motion"}
+	assert graph.blend_spaces_2d["motion"].sample_slots == () and graph.blend_spaces_2d["motion"].weight_slot is None
+	with pytest.raises(TypeError): graph.state_blend_spaces_2d[1] = "other"
+	draft.data["blend_spaces_2d"]["motion"]["clips"][0][0] = "upper"
+	draft.data["states"]["walk"]["blend_space_2d"] = "missing"
+	with pytest.raises(ValueError, match="states.walk.blend_space_2d"): draft.compile(rig, clips)
+	assert graph.blend_spaces_2d["motion"].clip_ids[0, 0] == 0
+	assert graph.state_blend_spaces_2d[1] == "motion"
+
+
+@pytest.mark.parametrize("state,error", [
+	({"blend_space_2d": "missing"}, "states.walk.blend_space_2d"),
+	({"blend_space_2d": {}}, "states.walk.blend_space_2d"),
+	({"clip": "walk", "blend_space_2d": "motion"}, "states.walk.blend_space_2d"),
+	({"blend_space": "motion", "blend_space_2d": "motion"}, "states.walk.blend_space_2d"),
+])
+def test_invalid_2d_states_report_their_field(state, error):
+	data = grid_definition()
+	data["states"]["walk"] = state
+	with pytest.raises(ValueError, match=error): AnimationGraphDefinition(data).compile(*resources())
+
+
+@pytest.mark.parametrize("missing", ["sample_slots", "weight_slot"])
+def test_grid_slot_bindings_must_be_supplied_together(missing):
+	data = grid_definition()
+	del data["blend_spaces_2d"]["motion"][missing]
+	with pytest.raises(ValueError, match=f"blend_spaces_2d.motion.{missing}:.*together"):
+		AnimationGraphDefinition(data).compile(*resources())
 
 
 @pytest.mark.parametrize("field,value,match", [
@@ -313,3 +390,51 @@ def test_invalid_sync_authoring_reports_mapping_location(change, error):
 	elif change == "self": data["sync_mappings"][0]["target"] = "idle"
 	elif change == "reference": data["sync_mappings"][0]["target"] = "missing"
 	with pytest.raises(ValueError, match=error): AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+
+
+def sync_space_resources(dimension):
+	rig, clips, tracks, data = sync_resources()
+	data.pop("sync_mappings")
+	tracks["upper"] = EventTrack(1, [0.2, 0.6], ["left", "right"])
+	if dimension == 1:
+		data["blend_spaces"] = {"motion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}], "sync_reference": "idle"}}
+	else:
+		data["parameters"]["turn"] = 0
+		data["blend_spaces_2d"] = {"motion": {"x_parameter": "speed", "y_parameter": "turn", "x_positions": [0, 1], "y_positions": [-1, 1], "clips": [["idle", "walk"], ["upper", "walk"]], "sync_reference": "idle"}}
+	return rig, clips, tracks, data
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_blend_sync_compiles_without_transition_mappings_and_snapshots_markers(dimension):
+	rig, clips, tracks, data = sync_space_resources(dimension)
+	graph = AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	spaces = graph.blend_spaces if dimension == 1 else graph.blend_spaces_2d
+	sync = spaces["motion"].sync
+	assert sync.reference == 0 and not graph.sync_mappings
+	np.testing.assert_allclose(sync.map([[0, 1]], [0.75])[0], [[0.75, 1.25]])
+	tracks["walk"] = EventTrack(2, [0, 1], ["left", "right"])
+	updated = AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	new_sync = (updated.blend_spaces if dimension == 1 else updated.blend_spaces_2d)["motion"].sync
+	np.testing.assert_allclose(new_sync.map([[0, 1]], [0.75])[0], [[0.75, 1.5]])
+	np.testing.assert_allclose(sync.map([[0, 1]], [0.75])[0], [[0.75, 1.25]])
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+@pytest.mark.parametrize("change", ["unknown", "outside", "null", "missing", "duration", "names", "coincident"])
+def test_invalid_blend_sync_reports_space_and_preserves_previous_resources(dimension, change):
+	rig, clips, tracks, data = sync_space_resources(dimension)
+	field = "blend_spaces" if dimension == 1 else "blend_spaces_2d"
+	good = AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	if change == "unknown": data[field]["motion"]["sync_reference"] = "missing"
+	elif change == "outside":
+		clips["unused"] = clips["idle"]
+		data[field]["motion"]["sync_reference"] = "unused"
+	elif change == "null": data[field]["motion"]["sync_reference"] = None
+	elif change == "missing": del tracks["walk"]
+	elif change == "duration": tracks["walk"] = EventTrack(3, [0, 0.5], ["left", "right"])
+	elif change == "names": tracks["walk"] = EventTrack(2, [0, 0.5], ["left", "left"])
+	else: tracks["walk"] = EventTrack(2, [0, 0], ["left", "right"])
+	with pytest.raises(ValueError, match=field + r".motion.sync_reference"):
+		AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	sync = (good.blend_spaces if dimension == 1 else good.blend_spaces_2d)["motion"].sync
+	np.testing.assert_allclose(sync.map([[0, 1]], [0.75])[0], [[0.75, 1.25]])

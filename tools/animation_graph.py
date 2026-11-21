@@ -5,11 +5,11 @@ import time
 
 import numpy as np
 
-from graaal.Animation.SkeletalAnimation import model_matrices
+from graaal.Animation.SkeletalAnimation import model_matrices, sample_clip_pairs
 from .animation_preview import animation_bounds
 from .animation_viewport import draw_animation_viewport
 from .animation_asset import clip_resources, load_animations
-from .animation_graph_playback import GraphPlayback
+from .animation_graph_playback import GraphPlayback, sample_times, state_clock_clip, transition_pose
 from .animation_project import compile_graph, read_project, write_project
 
 
@@ -272,9 +272,17 @@ class GraphWindow:
 		self.last_tick = time.monotonic()
 		self.fade.set(0)
 		self.evaluate_conditions()
-		if self.preview_enabled.get(): self.select_clip(self.graph.state_clips[self.graph.state_ids[self.state.get()]])
+		if self.preview_enabled.get(): self.select_clip(self.state_clip(self.graph.state_ids[self.state.get()]))
 		self.draw_diagram()
 		self.draw_viewport()
+
+	def state_clip(self, state):
+		"""Choose a representative imported clip for the shared asset viewport."""
+		clock = state_clock_clip(self.graph, state)
+		if clock is not None: return clock
+		if state in self.graph.state_blend_spaces:
+			return int(self.graph.blend_spaces[self.graph.state_blend_spaces[state]].clip_ids[0])
+		return int(self.graph.blend_spaces_2d[self.graph.state_blend_spaces_2d[state]].clip_ids[0, 0])
 
 	def apply_parameters(self):
 		if self.graph is None: return
@@ -301,7 +309,7 @@ class GraphWindow:
 		self.target_state = int(targets[0]) if selected[0] else None
 		if selected[0]:
 			target = next(name for name, value in self.graph.state_ids.items() if value == self.target_state)
-			pair = self.graph.state_clips[state], self.graph.state_clips[self.target_state]
+			pair = state_clock_clip(self.graph, state), state_clock_clip(self.graph, self.target_state)
 			sync = ", marker sync" if pair in self.graph.sync_mappings else ""
 			self.decision.set(f"{self.state.get()} → {target}, fade {durations[0]:g}s{sync}")
 		else: self.decision.set("No transition selected")
@@ -309,7 +317,7 @@ class GraphWindow:
 	def change_playback(self):
 		self.playback.reset(self.graph.state_ids[self.state.get()], self.position)
 		self.preview_enabled.set(True)
-		self.animation_id = self.graph.state_clips[self.playback.state]
+		self.animation_id = self.state_clip(self.playback.state)
 		self.clip_box.current(self.animation_id)
 		self.position = self.playback.time
 		self.clock.set(self.position)
@@ -327,12 +335,14 @@ class GraphWindow:
 	def change_binding(self, slot):
 		binding = self.bindings[slot].get()
 		for name, grid in self.graph.blend_spaces_2d.items():
+			if not grid.sample_slots: continue
 			lower, upper = (next(label for label, index in self.graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			labels = (f"{self.GRID_PREFIX}{name} / lower>", f"{self.GRID_PREFIX}{name} / upper>")
 			if binding in labels:
 				self.bindings[lower].set(labels[0])
 				self.bindings[upper].set(labels[1])
 		for name, grid in self.graph.blend_spaces_2d.items():
+			if not grid.sample_slots: continue
 			lower, upper = (next(label for label, index in self.graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			labels = (f"{self.GRID_PREFIX}{name} / lower>", f"{self.GRID_PREFIX}{name} / upper>")
 			if (self.bindings[lower].get() == labels[0]) != (self.bindings[upper].get() == labels[1]):
@@ -394,15 +404,18 @@ class GraphWindow:
 		if self.automatic.get() and self.preview_enabled.get():
 			self.playback.advance(dt, self.parameters)
 			self.state.set(next(name for name, state in self.graph.state_ids.items() if state == self.playback.state))
-			self.animation_id = self.graph.state_clips[self.playback.state]
+			self.animation_id = self.state_clip(self.playback.state)
 			self.clip_box.current(self.animation_id)
 			self.position = self.playback.time
 			self.fade.set(self.playback.elapsed / self.playback.duration if self.playback.target_state is not None else 0)
 			self.evaluate_conditions()
 			self.draw_diagram()
 		else:
-			duration = self.animations[self.animation_id].clip.duration
-			self.position = (self.position + dt) % duration if duration > 0 else 0.0
+			state = self.graph.state_ids[self.state.get()] if self.preview_enabled.get() else None
+			if state is not None and state not in self.graph.state_clips: self.position += dt
+			else:
+				duration = self.animations[self.animation_id].clip.duration
+				self.position = (self.position + dt) % duration if duration > 0 else 0.0
 		self.clock.set(self.position)
 		self.clock_label.configure(text=f"{self.position:.3f}s")
 		self.draw_viewport()
@@ -421,38 +434,44 @@ class GraphWindow:
 	def joint_model(self, time):
 		graph = self.graph
 		state = graph.state_ids[self.state.get()]
-		source = graph.state_clips[state]
-		target = source if self.target_state is None else graph.state_clips[self.target_state]
 		fade = self.fade.get() if self.target_state is not None else 0
-		samples = []
+		poses, state_pose = [], None
 		weights_for_plan = self.parameters[None, list(graph.weight_columns)].copy()
 		grid_pairs = {}
 		for name, grid in graph.blend_spaces_2d.items():
+			if not grid.sample_slots: continue
 			lower, upper = (next(label for label, index in graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			if self.bindings[lower].get() == f"{self.GRID_PREFIX}{name} / lower>" and self.bindings[upper].get() == f"{self.GRID_PREFIX}{name} / upper>":
 				ids, horizontal, vertical = grid.select(self.parameters[None])
-				grid_pairs[grid.sample_slots[0]] = (ids[0, 0], horizontal[0])
-				grid_pairs[grid.sample_slots[1]] = (ids[0, 1], horizontal[0])
+				grid_pairs[grid.sample_slots[0]] = (ids[0, 0], horizontal[0], grid.sync)
+				grid_pairs[grid.sample_slots[1]] = (ids[0, 1], horizontal[0], grid.sync)
 				weights_for_plan[0, grid.weight_slot] = vertical[0]
 		for slot, value in enumerate(self.bindings.values()):
 			binding = value.get()
-			if self.automatic.get() and slot not in grid_pairs and (binding == self.STATE_SAMPLE or binding.startswith(self.GRID_PREFIX)):
-				samples.append(self.playback.sample())
+			if slot not in grid_pairs and (binding == self.STATE_SAMPLE or binding.startswith(self.GRID_PREFIX)):
+				if state_pose is None:
+					if self.automatic.get(): state_pose = self.playback.pose(self.parameters)
+					else:
+						pair = state_clock_clip(graph, state), state_clock_clip(graph, self.target_state)
+						mapping = graph.sync_mappings.get(pair)
+						target_time = float(mapping.map([time])[0][0]) if mapping is not None else time
+						state_pose = transition_pose(graph, state, self.target_state, time, target_time, fade, self.parameters)
+				poses.append(state_pose)
 				continue
 			if slot in grid_pairs:
-				ids, weights = grid_pairs[slot]
+				ids, weights, sync = grid_pairs[slot]
 			elif binding.startswith(self.BLEND_PREFIX) and binding.endswith(">"):
-				ids_array, weights_array = graph.blend_spaces[binding[len(self.BLEND_PREFIX):-1]].select(self.parameters[None])
+				space = graph.blend_spaces[binding[len(self.BLEND_PREFIX):-1]]
+				ids_array, weights_array = space.select(self.parameters[None])
 				ids, weights = tuple(int(clip) for clip in ids_array[0]), tuple(float(weight) for weight in weights_array[0])
+				sync = space.sync
 			else:
-				ids = (source, target) if binding == self.STATE_SAMPLE or binding.startswith(self.GRID_PREFIX) else (graph.clip_ids[binding],) * 2
-				weights = (1-fade, fade) if binding == self.STATE_SAMPLE or binding.startswith(self.GRID_PREFIX) else (1, 0)
-			times = [time % graph.clips[clip].duration if graph.clips[clip].duration > 0 else 0 for clip in ids]
-			mapping = graph.sync_mappings.get(ids) if binding == self.STATE_SAMPLE else None
-			if mapping is not None: times[1] = mapping.map([times[0]])[0][0]
-			samples.append((np.array([ids]), np.array([times]), np.array([weights])))
+				ids, weights = (graph.clip_ids[binding],) * 2, (1, 0)
+				sync = None
+			ids = np.array([ids])
+			poses.append(sample_clip_pairs(self.asset.skeleton, graph.clips, ids, sample_times(graph, ids, time, sync), np.array([weights])))
 		motions = [(None, np.array([False])) for _ in graph.root_motion_slots]
-		pose = graph.plan.evaluate(graph.clips, samples, weights_for_plan, root_motions=motions)
+		pose = graph.input_plan.evaluate(graph.clips, (), weights_for_plan, poses=poses, root_motions=motions)
 		return model_matrices(self.asset.skeleton, *pose)[0]
 
 	def draw_diagram(self):

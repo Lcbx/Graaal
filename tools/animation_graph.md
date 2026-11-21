@@ -46,7 +46,7 @@ to inspect the first matching transition and its configured duration. The
 promoting the target state.
 
 Enable **Automatic state playback**, apply parameters and choose **Play** to run
-the compiled single-clip states. The first matching rule starts a fade using its
+the compiled clip and 1D/2D blend states. The first matching rule starts a fade using its
 configured duration. Its target starts at time zero, or at the corresponding
 marker phase when a sync mapping exists. Both clips advance during the fade;
 completion promotes the target with its current time and speed. Applied parameter
@@ -62,11 +62,59 @@ slider is disabled in automatic mode. All preview clips loop, including targets
 after promotion; marker synchronization ends when the fade completes, retaining
 the target speed at that endpoint. Static clips can still transition.
 
+To use a named blend space as a state, replace that state's `clip` entry in JSON:
+
+```json
+"states": {
+  "idle": {"clip": "1: 1_idle"},
+  "moving": {"blend_space": "locomotion"},
+  "turning": {"blend_space_2d": "motion"}
+}
+```
+
+Define `locomotion` in `blend_spaces` and `motion` in `blend_spaces_2d` as shown
+below, then compile. Each state must name exactly one source. State/transition
+bindings evaluate its blend from the applied parameters in both manual and
+automatic modes. A 2D state blends its two horizontal clip pairs, then blends
+the row poses vertically. During a fade, the complete state poses are crossfaded
+before authored masks and additive layers.
+Parameter changes update active blend weights without restarting clocks or fades.
+
+A blend state's clock measures elapsed seconds and remains unwrapped; each
+selected clip loops at its own duration. This preserves clip clocks when the
+selected pair changes or clips have unequal durations. Static clips sample time
+zero. Without synchronization, the clip dropdown shows the state's first 1D point
+or first grid cell as the representative asset. With synchronization it shows the
+reference clip. These state definitions also round-trip through JSON project saves.
+
+To synchronize clips within a blend, add `"sync_reference": "clip name"` to its
+`blend_spaces` or `blend_spaces_2d` entry, or choose **Sync reference (optional)**
+in its form. The reference must occur in that space. Every distinct participating
+clip needs compatible sync markers, even if its current weight is zero. Choose
+an empty reference to restore independent clip looping. Writing a form changes
+the draft; compile it to apply the reference and marker snapshot.
+
+The displayed state clock measures reference-clip seconds. Selected clips map
+that clock to corresponding marker phases, including marker offsets and unequal
+intervals. The reference keeps leading when parameters change or select a cell
+that does not contain it; weights do not change cycle speed. Direct blend/grid
+sample bindings interpret the displayed clock in their own reference seconds.
+No events or root motion are dispatched by this preview.
+
+State fades also use explicit `sync_mappings` between clock clips: a clip state's
+clip or a synchronized blend state's reference. For example, a mapping from
+`walk` to `run` aligns a walk-referenced blend to a run-referenced blend. Without
+a configured pair, automatic targets start at time zero and advance independently.
+Synchronization between state clocks ends at promotion, retaining target speed;
+each blend's internal marker mapping remains active. Applied parameter changes
+do not restart either clock or an active fade. Weighted cycle timing remains
+future work.
+
 Sample slots can use the state/transition pair or a specific clip, allowing
 independent masked override and additive layers defined in the draft. Other
 bindings use the displayed source-state clock, which follows the target clock
-after promotion. In manual mode both state clips use the graph clock, with sync
-mappings aligning target phase. Root-motion extraction is disabled, so in-place
+after promotion. In manual mode both state poses use the graph clock, with sync
+mappings aligning target phase between state clock clips. Root-motion extraction is disabled, so in-place
 tasks receive an empty instance mask. This graph preview does not dispatch events.
 
 Choose **Edit 1D blends** to add, rename, update or remove named 1D blend
@@ -96,15 +144,17 @@ Choose **Edit 2D grids** to configure named rectangular grids in a form. Select
 separate X/Y parameters, enter comma-separated increasing axis positions and
 choose **Apply axes**. Existing cell assignments at unchanged coordinates are
 kept; new cells initially use the first imported clip. Select each cell and
-assign its clip, then choose the two sample slots and a weight slot. **Write 2D
+assign its clip. For direct sample bindings, enable **Bind sample slots** and
+choose two sample slots and a weight slot. Disable it for a grid used only by
+states; no extra sample or weight slots are needed. **Write 2D
 grids to draft** validates the full graph and changes the in-memory JSON as one
 undoable edit. Choose **Compile draft** to update the preview. Concurrent JSON
 edits block writing until the form is reopened.
 
 You can also define `blend_spaces_2d` in JSON with separate X/Y parameters, strictly
 increasing `x_positions` and `y_positions`, and a rectangular `clips` list in
-Y-row order. Give it `sample_slots` (two distinct existing slots) and a
-`weight_slot` (an existing layer weight parameter). The pose plan should sample
+Y-row order. For direct sample bindings, give it `sample_slots` (two distinct
+existing slots) and a `weight_slot` (an existing layer weight parameter). The pose plan should sample
 both slots and blend their tasks using that weight. For example:
 
 ```json
@@ -122,9 +172,15 @@ Choose `<grid: motion / lower>` in either paired sample binding; the other
 binding is set automatically. The grid selects both horizontal clip pairs and
 overrides `grid_mix` with the vertical blend weight for the viewport pose. Choosing
 a different binding on either slot disconnects the pair. The sample times use
-the graph clock; clip phase, events and root motion remain application-owned.
+the graph clock, interpreted through markers when a sync reference is authored;
+events and root motion remain application-owned.
 Give each named 2D grid its own weight slot so multiple grids can be previewed
-at once; shared slots fail compilation.
+at once; shared slots fail compilation. Omit both `sample_slots` and
+`weight_slot` for a grid used only by a `blend_space_2d` state. Such grids do not
+appear in the sample-binding dropdowns; choose the state with a state/transition
+binding to preview them. A grid can serve both uses when bindings are declared;
+state evaluation keeps its internal vertical weight separate from authored
+layer weights. One-row, one-column and single-cell grids are supported.
 
 Graph poses use the existing `PosePlan`, model matrices and CPU-skinned viewport.
 Camera framing uses the union of sampled clip bone bounds. Selecting a clip in

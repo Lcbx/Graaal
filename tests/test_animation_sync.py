@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from graaal.Animation.AnimationEvents import EventTrack
-from graaal.Animation.AnimationSync import SyncMapping
+from graaal.Animation.AnimationSync import BlendSpaceSync, SyncMapping
 from graaal.Animation.RootMotion import RootMotion
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, sample_clip_pairs
 
@@ -98,3 +98,35 @@ def test_input_validation_and_large_track_durations():
 	np.testing.assert_allclose(mapping.map(values)[0], values)
 	for values in (0, [np.nan], [np.inf], [[0]]):
 		with pytest.raises(ValueError): mapping.map(values)
+
+
+def test_blend_sync_maps_batches_and_grids_from_one_fixed_reference():
+	source = EventTrack(2, [0, 0.5, 1.5], ["left", "right", "lift"])
+	target = EventTrack(4, [0.5, 1, 3], ["right", "lift", "left"])
+	sync = BlendSpaceSync(0, {0: source, 7: target})
+	ids = np.array([[[0, 7], [7, 0]], [[7, 0], [0, 7]], [[7, 7], [0, 0]]])
+	times, rates = sync.map(ids, [0.25, 0.5, -0.25])
+	np.testing.assert_allclose(times, [[[0.25, 3.75], [3.75, 0.25]], [[0.5, 0.5], [0.5, 0.5]], [[2, 2], [1.75, 1.75]]])
+	np.testing.assert_allclose(rates, [[[1, 3], [3, 1]], [[0.5, 1], [1, 0.5]], [[4, 4], [1, 1]]])
+	np.testing.assert_allclose(sync.map([[7, 0]], [0.5], reverse=True)[1], [[3, 1]])
+	assert sync.map(np.empty((0, 2), dtype=np.int64), [])[0].shape == (0, 2)
+	with pytest.raises(TypeError): sync.mappings[0] = None
+	# Editing source objects cannot change the compiled marker snapshot.
+	source.duration, target.names = 5, ("different",)
+	sync.map([[0, 7]], [8.25])
+	np.testing.assert_allclose(times[0], [[0.25, 3.75], [3.75, 0.25]])
+	np.testing.assert_allclose(sync.map([[0, 7]], [8.25])[0], [[0.25, 3.75]])
+
+
+@pytest.mark.parametrize("ids,times", [([0, 1], [0]), ([[0.0, 1.0]], [0]), ([[True, False]], [0]), ([[0, 1]], [[0]]), ([[0, 1]], [np.nan]), ([[0, 1]], []), ([[0, 2]], [0]), ([[-1, 0]], [0])])
+def test_blend_sync_rejects_invalid_samples(ids, times):
+	track = EventTrack(1, [0, 0.5], ["a", "b"])
+	with pytest.raises(ValueError): BlendSpaceSync(0, {0: track, 1: track}).map(ids, times)
+
+
+@pytest.mark.parametrize("reference,tracks", [(True, {0: "valid"}), (0.5, {0: "valid"}), (-1, {-1: "valid"}), (2, {0: "valid"}), (0, {}), (0, []), (0, {0: None}), (0, {0: "valid", 1.5: "valid"}), (0, {0: "valid", 1: "invalid"})])
+def test_blend_sync_validates_all_member_tracks(reference, tracks):
+	valid = EventTrack(1, [0, 0.5], ["a", "b"])
+	invalid = EventTrack(1, [0, 0.5], ["a", "a"])
+	if isinstance(tracks, dict): tracks = {clip: valid if value == "valid" else invalid if value == "invalid" else value for clip, value in tracks.items()}
+	with pytest.raises(ValueError): BlendSpaceSync(reference, tracks)

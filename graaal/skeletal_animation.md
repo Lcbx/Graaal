@@ -202,7 +202,7 @@ Version 1 fields are:
 | --- | --- |
 | `version` | Required integer `1`. |
 | `parameters` | Optional ordered name-to-finite-default mapping. |
-| `states` | Required nonempty ordered mapping of state names to `{"clip": clip_name}`. |
+| `states` | Required nonempty ordered mapping of state names to `{"clip": clip_name}`, `{"blend_space": named_1d_space}` or `{"blend_space_2d": named_grid}`. Each state has exactly one source. |
 | `initial_state` | Required state name. |
 | `transitions` | Optional ordered list of `{source, target, conditions, duration}` mappings. Conditions are `{parameter, comparison, threshold}` mappings; all must match. Fade durations must fit positive float32 playback storage. |
 | `sample_slots` | Required list of unique sample-slot names, populated by the caller. |
@@ -211,8 +211,8 @@ Version 1 fields are:
 | `masks` | Optional named masks, either per-bone weights in `[0, 1]` or `{"root": bone_index}` subtree definitions. |
 | `tasks` | Required nonempty ordered task list; the final task is the output. |
 | `sync_mappings` | Optional list of `{source, target}` clip-name pairs; supplied marker tracks compile into `SyncMapping` resources. |
-| `blend_spaces` | Optional named 1D selectors: `{parameter, points: [{position, clip}, ...]}`. Positions must increase strictly. |
-| `blend_spaces_2d` | Optional named rectangular grids: `{x_parameter, y_parameter, x_positions, y_positions, clips, sample_slots, weight_slot}`. `clips` has one row per Y point and one clip per X point. |
+| `blend_spaces` | Optional named 1D selectors: `{parameter, points: [{position, clip}, ...]}`. Positions must increase strictly. Optional `sync_reference` names a participating clip for marker synchronization. |
+| `blend_spaces_2d` | Optional named rectangular grids: `{x_parameter, y_parameter, x_positions, y_positions, clips}`. `clips` has one row per Y point and one clip per X point. Optional `sample_slots` and `weight_slot` must be supplied together to bind the grid to pose-plan samples. Optional `sync_reference` names a participating clip. |
 
 Each task has a unique `name` and a `PoseOp` or string `op`. `sample` names a
 sample `slot`; `in_place` names an earlier `base` task and a root-motion `slot`.
@@ -223,10 +223,14 @@ Unknown fields and unsupported operations fail rather than being ignored.
 
 Insertion order determines IDs and columns within a compiled result. Use
 `graph.state_ids`, `clip_ids`, `parameter_columns`, `sample_slots` and
-`root_motion_slots` to bind application data. `state_clips` feeds
-`EcsAnimationStateAdapter`; `graph.clips` maps compiled clip IDs to the original
-shared `Clip` objects. All supplied clips must match the skeleton's bone count;
-the caller must also ensure matching bone order. Compiled metadata is read-only.
+`root_motion_slots` to bind application data. `state_clips` contains only clip
+states and feeds `EcsAnimationStateAdapter` for clip-only graphs.
+`state_blend_spaces` maps blend-state IDs to names in `graph.blend_spaces`;
+`state_blend_spaces_2d` does the same for `graph.blend_spaces_2d`. These maps
+are separate, so 1D spaces and 2D grids can share names. The existing ECS state
+adapter does not play blend states. `graph.clips` maps compiled clip IDs to the
+original shared `Clip` objects. All supplied clips must match the skeleton's bone
+count; the caller must also ensure matching bone order. Compiled metadata is read-only.
 
 Initialize parameter rows with `np.tile(graph.parameter_defaults, (count, 1))`
 and pass them to `graph.machine.select` or the existing state adapter. Fill the
@@ -234,6 +238,13 @@ sample and motion slots in their compiled order, then call
 `graph.plan.evaluate(graph.clips, samples, parameters[:, graph.weight_columns], ...)`.
 That output uses the existing model/skin matrix and material-palette path.
 Compiled plans own reusable pose buffers with the usual `PosePlan` lifetime.
+For externally composed state poses, `graph.input_plan` has the same authored
+operations with sample tasks replaced by `PoseOp.INPUT`. Supply local TRS tuples
+in sample-slot order through `poses=...`, and pass an empty sample list:
+`graph.input_plan.evaluate(graph.clips, (), weights, poses=local_poses, ...)`.
+This lets a controller compose each state's selected clips, crossfade the two
+state poses, then apply the authored masks, in-place operations and additive
+layers. Both plans own separate reusable buffers.
 See [animation_graph_example.py](../scenes/animation_graph_example.py) for an ECS
 locomotion controller and an independent masked upper-body layer compiled from
 one definition.
@@ -247,8 +258,9 @@ sample-slot triple to `graph.plan.evaluate`. This selector owns neither playback
 nor event traversal; layer masks still apply in the pose plan. See the graph
 tool's sample bindings for a live preview example.
 
-A `blend_spaces_2d` entry binds two distinct sample slots and one existing
-`weight_slot`. Its compiled selector returns `ids, horizontal, vertical =
+A `blend_spaces_2d` entry can bind two distinct sample slots and one existing
+`weight_slot`, or omit both bindings for state evaluation. Its compiled selector
+returns `ids, horizontal, vertical =
 graph.blend_spaces_2d[name].select(parameter_rows)`, using the existing
 `blend_space_2d`. Supply `ids[:, 0]` and `ids[:, 1]` as the two sample-slot ID
 pairs, each with `horizontal` weights and caller-owned times. Set the named
@@ -258,9 +270,26 @@ be distinct; axes must be finite and strictly increasing. The named weight-slot
 parameter is a placeholder for standalone graph evaluation and must have a
 default in `[0, 1]`; its preview value is replaced by the selector's vertical
 weight when the grid is bound. This leaves the existing pose evaluator in charge
-of the final local-pose blend. Each named 2D grid must use a distinct weight slot;
-compilation rejects shared slots so simultaneously active grids cannot overwrite
-one another's vertical blend weight.
+of the final local-pose blend. Each grid with sample bindings must use a distinct
+weight slot; compilation rejects shared slots so simultaneously active grids
+cannot overwrite one another's vertical blend weight.
+For an unbound grid, compiled `sample_slots` is `()` and `weight_slot` is `None`;
+selection still returns the same clip IDs and horizontal/vertical weights.
+2D state playback blends the two horizontal pairs, then blends those row poses
+vertically before crossfading complete state poses. State evaluation uses its
+own weights and does not change authored layer-weight parameters, including when
+the referenced grid also declares sample bindings.
+
+Either kind of blend space can name `sync_reference` and receive
+`sync_tracks` through `compile`. The reference must be a participating clip;
+every distinct clip in the space needs a compatible marker track with matching
+duration, including clips not currently selected. Invalid tracks identify the
+space's `sync_reference` field and leave prior compiled resources unchanged.
+The compiled selector's `sync` is a standalone `BlendSpaceSync`, or `None` when
+no reference is authored. After selection, call
+`times, rates = space.sync.map(ids, reference_times)` to obtain sample times.
+Weights do not change the reference clock; reselecting clips or crossing grid
+cells keeps the same phase source. See the synchronization API below.
 
 For synchronized clip transitions, request `sync_mappings` in the definition
 and supply `sync_tracks={clip_name: event_track, ...}` to `compile`. Each requested
@@ -275,13 +304,17 @@ IDs in `graph.sync_mappings`. Pass that same mapping to both
 must loop. For editable tracks, compile from `EventTimeline.snapshot()[1]` so
 subsequent edits stay separate from the existing runtime mapping.
 
-This first authoring version supports single-clip states, named 1D/2D blend-space
+This authoring version supports single-clip and named 1D/2D blend states, blend-space
 sample bindings, in-place root anchoring, masked blend/additive layers and
-clip-pair sync settings. Blend-space states and IK/phase authoring
-are not yet represented. The
+clip-pair sync settings. IK/phase authoring is not yet represented. The
 [graph tool](../tools/animation_graph.md) provides a definition editor,
 transition/condition forms, state diagram, manual layered-pose inspection and
-automatic single-clip state playback using this API. The standalone tools share
+automatic clip/1D/2D blend-state playback using this API. Unsynchronized blend
+states loop their clips independently. Synchronized spaces interpret the state
+clock in reference-clip seconds and map each selected clip's marker phase.
+Explicit `sync_mappings` between state clock clips (a clip state or a blend's
+reference) also synchronize editor state fades. ECS graph playback remains
+application-owned. The standalone tools share
 explicit [JSON project persistence](../tools/animation_project.md) for graph
 definitions, events and sync markers. Runtime
 blend-space, sync and IK APIs remain available for application-owned composition.
@@ -650,6 +683,32 @@ crossings in either direction. All arrays must be finite, equal-length 1D
 arrays. Loop counts with magnitude `2**52` or greater are rejected to avoid
 losing cycle precision. The method calculates timing only; the caller applies
 it to playback and handles events and movement requests.
+
+`BlendSpaceSync` composes those mappings around a fixed reference clock:
+
+```python
+from graaal.Animation.AnimationSync import BlendSpaceSync
+
+group = BlendSpaceSync(walk_id, {walk_id: walk, run_id: run})
+times, rates = group.map(selected_clip_ids, reference_times)
+```
+
+Tracks use nonnegative integer clip IDs. Construction snapshots the tracks and
+validates all participants, including the reference, with `SyncMapping`.
+Selected IDs are integer arrays shaped `(instances, ...)`, such as a 1D blend's
+`(instances, 2)` or a grid's `(instances, 2, 2)`; reference times are finite seconds
+shaped `(instances,)`, including negative or unwrapped times. Outputs match the
+IDs' shape and own their storage. `reverse=True` selects preceding-interval rates
+at exact markers. Unknown IDs fail before sampling. `group.reference` identifies
+the reference clip, and read-only `group.mappings` exposes the individual phase
+mappings for application-owned interval traversal. Multiply returned rates by
+reference playback speed when deriving clip speeds.
+
+The reference keeps advancing independently of blend weights, even when its
+weight is zero or it is outside the selected cell. Parameter changes therefore
+do not switch clock leaders or change cycle speed. Weighted cycle timing is not
+implemented. Events, root-motion traversal and movement acceptance remain
+application-owned; mapped pose times alone do not preserve crossing intervals.
 
 To synchronize ECS crossfades, pass the same clip-pair mapping to both the
 state controller and playback adapter:

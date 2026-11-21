@@ -1,8 +1,56 @@
 """Marker-based phase mapping for looping animation clips."""
 
+from collections.abc import Mapping
+from operator import index
+from types import MappingProxyType
+
 import numpy as np
 
 from .AnimationEvents import EventTrack
+
+
+class BlendSpaceSync:
+	"""Map selected samples from a fixed reference clip's marker clock.
+
+	Tracks map nonnegative integer clip IDs to compatible EventTracks. This
+	resource does not advance clocks, select weights, emit events or extract motion.
+	"""
+	def __init__(self, reference, tracks):
+		if not isinstance(tracks, Mapping) or not tracks: raise ValueError("sync tracks must be a nonempty clip-ID mapping")
+		for clip in (reference, *tracks):
+			if isinstance(clip, (bool, np.bool_)): raise ValueError("sync clip IDs must be nonnegative integers")
+			try: valid = index(clip) >= 0
+			except TypeError as exc: raise ValueError("sync clip IDs must be nonnegative integers") from exc
+			if not valid: raise ValueError("sync clip IDs must be nonnegative integers")
+		reference = index(reference)
+		if reference not in tracks: raise ValueError("reference clip must have a sync track")
+		if any(not isinstance(track, EventTrack) for track in tracks.values()): raise ValueError("sync tracks must be EventTracks")
+		tracks = {int(clip): EventTrack(track.duration, track.times, track.names) for clip, track in tracks.items()}
+		self.reference = int(reference)
+		mappings = {}
+		for clip, track in tracks.items():
+			try: mappings[clip] = SyncMapping(tracks[self.reference], track)
+			except ValueError as exc: raise ValueError(f"clip {clip}: {exc}") from exc
+		self.mappings = MappingProxyType(mappings)
+
+	def map(self, clip_ids, times, *, reverse=False):
+		"""Return sample times and rates for (instances, ...) selected clip IDs.
+
+		Times are finite reference seconds shaped (instances,), including negative
+		or unwrapped values. Outputs match the IDs' shape and own their storage.
+		"""
+		ids, times = np.asarray(clip_ids), np.asarray(times, dtype=np.float64)
+		if ids.ndim < 2 or ids.dtype.kind not in "iu": raise ValueError("clip IDs must be an integer (instances, ...) array")
+		if times.shape != (len(ids),) or not np.isfinite(times).all(): raise ValueError("reference times must be finite and match instances")
+		if not isinstance(reverse, (bool, np.bool_)): raise ValueError("reverse must be boolean")
+		selected = np.unique(ids)
+		if any(int(clip) not in self.mappings for clip in selected): raise ValueError("selected clip has no sync track")
+		clocks = np.broadcast_to(times.reshape((len(times),) + (1,) * (ids.ndim - 1)), ids.shape)
+		mapped, rates = np.empty(ids.shape, dtype=np.float64), np.empty(ids.shape, dtype=np.float64)
+		for clip in selected:
+			mask = ids == clip
+			mapped[mask], rates[mask] = self.mappings[int(clip)].map(clocks[mask], reverse=reverse)
+		return mapped, rates
 
 
 class SyncMapping:

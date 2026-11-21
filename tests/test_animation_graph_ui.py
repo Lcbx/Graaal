@@ -155,6 +155,243 @@ def test_state_selection_conditions_and_manual_crossfade_use_existing_viewport(w
 	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[2, 0, 0], [2, 1, 0]])
 
 
+def test_blend_state_manual_and_automatic_playback_preserve_layers_and_seek(window):
+	editor = window
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"].update({"amount": 0.25, "upper_weight": 0.5})
+	data["states"]["0: idle"] = {"blend_space": "motion"}
+	data["blend_spaces"] = {"motion": {"parameter": "amount", "points": [{"position": 0, "clip": "0: idle"}, {"position": 1, "clip": "1: walk"}]}}
+	data["sample_slots"].append("upper")
+	data["weight_slots"] = ["upper_weight"]
+	data["masks"] = {"upper_body": {"root": 1}}
+	data["tasks"] += [
+		{"name": "upper", "op": "sample", "slot": "upper"},
+		{"name": "layered", "op": "blend", "base": "output", "overlay": "upper", "weight": "upper_weight", "mask": "upper_body"},
+	]
+	set_draft(editor, data)
+	assert "Compiled draft" in editor.status.get()
+	editor.bindings["upper"].set("2: upper")
+	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[0.5, 0, 0], [0.5, 2, 0]])
+	editor.advance_playback(1.4)
+	assert editor.position == 1.4
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.fade.set(0.5)
+	np.testing.assert_allclose(editor.joint_model(1.4)[:, :3, 3], [[1.25, 0, 0], [1.25, 2, 0]])
+	editor.automatic.set(True)
+	editor.change_playback()
+	assert editor.position == 1.4
+	editor.advance_playback(0.125)
+	assert editor.playback.target_state == 1
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.25, 0, 0], [1.25, 2, 0]])
+	editor.parameter_entries["amount"].set("0.75")
+	editor.parameter_entries["advance"].set("0")
+	editor.apply_parameters()
+	assert editor.playback.target_state == 1
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.75, 0, 0], [1.75, 2, 0]])
+	editor.advance_playback(0.375)
+	assert editor.state.get() == "1: walk" and editor.position == 0.5
+	editor.pick_state("0: idle")
+	editor.change_time("2.4")
+	assert editor.position == editor.playback.time == 2.4
+	assert editor.playback.target_state is None
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.5, 0, 0], [1.5, 2, 0]])
+	graph, playback = editor.graph, editor.playback
+	data["states"]["0: idle"]["blend_space"] = "missing"
+	set_draft(editor, data)
+	assert "states.0: idle.blend_space" in editor.status.get()
+	assert editor.graph is graph and editor.playback is playback
+
+
+def test_blend_state_project_load_restores_compiled_preview(window, tmp_path):
+	editor = window
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"]["amount"] = 0.75
+	data["blend_spaces"] = {"motion": {"parameter": "amount", "points": [{"position": 0, "clip": "0: idle"}, {"position": 1, "clip": "1: walk"}]}}
+	data["states"]["0: idle"] = {"blend_space": "motion"}
+	set_draft(editor, data)
+	path = tmp_path / "blend.animation.json"
+	editor.save_project(path)
+	editor.parameter_entries["amount"].set("0")
+	editor.apply_parameters()
+	editor.load_project(path)
+	assert "Loaded graph" in editor.status.get() and editor.definition.data == data
+	assert editor.graph.state_blend_spaces == {0: "motion"}
+	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[1.5, 0, 0], [1.5, 1, 0]])
+
+
+def grid_state_draft(editor, *, bound=False):
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"].update({"x": 0.25, "y": 0, "upper_weight": 0.5})
+	data["states"]["0: idle"] = {"blend_space_2d": "motion"}
+	data["blend_spaces_2d"] = {"motion": {"x_parameter": "x", "y_parameter": "y", "x_positions": [0, 1], "y_positions": [-1, 1], "clips": [["0: idle", "1: walk"], ["2: upper", "1: walk"]]}}
+	data["sample_slots"].append("upper")
+	data["weight_slots"] = ["upper_weight"]
+	data["masks"] = {"upper_body": {"root": 1}}
+	data["tasks"] += [
+		{"name": "upper", "op": "sample", "slot": "upper"},
+		{"name": "layered", "op": "blend", "base": "output", "overlay": "upper", "weight": "upper_weight", "mask": "upper_body"},
+	]
+	if bound: data["blend_spaces_2d"]["motion"].update(sample_slots=["base", "upper"], weight_slot="upper_weight")
+	return data
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_2d_state_manual_and_automatic_fades_preserve_layers_and_seek(window, bound):
+	editor = window
+	data = grid_state_draft(editor, bound=bound)
+	set_draft(editor, data)
+	assert "Compiled draft" in editor.status.get()
+	editor.bindings["upper"].set("2: upper")
+	editor.change_binding("upper")
+	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[0.5, 0, 0], [0.5, 2.375, 0]])
+	editor.advance_playback(1.4)
+	assert editor.position == 1.4
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.fade.set(0.5)
+	np.testing.assert_allclose(editor.joint_model(1.4)[:, :3, 3], [[1.25, 0, 0], [1.25, 2.1875, 0]])
+	editor.automatic.set(True)
+	editor.change_playback()
+	assert editor.position == 1.4
+	editor.advance_playback(0.125)
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.25, 0, 0], [1.25, 2.1875, 0]])
+	for parameter, value in (("x", "0.75"), ("y", "1"), ("advance", "0")): editor.parameter_entries[parameter].set(value)
+	editor.apply_parameters()
+	assert editor.playback.target_state == 1
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.75, 0, 0], [1.75, 2.125, 0]])
+	editor.advance_playback(0.375)
+	assert editor.state.get() == "1: walk" and editor.position == 0.5
+	editor.pick_state("0: idle")
+	editor.change_time("2.4")
+	assert editor.position == editor.playback.time == 2.4 and editor.playback.target_state is None
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.5, 0, 0], [1.5, 2.25, 0]])
+
+
+def test_2d_state_project_and_invalid_drafts_preserve_the_session(window, tmp_path):
+	editor = window
+	data = grid_state_draft(editor)
+	set_draft(editor, data)
+	path = tmp_path / "grid.animation.json"
+	editor.save_project(path)
+	before = path.read_bytes()
+	editor.parameter_entries["x"].set("1")
+	editor.apply_parameters()
+	editor.load_project(path)
+	assert "Loaded graph" in editor.status.get() and editor.definition.data == data
+	assert editor.graph.state_blend_spaces_2d == {0: "motion"}
+	graph, playback = editor.graph, editor.playback
+	pose = editor.joint_model(0).copy()
+	data["states"]["0: idle"]["blend_space_2d"] = "missing"
+	set_draft(editor, data)
+	assert "states.0: idle.blend_space_2d" in editor.status.get()
+	assert editor.graph is graph and editor.playback is playback
+	editor.save_project(path)
+	assert "Cannot save project" in editor.status.get() and path.read_bytes() == before
+	invalid = json.loads(before)
+	invalid["graph"]["states"]["0: idle"] = {"blend_space_2d": "missing"}
+	path.write_text(json.dumps(invalid), encoding="utf-8")
+	editor.load_project(path)
+	assert "Cannot load project" in editor.status.get()
+	assert editor.graph is graph and editor.playback is playback
+	np.testing.assert_array_equal(editor.joint_model(0), pose)
+
+
+def synchronized_blend_draft(editor, dimension):
+	clip = editor.animations[1].clip
+	translation = clip.translation.copy()
+	translation[1, 0, 0] = 4
+	editor.animations[1].clip = Clip(translation, clip.rotation, clip.scale, fps=clip.fps)
+	for animation, right in zip(editor.animations[:2], (0.5, 0.75)):
+		animation.sync_markers.add(0, "left")
+		animation.sync_markers.add(right, "right")
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"].update({"x": 0.5, "y": 0})
+	if dimension == 1:
+		data["blend_spaces"] = {"motion": {"parameter": "x", "points": [{"position": 0, "clip": "0: idle"}, {"position": 1, "clip": "1: walk"}], "sync_reference": "0: idle"}}
+		data["states"]["0: idle"] = {"blend_space": "motion"}
+	else:
+		data["parameters"]["grid_mix"] = 0
+		data["sample_slots"].append("upper")
+		data["weight_slots"] = ["grid_mix"]
+		data["blend_spaces_2d"] = {"motion": {"x_parameter": "x", "y_parameter": "y", "x_positions": [0, 1], "y_positions": [-1, 1], "clips": [["0: idle", "1: walk"], ["0: idle", "1: walk"]], "sample_slots": ["base", "upper"], "weight_slot": "grid_mix", "sync_reference": "0: idle"}}
+		data["states"]["0: idle"] = {"blend_space_2d": "motion"}
+		data["tasks"] += [{"name": "upper", "op": "sample", "slot": "upper"}, {"name": "grid", "op": "blend", "base": "output", "overlay": "upper", "weight": "grid_mix"}]
+	data["sync_mappings"] = [{"source": "0: idle", "target": "1: walk"}]
+	return data
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_blend_marker_sync_applies_to_states_bindings_and_transition_reference_clocks(window, dimension):
+	editor = window
+	data = synchronized_blend_draft(editor, dimension)
+	set_draft(editor, data)
+	editor.change_time("0.25")
+	np.testing.assert_allclose(editor.joint_model(0.25)[0, 0, 3], 1.375)
+	if dimension == 1: editor.bindings["base"].set("<blend: motion>")
+	else:
+		editor.bindings["base"].set("<grid: motion / lower>")
+		editor.change_binding("base")
+	np.testing.assert_allclose(editor.joint_model(1.25)[0, 0, 3], 1.375)
+	for value in editor.bindings.values(): value.set(editor.STATE_SAMPLE)
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	assert "marker sync" in editor.decision.get()
+	editor.automatic.set(True)
+	editor.change_playback()
+	editor.advance_playback(0.125)
+	np.testing.assert_allclose(editor.playback.target_time, 0.5625)
+	np.testing.assert_allclose(editor.joint_model(editor.position)[0, 0, 3], 2.34375)
+	editor.advance_playback(0.375)
+	assert editor.state.get() == "1: walk" and editor.playback.speed == 0.5
+	np.testing.assert_allclose(editor.position, 0.875)
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_sync_forms_and_projects_preserve_reference_and_compiled_marker_snapshots(window, tmp_path, dimension):
+	editor = window
+	data = synchronized_blend_draft(editor, dimension)
+	set_draft(editor, data)
+	editor.change_time("0.25")
+	before = editor.joint_model(0.25).copy()
+	path = tmp_path / "sync.animation.json"
+	editor.save_project(path)
+	if dimension == 1:
+		editor.open_blend_spaces()
+		form = editor.blend_space_window
+		form.spaces.selection_set("motion")
+		form.select_space()
+	else:
+		form = grid_form(editor)
+		form.grids.selection_set("motion")
+		form.select_grid()
+	assert form.sync_reference.get() == "0: idle"
+	graph = editor.graph
+	form.sync_reference.set("2: upper")
+	if dimension == 1: form.store_space(True)
+	else: form.store_grid(True)
+	assert "reference must be a clip" in form.status.get()
+	assert editor.graph is graph
+	form.sync_reference.set("0: idle")
+	if dimension == 1: form.store_space(True)
+	else: form.store_grid(True)
+	form.apply()
+	assert editor.graph is graph
+	form.close()
+	editor.animations[1].sync_markers.update(1, time=0.5)
+	np.testing.assert_array_equal(editor.joint_model(0.25), before)
+	editor.compile_draft()
+	np.testing.assert_allclose(editor.joint_model(0.25)[0, 0, 3], 1.25)
+	editor.load_project(path)
+	assert "Loaded graph" in editor.status.get()
+	np.testing.assert_array_equal(editor.joint_model(0.25), before)
+	graph = editor.graph
+	editor.animations[1].sync_markers.update(1, name="left")
+	editor.compile_draft()
+	assert "Cannot compile draft" in editor.status.get() and editor.graph is graph
+	np.testing.assert_array_equal(editor.joint_model(0.25), before)
+
+
 def test_layer_bindings_parameters_and_validation_keep_last_good_preview(window):
 	editor = window
 	data = json.loads(editor.editor.get("1.0", "end-1c"))
@@ -461,6 +698,42 @@ def test_2d_grid_form_writes_cells_and_previews_pose(window):
 		editor.parameter_entries[name].set(value)
 	editor.apply_parameters()
 	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[1, 0, 0], [1, 1.5, 0]])
+	form.close()
+
+
+def test_2d_grid_form_preserves_optional_bindings_and_explicit_application(window):
+	editor = window
+	set_draft(editor, grid_state_draft(editor))
+	graph = editor.graph
+	form = grid_form(editor)
+	form.grids.selection_set("motion")
+	form.select_grid()
+	assert not form.bind_slots.get() and all(box.instate(["disabled"]) for box in form.slot_boxes)
+	form.cells.selection_set("0,0")
+	form.clip.set("1: walk")
+	form.store_cell()
+	form.store_grid(True)
+	assert "sample_slots" not in form.data["blend_spaces_2d"]["motion"]
+	form.apply()
+	assert editor.graph is graph
+	editor.compile_draft()
+	assert editor.graph.blend_spaces_2d["motion"].sample_slots == ()
+	form.bind_slots.set(True)
+	form.change_bind_slots()
+	assert all(box.instate(["readonly"]) for box in form.slot_boxes)
+	form.lower_slot.set("base")
+	form.upper_slot.set("upper")
+	form.weight_slot.set("upper_weight")
+	form.store_grid(True)
+	form.apply()
+	editor.compile_draft()
+	assert editor.graph.blend_spaces_2d["motion"].sample_slots == (0, 1)
+	form.bind_slots.set(False)
+	form.change_bind_slots()
+	form.store_grid(True)
+	form.apply()
+	editor.compile_draft()
+	assert editor.graph.blend_spaces_2d["motion"].weight_slot is None
 	form.close()
 
 
