@@ -5,7 +5,6 @@ Estimates assume the current engine architecture; items with open design questio
 
 ## Small — investigation, fixes, and local changes
 
-- add a PostProcessPass base python class & shader template
 - Check that alpha mask textures use a low-precision format for alpha.
 - maybe old anchored blue noise can be reused.
 
@@ -27,7 +26,6 @@ Estimates assume the current engine architecture; items with open design questio
 - Support decals (uses transparency pass).
   - Implementation can be based on Material, MaterialRenderer, TransparencyPass and the related shaders.
 - Implement a simple irradiance map based on global directional map.
-- Peripheral motion blur (take camera linear and angular motion into account for intensity/vector multiplied with `1 - vignette mask`).
 - Godrays: https://blog.cclarke-magrab.me/blogs/graphics/god-rays-02
 - make a Navmesh generation workflow (maybe offline baking/authoring then stiched together at runtime)
 
@@ -36,11 +34,9 @@ Estimates assume the current engine architecture; items with open design questio
 - Implement shadow maps.
 - Implement Forward+ / tiled shading.
   - Add compute light binning.
-- Implement GPU animation using custom vertex attributes and animation texture atlas.
-	- support animation modifiers from CPU (for Ik and ragdolls)
+- Add a GPU crowd pose evaluator with CPU IK/ragdoll overrides; see the
+  [animation plan](implementation_plans/skeletal_animation_pipeline.md). GPU vertex skinning already exists.
 - Use OpenAL for binaural audio.
-- Use Bullet for physics (at first; maybe migrate to ctypes & Jolt or Box3D later).
-  - Add Box3D support?
 - Add a particle system, using GPU particles:
   - Particles are mesh instances whose creation, updates and death are managed by GPU batches.
   - Creation batch takes an array of positions, a number of particles to spawn at each position, a `lod_group_id`, and a particle material. This avoids polluting regular materials.
@@ -50,7 +46,7 @@ Estimates assume the current engine architecture; items with open design questio
 - Systems pipeline (multithreaded). Use Culverin?
 - Custom Blender scene export.
   - Maybe just use a glTF export per asset, save scenes with `struct.pack` (do not trust indices / sizes!).
-- Make a material that spawns objects on its surface (see implementation plan).
+- Add surface grass scattering; see the [plan](implementation_plans/Automated_grass_scattering.md).
 - Networking: eventually add multiplayer suppport (spacetimedb ?)
 	or SteamPeer
 	or use UDP hole punching (users must exchange IP)
@@ -58,8 +54,8 @@ Estimates assume the current engine architecture; items with open design questio
 ## Very large / experimental — significant design and validation
 
 - Implement grid-based ambient probes.
-  - Retry illumination probes.
-- Eventually, use SDF for penumbra mapping (see implementation plan).
+  - See the [probe plan](implementation_plans/illumination_probes.md).
+- Add SDF penumbra shadows; see the [plan](implementation_plans/SDF_penumbra.md).
 
 ## Not doing
 

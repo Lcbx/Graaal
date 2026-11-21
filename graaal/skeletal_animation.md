@@ -1,4 +1,9 @@
-﻿# Skeletal animation CPU foundation
+﻿# Skeletal animation
+
+This reference covers standalone evaluation, optional ECS playback, graph
+definitions, events, IK and GPU palette output. See the
+[scene catalog](../scenes/README.md) for runnable examples and the
+[tool guides](../tools/README.md) for timeline and graph editing.
 
 `graaal.SkeletalAnimation` is independent of ECS and graphics. `Skeleton` takes a depth-first preorder forest of parent indices (`-1` for roots), local reference translation, xyzw rotation and scale, and affine inverse-bind matrices. Resources copy their inputs into read-only float32 arrays. Matrices act on column vectors; local transforms compose as translation, rotation, then scale.
 

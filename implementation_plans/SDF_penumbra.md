@@ -1,12 +1,6 @@
-Here is the consolidated plan with the corrections folded in, so it replaces the earlier versions.
+# SDF penumbra plan
 
-## What changed
-
-- **Normals** are reconstructed from depth for the shadow pipeline. A normal buffer written by the opaque pass arrives after the mask is consumed, so it can't feed the trace or the upsample.
-- **The depth-mismatch fallback is gone.** Receiver modes (Mask, Probe, None, Trace) replace it, and per-object probes replace per-pixel brute tracing for small objects and transparents.
-- **Casters and receivers use separate lists.** Clipmap stamping reads all static instances, and the capsule gather uses an extruded frustum with no HZB test.
-- **Transparents don't receive shadows by default.**
-- **Phase order** is adjusted so the probe pass lands after capsules.
+Proposed shadow pipeline; values below are starting targets for measurement.
 
 ## Frame layout
 

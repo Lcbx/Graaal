@@ -201,39 +201,11 @@ beside the example in `scenes/shaders/`.
 
 ## Arrays and ordinary systems
 
-```python
-import numpy as np
-from graaal.ECS import ECS, component, array_field, columns
-
-@component
-class Position:
-	value: np.ndarray = array_field(np.float32, shape=(3,))
-
-world = ECS()
-positions, = world.register(Position)
-ids = world.create(3)
-world.add(ids, columns(Position, value=np.zeros((3, 3), dtype=np.float32)))
-selected = positions[ids]
-scratch = np.empty((3, 3), dtype=np.float32)
-selected.read("value", out=scratch)
-np.add(scratch, 1, out=scratch)
-selected.assign(value=scratch)
-with positions.edit_dense("value") as fields:
-	fields["value"] *= 0.5
-```
-
-Normal field reads copy. `read(out=...)` rejects incorrect dtype/shape, read-only
-outputs, and storage aliases. Repeated rows retain NumPy's last-write scatter
-semantics. Numeric metadata is explicit; declare `object` for Python data rather
-than relying on an unsupported annotation fallback.
-
-Dense edits borrow columns in storage order. Views must not escape the scope.
-Structural changes to the borrowed store are rejected before any multi-store
-request can partially apply. Declared fields are touched on exit, including after
-exceptions; writes are not rolled back. Compact multicomponent stores containing
-holes first. General joins between independently ordered stores still gather.
-
-See the [ECS reference](ECS_API.md) for full contracts and array usage.
+Use named `columns()` payloads for component insertion, selection `read(out=...)`
+and `assign()` for reusable gather/scatter, and scoped `edit_dense()` for direct
+numeric column access. Dense views must not escape their scope; independent
+stores still need joins to align rows. The [ECS reference](ECS_API.md) contains
+the examples, validation rules and mutation/lifetime contracts.
 
 ## Shared draws and independent visibility
 
@@ -401,34 +373,13 @@ caller's full binding ABI.
 
 ## Composable transparency
 
-`TransparencyPass` records opaque, guide, transmittance, winner-selection,
-deferred-shading, and composition stages into caller-owned commands. Call
-`resize(size)` before `update_frame(...)` or `update_camera(camera)`, then record
-the stages and submit. It does not submit or present frames itself.
-
-Use `create_geometry_passes(metadata, transparent=True, instances=buffer)` to
-create the blended geometry passes. Register OPAQUE and MASK with
-`transparent=False`; MASK uses alpha-cutoff discard and writes opaque depth.
-Keep metadata in packed instance order, and share its vertex/material address
-space across all transparent draws in a selection target. Raster and deferred
-vertices use the same local coordinates and packed instance transforms.
-
-`TransparencyTargets` accepts caller-owned attachments. Existing sampleable
-opaque color/depth can be supplied through `opaque_color` and `opaque_depth`;
-they must match the target dimensions and sample count. Otherwise targets are
-allocated internally. Set `target_format` to match the output attachment.
-
-BLEND uses exact nearest plus two complementary banded tail winners
-and one Kawase down/up pair (`kawase_passes=1`). Tail estimation uses 1x;
-`set_sample_count(1 or 4)` selects native sampling for opaque/MASK,
-transmission and exact nearest. The examples expose blur count and diagnostics;
-there is no tail-MSAA UI toggle. Proxy residuals and subset shading default off.
-No temporal accumulation is used.
-
-The [transparency guide](stochastic_transparency.md) covers pass order,
-custom targets, screen noise, material hooks and limitations. The
-[material guide](materials.md) covers dictionary materials and vertex hooks;
-[transparency_example.py](../scenes/transparency_example.py) shows a full frame.
+`TransparencyPass` records opaque/MASK geometry, exact nearest transparency,
+transmission, complementary tail selection, shading and composition into
+caller-owned commands. The caller owns submission/presentation. The
+[transparency guide](stochastic_transparency.md) defines recording order,
+target layouts, MSAA, noise and technique limits; the
+[material guide](materials.md) adds dictionary materials and vertex hooks.
+See [transparency_example.py](../scenes/transparency_example.py) for a full frame.
 
 ## Examples and diagnostics
 

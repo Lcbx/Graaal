@@ -12,13 +12,9 @@ Run the ECS example:
 python main.py scenes/material_example.py
 ```
 
-The six labeled spheres use two rows: three opaque examples above, and three
-transparent examples below. Only the bottom-left and bottom-middle spheres share
-the roughness/specular sliders. D replaces the top-left default material; the
-top-right sphere has an explicit green override. M toggles MSAA; Space orbits.
-The top-middle sphere uses a procedural striped shader written in the Python
-script; its stripes and time-driven vertex displacement have live controls for
-frequency, color, displacement amplitude and speed, plus an animation pause.
+The scene demonstrates shared dictionaries, instance overrides, default
+replacement and procedural stripes with animated displacement. See the
+[scene guide](../scenes/README.md) for controls.
 
 ## Implementation and verification
 
@@ -154,8 +150,7 @@ the full supplied owner ID, so remove the binding with `unbind(entity)` on
 deletion before binding a replacement. Unknown or duplicate IDs are rejected;
 each owner needs a distinct mesh. `EcsMaterialAdapter` still manages material
 and transform extraction separately. The application owns the order of animation,
-skinning, material synchronization and frame recording. See the example for all
-of these steps together.
+skinning, material synchronization and frame recording.
 
 ### GPU skinning
 

@@ -146,8 +146,24 @@ Fields are touched on exit even after exceptions; writes are not rolled back.
 Exported views must not escape the scope. Compact multicomponent holes first.
 Independent component stores still require joins/gathers to align their rows.
 
-See [the engine guide](README.md#arrays-and-ordinary-systems) for a complete
-shaped-field example.
+```python
+from graaal.ECS import array_field
+
+@component
+class VectorPosition:
+	value: np.ndarray = array_field(np.float32, shape=(3,))
+
+vector_world = ECS()
+vectors, = vector_world.register(VectorPosition)
+vector_ids = vector_world.create(3)
+vector_world.add(vector_ids, columns(VectorPosition, value=np.zeros((3, 3), dtype=np.float32)))
+scratch = np.empty((3, 3), dtype=np.float32)
+vectors[vector_ids].read("value", out=scratch)
+np.add(scratch, 1, out=scratch)
+vectors[vector_ids].assign(value=scratch)
+with vectors.edit_dense("value") as fields:
+	fields["value"] *= 0.5
+```
 
 ## Inspection and allocation control
 

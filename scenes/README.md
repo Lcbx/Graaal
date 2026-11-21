@@ -42,75 +42,41 @@ components, see the [engine guide](../graaal/README.md), [ECS reference](../graa
 [material guide](../graaal/materials.md), and
 [transparency guide](../graaal/stochastic_transparency.md).
 
-For a headless ECS animation event example, run
-`python -m scenes.animation_events_example`. Two players run the same clip in
-opposite directions; a scheduled event consumer counts their footstep markers.
-Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
-crossfade with synthetic root motion and a movement boundary. It prints the
-requested and accepted displacement for each tick.
-Run `python -m scenes.physics_locomotion_example` for the same request/acceptance
-split against a native collision shape. A kinematic ECS character sweeps toward
-an obstacle, records the accepted displacement, and finalizes its in-place pose
-after the physics step. It requires the `physics` extra and no graphics.
-Run `python -m scenes.animation_graph_example` for conditional ECS clip
-transitions and a masked upper-body pose task compiled from an editable
-`AnimationGraphDefinition`. It prints skin-matrix
-translations for two synthetic characters and requires no GPU.
-Run `python -m scenes.foot_ik_example` for root motion, pre-physics pose
-sampling and post-physics foot IK using a synthetic terrain height query.
-It aligns the foot to the terrain normal and compares enabled and disabled IK
-without a GPU or physics backend.
+## Headless animation and physics
 
-Run `python -m scenes.physics_headless_example` after installing
-`python -m pip install -e ".[physics]"` for a standalone native Jolt smoke
-test. It checks `pyjoltphysics.selftest()`, creates a static floor and three
-dynamic unit boxes in one batch, runs exactly 120 ticks at 120 Hz, and prints
-their heights and the number of drained events. It uses neither ECS nor
-graphics and stops the native thread before returning. Use `--ticks 240`,
-`--tick-hz 60` or `--threads 4` to change the run settings.
+Run headless examples as `python -m scenes.<name>`:
 
-The backend uses SI units and xyzw quaternions. Snapshot arrays are read-only
-native views; resolve body UIDs with `snapshot.rows_of(...)` on each read and
-copy data that must outlive the world. The example returns copied arrays.
-Physics remains optional; importing this scene does not load the backend.
+| Module | Demonstrates | Extra |
+| --- | --- | --- |
+| `animation_events_example` | Forward/reverse playback and scheduled footstep-event consumption | Core |
+| `root_motion_example` | Idle/walk/run crossfades with requested and boundary-accepted movement | Core |
+| `animation_graph_example` | Compiled conditional states and a masked upper-body layer for two characters | Core |
+| `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK and normal alignment | Core |
+| `physics_headless_example` | Standalone native self-test, batched boxes, snapshots and events; no ECS | `physics` |
+| `physics_locomotion_example` | Root-motion acceptance against a native shape sweep; blocking only | `physics` |
+| `physics_queries_example` | Batched collision rays driving foot IK, owner lookup and sweeps | `physics` |
+| `physics_joints_example` | Hinge/slider limits, motor reversal and a breakable attachment | `physics` |
 
-Run `python main.py scenes/physics_example.py` for ECS falling cubes, static
-obstacles, a moving kinematic platform, and a translucent sensor that turns from
-green toward red as more boxes overlap it, returning toward green as they leave. Install
-both `physics` and `render` extras for the window. Run the same simulation without
-graphics with `python -m scenes.physics_example --headless --frames 240`, or
-render offscreen with `python -m scenes.physics_example --offscreen --frames 2`.
-The caller drives 120 Hz scheduler ticks; rendering interpolates the previous
-and current poses using the caller's remaining accumulator time. Gameplay and
-sensor occupancy use the latest physical tick.
-See the [physics guide](../graaal/physics.md) for commands and supported collider
-combinations. The scene schedules routed event dispatch after every physics tick.
+Install the native backend with `python -m pip install -e ".[physics]"`.
+`physics_headless_example` defaults to 120 ticks at 120 Hz; use `--ticks`,
+`--tick-hz` and `--threads` to vary the run. The
+[physics guide](../graaal/physics.md) covers units, read-only snapshots,
+UID identity, commands and supported collider combinations.
 
-Run `python -m scenes.physics_queries_example` for native ray batches driving
-the existing foot-IK pose tasks over a triangle-mesh terrain. It also demonstrates
-ray and shape-sweep hit resolution to ECS owners. Query misses disable foot
-correction; the original `foot_ik_example` remains usable with analytic terrain.
-Run `python -m scenes.physics_joints_example` for hinge and slider motors with
-limits, reversed motor targets and a breakable fixed attachment. Both examples
-need the `physics` extra and run without graphics.
+These physics scenes also support windows through `python main.py scenes/<name>.py`:
 
-Run `python main.py scenes/ragdoll_example.py` for a native humanoid driven by
-the ECS animation clock: animated standing, a powered push, a limp fall, and
-blended kinematic recovery repeat over eight seconds. The procedural skinned
-boxes use the existing skin palette and interpolate physical joints between
-fixed ticks. Run the complete cycle without graphics using
-`python -m scenes.ragdoll_example --headless --frames 960`, or check GPU skinning
-with `python -m scenes.ragdoll_example --offscreen --frames 6`.
+| Scene | Behavior and controls | Bounded headless run |
+| --- | --- | --- |
+| `physics_example` | Falling cubes, obstacles, moving platform and a sensor tinted by box occupancy; render interpolation between 120 Hz ticks | `python -m scenes.physics_example --headless --frames 240` |
+| `ragdoll_example` | Eight-second animated/powered/limp/recovery cycle; procedural skinned boxes show the native humanoid | `python -m scenes.ragdoll_example --headless --frames 960` |
+| `character_example` | Animated native controller, collision foot IK, triggers and ragdoll hand-off; WASD moves, Space jumps, R falls, G requests recovery, T resumes the scripted hurdle-jump cycle | `python -m scenes.character_example --headless --frames 960` |
 
-Run `python main.py scenes/character_example.py` for native controller locomotion
-with idle/walk animation graphs, collision-backed foot IK, triggers and ragdoll
-hand-off. WASD moves, Space jumps, R falls, G recovers when standing clearance is
-available, and T resumes the eight-second scripted cycle. Root motion supplies
-requested speed; native accepted motion positions the character. It faces its
-movement direction and jumps a 0.75 m hurdle on approach during the scripted
-cycle. Run `python -m scenes.character_example --headless --frames 960` for the
-full cycle, or `python -m scenes.character_example --offscreen --frames 6` for
-the existing GPU skinning path. These scenes require the `physics` extra.
+Rendered modes need the rendering/scene dependencies as well as `physics`.
+Use `python -m scenes.<name> --offscreen --frames N` for a bounded GPU check
+(for example, 2 frames for bodies or 6 for skinning). Gameplay uses the latest
+physics tick; presentation interpolates without changing that state. Recovery
+requires standing clearance. Native physics and active-balancing plans are
+described in the [physics guide](../graaal/physics.md).
 
 ## Rendering and transparency settings
 
