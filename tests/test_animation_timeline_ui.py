@@ -8,6 +8,7 @@ from graaal.AnimationEvents import EventTimeline, EventTrack
 from tools.animation_preview import Preview
 from tools.animation_asset import Animation
 from tools.animation_timeline import MarkerKind, TimelineWindow
+from tools.animation_project import read_project
 
 
 @pytest.fixture
@@ -47,6 +48,71 @@ def pointer(window, time, y=None):
 	x = window.LABEL_WIDTH + time * window.zoom.get() - window.canvas.canvasx(0)
 	if y is None: y = window.HEADER_HEIGHT + window.ROW_HEIGHT / 2
 	return SimpleNamespace(x=x, y=y - window.canvas.canvasy(0))
+
+
+def test_marker_project_restores_both_tracks_and_clears_stale_selection(window, tmp_path):
+	add_marker(window, 0.5, "step")
+	add_marker(window, 0.5, "sound")
+	window.animation.sync_markers.add(0.25, "left")
+	window.animations[1].events.add(1, "run step")
+	path = tmp_path / "markers.animation.json"
+	window.save_project(path)
+	assert "Saved markers" in window.status.get() and window.project_path == path
+	assert window.event_list.selection()
+	window.animation.events.update(1, name="unsaved")
+	window.drag_event_id, window.playing = 1, True
+	window.event_preview.set("old occurrences")
+	window.load_project(path)
+	window.root.update()
+	assert "Loaded markers" in window.status.get()
+	assert not window.event_list.selection() and window.drag_event_id is None
+	assert not window.playing and window.event_preview.get() == "Preview events: none"
+	assert window.animation.events.snapshot()[1].names == ("step", "sound")
+	assert window.animation.sync_markers.snapshot()[1].names == ("left",)
+	assert window.animations[1].events.snapshot()[1].names == ("run step",)
+	window.event_name.set("stale editor value")
+	window.update_event()
+	assert window.animation.events.snapshot()[1].names == ("step", "sound")
+
+
+def test_failed_project_load_keeps_marker_selection_and_drag(window, tmp_path):
+	marker = add_marker(window, 0.5, "step")
+	window.drag_event_id = marker
+	window.playing = True
+	events = window.animation.events
+	path = tmp_path / "bad.json"
+	path.write_text('{"version": 2, "animations": []}', encoding="utf-8")
+	window.load_project(path)
+	assert "Cannot load project" in window.status.get()
+	assert window.animation.events is events and window.event_list.selection() == (str(marker),)
+	assert window.drag_event_id == marker and window.playing
+	assert window.project_path is None
+	window.playing = False
+
+
+def test_timeline_round_trips_graph_from_other_tool_and_keeps_source_asset(window, tmp_path):
+	from pathlib import Path
+	from tools.animation_asset import load_animations
+	from tools.animation_graph import default_definition
+	from tools.animation_project import write_project
+
+	pytest.importorskip("pygltflib")
+	asset = Path(__file__).resolve().parents[1] / "scenes/resources/greenman.glb"
+	before = asset.read_bytes()
+	window.load(asset)
+	data = default_definition(window.animations)
+	path = tmp_path / "graph.json"
+	write_project(path, window.animations, data)
+	window.load_project(path)
+	assert window.project_graph == data
+	window.clip_box.current(1)
+	window.select_animation()
+	add_marker(window, 0.1, "footstep")
+	window.save_project(path)
+	draft, graph, timelines = read_project(path, load_animations(asset))
+	assert draft.data == data and graph.initial_state == 0
+	assert timelines[1][0].snapshot()[1].names == ("footstep",)
+	assert asset.read_bytes() == before
 
 
 def test_update_coincident_events_preserves_selection_and_rejects_invalid_edits(window):

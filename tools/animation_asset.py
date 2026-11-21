@@ -35,6 +35,10 @@ class Animation:
 		if self.sync_markers is None and duration > 0: self.sync_markers = EventTimeline(EventTrack(duration, [], []))
 
 
+def clip_resources(animations):
+	return {f"{i}: {animation.name}": animation.clip for i, animation in enumerate(animations)}
+
+
 def load_animations(path):
 	"""Read source channels and load supported runtime clips for the viewport."""
 	from pygltflib import GLTF2

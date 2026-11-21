@@ -12,6 +12,7 @@ from graaal.SkeletalAnimation import Clip, Skeleton
 from tools.animation_preview import Preview
 from tools.animation_asset import Animation, load_animations
 from tools.animation_graph import GraphWindow
+from tools.animation_project import write_project
 
 
 @pytest.fixture
@@ -47,6 +48,93 @@ def set_draft(editor, data):
 	editor.editor.delete("1.0", "end")
 	editor.editor.insert("1.0", json.dumps(data))
 	editor.compile_draft()
+
+
+def test_project_save_keeps_live_preview_and_load_restores_draft_and_markers(window, tmp_path):
+	editor = window
+	editor.animations[0].events.add(0.25, "step")
+	for animation in editor.animations[:2]:
+		animation.sync_markers.add(0, "left")
+		animation.sync_markers.add(0.5, "right")
+	editor.automatic.set(True)
+	editor.change_playback()
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.advance_playback(0.1)
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"]["new parameter"] = 2
+	data["sync_mappings"] = [{"source": "0: idle", "target": "1: walk"}]
+	editor.editor.delete("1.0", "end")
+	editor.editor.insert("1.0", json.dumps(data))
+	graph, playback = editor.graph, editor.playback
+	samples = playback.sample()
+	path = tmp_path / "graph.animation.json"
+	editor.save_project(path)
+	assert "Saved graph" in editor.status.get() and editor.project_path == path
+	assert editor.graph is graph and editor.playback is playback
+	for actual, expected in zip(playback.sample(), samples): np.testing.assert_array_equal(actual, expected)
+	assert "new parameter" not in editor.parameter_entries
+	editor.open_sync_markers()
+	form = editor.sync_marker_window
+	editor.animations[0].events.update(0, name="edited")
+	editor.animations[0].sync_markers.update(1, time=0.75)
+	editor.editor.insert("end", "{invalid")
+	editor.load_project(path)
+	assert "Loaded graph" in editor.status.get()
+	assert not form.window.winfo_exists() and editor.sync_marker_window is None
+	assert editor.definition.data == data and "new parameter" in editor.parameter_entries
+	assert editor.graph is not graph and editor.playback is not playback
+	assert editor.playback.state == 0 and editor.position == 0 and not editor.playing
+	assert editor.animations[0].events.snapshot()[1].names == ("step",)
+	np.testing.assert_array_equal(editor.animations[0].sync_markers.snapshot()[1].times, [0, 0.5])
+	assert (0, 1) in editor.graph.sync_mappings
+
+
+def test_failed_project_load_and_save_preserve_session_file_and_open_forms(window, tmp_path):
+	editor = window
+	path = tmp_path / "graph.json"
+	editor.save_project(path)
+	before = path.read_bytes()
+	editor.open_transitions()
+	form = editor.transition_window
+	graph, playback, events = editor.graph, editor.playback, editor.animations[0].events
+	draft = editor.editor.get("1.0", "end-1c")
+	bad = tmp_path / "bad.json"
+	bad.write_text('{"version": 2, "animations": []}', encoding="utf-8")
+	editor.load_project(bad)
+	assert "Cannot load project" in editor.status.get()
+	assert editor.project_path == path and editor.graph is graph and editor.playback is playback
+	assert editor.animations[0].events is events and form.window.winfo_exists()
+	assert editor.editor.get("1.0", "end-1c") == draft
+	for text in ("null", "{invalid", '{"version": 2}'):
+		editor.editor.delete("1.0", "end")
+		editor.editor.insert("1.0", text)
+		editor.save_project(path)
+		assert "Cannot save project" in editor.status.get() and path.read_bytes() == before
+		assert editor.graph is graph and editor.playback is playback
+	form.close()
+
+
+def test_marker_only_project_recompiles_current_graph_and_rejects_incompatible_markers(window, tmp_path):
+	editor = window
+	for animation in editor.animations[:2]:
+		animation.sync_markers.add(0, "left")
+		animation.sync_markers.add(0.5, "right")
+	path = tmp_path / "markers.json"
+	write_project(path, editor.animations)
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["sync_mappings"] = [{"source": "0: idle", "target": "1: walk"}]
+	set_draft(editor, data)
+	editor.animations[0].sync_markers.update(1, name="left")
+	editor.load_project(path)
+	assert "Loaded graph" in editor.status.get() and editor.definition.data == data
+	graph, markers = editor.graph, editor.animations[0].sync_markers
+	bad = json.loads(path.read_text(encoding="utf-8"))
+	bad["animations"][0]["sync_markers"][1]["name"] = "left"
+	path.write_text(json.dumps(bad), encoding="utf-8")
+	editor.load_project(path)
+	assert "Cannot load project" in editor.status.get() and "unique" in editor.status.get()
+	assert editor.graph is graph and editor.animations[0].sync_markers is markers
 
 
 def test_state_selection_conditions_and_manual_crossfade_use_existing_viewport(window):
@@ -127,6 +215,99 @@ def test_graph_clock_scrubs_and_plays_without_timeline(window):
 	assert 0.48 < window.position < 0.8
 	assert len(window.viewport.find_all()) >= 4
 	window.toggle_play()
+
+
+def test_automatic_playback_promotes_state_and_preserves_pause_and_drafts(window):
+	editor = window
+	editor.automatic.set(True)
+	editor.change_playback()
+	assert editor.fade_scale.instate(["disabled"])
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.advance_playback(0.125)
+	assert editor.state.get() == "0: idle" and editor.target_state == 1
+	np.testing.assert_allclose(editor.fade.get(), 0.5)
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1, 0, 0], [1, 1, 0]])
+	editor.parameter_entries["advance"].set("0")
+	editor.apply_parameters()
+	assert editor.target_state == 1 and editor.fade.get() == 0.5
+	before = editor.playback.sample()
+	editor.tick()
+	for actual, expected in zip(editor.playback.sample(), before): np.testing.assert_array_equal(actual, expected)
+	editor.editor.insert("end", "{")
+	editor.compile_draft()
+	assert editor.playback.target_state == 1 and editor.fade.get() == 0.5
+	editor.advance_playback(0.25)
+	assert editor.state.get() == "1: walk" and editor.animation_id == 1
+	assert editor.playback.target_state is None and editor.target_state is None
+	np.testing.assert_allclose(editor.position, 0.375)
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[2, 0, 0], [2, 1, 0]])
+
+
+def test_automatic_scrubbing_and_state_selection_reset_transition(window):
+	editor = window
+	editor.automatic.set(True)
+	editor.change_playback()
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.advance_playback(0.1)
+	editor.toggle_play()
+	editor.change_time("0.6")
+	assert not editor.playing and editor.play_button.cget("text") == "Play"
+	assert editor.playback.time == editor.position == 0.6 and editor.playback.target_state is None
+	editor.advance_playback(0.1)
+	assert editor.playback.target_state == 1
+	editor.pick_state("2: upper")
+	assert editor.playback.state == 2 and editor.playback.target_state is None
+	assert editor.playback.time == editor.position == 0
+	editor.automatic.set(False)
+	editor.change_playback()
+	assert not editor.fade_scale.instate(["disabled"])
+	editor.fade.set(0.5)
+	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[0, 0, 0], [0, 2, 0]])
+
+
+def test_automatic_tick_uses_play_button_and_resumes_fade(window, monkeypatch):
+	editor = window
+	editor.automatic.set(True)
+	editor.change_playback()
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	monkeypatch.setattr("tools.animation_graph.time.monotonic", lambda: 10.125)
+	editor.toggle_play()
+	editor.last_tick = 10
+	editor.tick()
+	assert editor.playing and editor.fade.get() == 0.5
+	editor.toggle_play()
+	editor.tick()
+	assert editor.fade.get() == 0.5
+	editor.toggle_play()
+	editor.last_tick = 10
+	editor.tick()
+	assert editor.state.get() == "1: walk" and editor.playback.target_state is None
+	editor.toggle_play()
+
+
+def test_automatic_sync_uses_target_phase_in_viewport(window):
+	editor = window
+	walk = editor.animations[1].clip
+	translation = walk.translation.copy()
+	translation[1, 0, 0] = 6
+	editor.animations[1].clip = Clip(translation, walk.rotation, walk.scale, fps=1)
+	for animation, right in zip(editor.animations[:2], (0.5, 0.25)):
+		animation.sync_markers.add(0, "left")
+		animation.sync_markers.add(right, "right")
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["sync_mappings"] = [{"source": "0: idle", "target": "1: walk"}]
+	set_draft(editor, data)
+	editor.automatic.set(True)
+	editor.change_playback()
+	editor.change_time("0.6")
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.advance_playback(0.125)
+	np.testing.assert_allclose(editor.playback.target_time, 0.5875)
+	np.testing.assert_allclose(editor.joint_model(editor.position)[0, 0, 3], 2.175)
 
 
 def test_greenman_graph_preview_renders_mesh_and_failed_load_preserves_draft(window):
