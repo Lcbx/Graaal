@@ -390,3 +390,51 @@ def test_invalid_sync_authoring_reports_mapping_location(change, error):
 	elif change == "self": data["sync_mappings"][0]["target"] = "idle"
 	elif change == "reference": data["sync_mappings"][0]["target"] = "missing"
 	with pytest.raises(ValueError, match=error): AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+
+
+def sync_space_resources(dimension):
+	rig, clips, tracks, data = sync_resources()
+	data.pop("sync_mappings")
+	tracks["upper"] = EventTrack(1, [0.2, 0.6], ["left", "right"])
+	if dimension == 1:
+		data["blend_spaces"] = {"motion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}], "sync_reference": "idle"}}
+	else:
+		data["parameters"]["turn"] = 0
+		data["blend_spaces_2d"] = {"motion": {"x_parameter": "speed", "y_parameter": "turn", "x_positions": [0, 1], "y_positions": [-1, 1], "clips": [["idle", "walk"], ["upper", "walk"]], "sync_reference": "idle"}}
+	return rig, clips, tracks, data
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_blend_sync_compiles_without_transition_mappings_and_snapshots_markers(dimension):
+	rig, clips, tracks, data = sync_space_resources(dimension)
+	graph = AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	spaces = graph.blend_spaces if dimension == 1 else graph.blend_spaces_2d
+	sync = spaces["motion"].sync
+	assert sync.reference == 0 and not graph.sync_mappings
+	np.testing.assert_allclose(sync.map([[0, 1]], [0.75])[0], [[0.75, 1.25]])
+	tracks["walk"] = EventTrack(2, [0, 1], ["left", "right"])
+	updated = AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	new_sync = (updated.blend_spaces if dimension == 1 else updated.blend_spaces_2d)["motion"].sync
+	np.testing.assert_allclose(new_sync.map([[0, 1]], [0.75])[0], [[0.75, 1.5]])
+	np.testing.assert_allclose(sync.map([[0, 1]], [0.75])[0], [[0.75, 1.25]])
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+@pytest.mark.parametrize("change", ["unknown", "outside", "null", "missing", "duration", "names", "coincident"])
+def test_invalid_blend_sync_reports_space_and_preserves_previous_resources(dimension, change):
+	rig, clips, tracks, data = sync_space_resources(dimension)
+	field = "blend_spaces" if dimension == 1 else "blend_spaces_2d"
+	good = AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	if change == "unknown": data[field]["motion"]["sync_reference"] = "missing"
+	elif change == "outside":
+		clips["unused"] = clips["idle"]
+		data[field]["motion"]["sync_reference"] = "unused"
+	elif change == "null": data[field]["motion"]["sync_reference"] = None
+	elif change == "missing": del tracks["walk"]
+	elif change == "duration": tracks["walk"] = EventTrack(3, [0, 0.5], ["left", "right"])
+	elif change == "names": tracks["walk"] = EventTrack(2, [0, 0.5], ["left", "left"])
+	else: tracks["walk"] = EventTrack(2, [0, 0], ["left", "right"])
+	with pytest.raises(ValueError, match=field + r".motion.sync_reference"):
+		AnimationGraphDefinition(data).compile(rig, clips, sync_tracks=tracks)
+	sync = (good.blend_spaces if dimension == 1 else good.blend_spaces_2d)["motion"].sync
+	np.testing.assert_allclose(sync.map([[0, 1]], [0.75])[0], [[0.75, 1.25]])

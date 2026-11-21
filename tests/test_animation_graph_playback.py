@@ -313,3 +313,84 @@ def test_static_and_degenerate_2d_states(x, y, expected):
 		assert player.__dict__ == before
 	player.reset(2, 5.5)
 	assert player.time == 5.5 and player.target_state is None and player.speed == 1
+
+
+def synchronized_graph(dimension, *, wide=False):
+	base = grid_graph()
+	clips = {name: clip for name, clip in zip(("idle", "walk", "other", "extra"), base.clips.values())}
+	tracks = {name: EventTrack(clips[name].duration, times, names) for name, times, names in (("idle", [0, 0.5], ["left", "right"]), ("walk", [0.25, 1.25], ["left", "right"]), ("other", [0, 0.5], ["left", "right"]), ("extra", [0.5, 2], ["right", "left"]))}
+	data = {
+		"version": 1, "parameters": {"move": 0, "x": 0.25, "y": 0},
+		"initial_state": "source", "sample_slots": ["base"], "tasks": [{"name": "output", "op": "sample", "slot": "base"}],
+		"transitions": [{"source": "source", "target": "target", "conditions": [{"parameter": "move", "comparison": "<", "threshold": 0}], "duration": 0.5}],
+		"sync_mappings": [{"source": "idle", "target": "walk"}],
+	}
+	field, state_field = ("blend_spaces", "blend_space") if dimension == 1 else ("blend_spaces_2d", "blend_space_2d")
+	data["states"] = {"source": {state_field: "a"}, "target": {state_field: "b"}}
+	if dimension == 1:
+		data[field] = {name: {"parameter": "x", "points": [{"position": 0, "clip": a}, {"position": 1, "clip": b}], "sync_reference": a} for name, a, b in (("a", "idle", "walk"), ("b", "walk", "other"))}
+	else:
+		data[field] = {name: {"x_parameter": "x", "y_parameter": "y", "x_positions": [0, 1], "y_positions": [-1, 1], "clips": cells, "sync_reference": reference} for name, reference, cells in (("a", "idle", [["idle", "walk"], ["other", "extra"]]), ("b", "walk", [["other", "extra"], ["idle", "walk"]]))}
+	if wide:
+		if dimension == 1: data[field]["a"]["points"].append({"position": 2, "clip": "other"})
+		else:
+			data[field]["a"]["x_positions"].append(2)
+			data[field]["a"]["clips"][0].append("other")
+			data[field]["a"]["clips"][1].append("walk")
+	return AnimationGraphDefinition(data).compile(base.plan.skeleton, clips, sync_tracks=tracks)
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_synchronized_blends_keep_reference_clock_across_loops_and_parameter_changes(dimension):
+	compiled = synchronized_graph(dimension)
+	player = GraphPlayback(compiled)
+	player.reset(time=1.75)
+	player.advance(0.5, [0, 0.25, 0])
+	assert player.time == 2.25
+	lower = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[0, 1]], [[0.75, 1.5]], [[0.75, 0.25]])
+	if dimension == 1: expected = lower
+	else:
+		upper = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[2, 3]], [[0.625, 0.875]], [[0.75, 0.25]])
+		expected = blend_poses(compiled.plan.skeleton, lower, upper, [0.5])
+	for actual, reference in zip(player.pose([0, 0.25, 0]), expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	player.advance(0, [0, 1, 1])
+	assert player.time == 2.25
+	if dimension == 1:
+		np.testing.assert_allclose(state_sample(compiled, 0, player.time, [0, 1, 1])[1], [[0.75, 1.5]])
+	else:
+		# The extra clip is at reference marker phase, rather than time 2.25.
+		np.testing.assert_allclose(player.pose([0, 1, 1])[0], [[[12 + 2 * 0.875 / 3, 0, 0]]])
+	player.reset(time=1000 * 1.5 + 0.75)
+	for actual, reference in zip(player.pose([0, 0.25, 0]), expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_state_fades_sync_reference_clocks_and_retain_target_speed(dimension):
+	compiled = synchronized_graph(dimension)
+	player = GraphPlayback(compiled)
+	player.reset(time=0.5)
+	player.advance(0.25, [-1, 0.25, 0])
+	assert player.target_time == 1.5 and player.target_speed == 1
+	expected = blend_poses(compiled.plan.skeleton, state_pose(compiled, 0, 0.75, [-1, 0.25, 0]), state_pose(compiled, 1, 1.5, [-1, 0.25, 0]), [0.5])
+	for actual, reference in zip(player.pose([-1, 0.25, 0]), expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	player.advance(0.5, [0, 1, 1])
+	assert player.state == 1 and player.target_state is None and player.time == 2 and player.speed == 1
+	player.advance(0.25, [0, 1, 1])
+	assert player.time == 2.25
+	player.reset(1, 5.5)
+	assert player.time == 5.5 and player.speed == 1
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_reference_keeps_leading_when_it_is_outside_the_selected_cell(dimension):
+	compiled = synchronized_graph(dimension, wide=True)
+	player = GraphPlayback(compiled)
+	player.reset(time=2.25)
+	player.advance(0, [0, 1.5, 0])
+	lower = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[1, 2]], [[1.5, 0.625]], [[0.5, 0.5]])
+	if dimension == 1: expected = lower
+	else:
+		upper = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[3, 1]], [[0.875, 1.5]], [[0.5, 0.5]])
+		expected = blend_poses(compiled.plan.skeleton, lower, upper, [0.5])
+	for actual, reference in zip(player.pose([0, 1.5, 0]), expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	assert player.time == 2.25 and player.speed == 1

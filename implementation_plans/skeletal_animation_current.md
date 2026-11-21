@@ -12,7 +12,7 @@ logs; validation evidence is scoped below.
 | 2: transitions/root motion | Crossfades, named events, root extraction, clip-pair samples, separate advancement/finalization, bounded and native collision examples | Movement reconciliation policy remains application-owned |
 | 3: GPU crowd evaluator | Not started; GPU vertex skinning already exists | Baked clip pool, compute evaluator, transition validator and tiering |
 | 4: graphs | PosePlan, masks/additive layers, 1D/2D selectors, ordered AND-condition states, optional ECS clip-state adapter, editable clip/1D/2D blend-state definitions and pose-input plans | General runtime graph controller |
-| 5: sync/physics | Marker-synchronized ECS fades, two-bone IK, axis alignment, pre/post-physics plans, collision queries and ragdoll targets | Blend-space synchronization, foot locking/twist constraints and crowd overrides |
+| 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, pre/post-physics plans, collision queries and ragdoll targets | Foot locking/twist constraints and crowd overrides |
 | 6: advanced | Not started | Warping, skeleton LOD, exact GPU evaluator, GPU IK and debugging |
 | 7: tools | Headless event/graph authoring, Tk timeline, CPU-skinned preview, graph JSON/transition/blend-space forms, sync markers, manual/automatic clip and 1D/2D blend-state playback and explicit JSON project persistence | Remaining forms and material-rendered preview |
 
@@ -48,11 +48,15 @@ logs; validation evidence is scoped below.
   preserve pause/resume and do not interrupt on parameter changes. Events and
   root motion remain outside preview.
 - 1D/2D blend states select from applied parameters at a shared unwrapped seconds
-  clock, wrapping each clip independently. Fades blend complete state poses before
-  authored layers through a compiled pose-input plan, preserving nested quaternion
-  blending. Marker sync remains clip-to-clip; blend sync and ECS graph control are
-  deferred. 2D states blend horizontal pairs before the vertical blend, independent
-  of authored layer weights. Clip, 1D and 2D state bindings remain separate.
+  clock. Unsynchronized clips wrap independently; synchronized spaces map from
+  an authored fixed reference, regardless of weights or the selected cell.
+  All participants validate against compatible marker snapshots at compile time.
+  Forms and JSON projects retain the optional reference. Fades blend state poses
+  before authored layers through a compiled pose-input plan, preserving nested
+  quaternion blending. Explicit transition mappings use clip or blend-reference
+  clocks; ECS graph control and weighted cycle timing remain deferred. 2D states
+  blend horizontal pairs before the vertical blend, independent of authored
+  layer weights. Clip, 1D and 2D state bindings remain separate.
 
 ## Examples and validation evidence
 
@@ -72,17 +76,21 @@ Headless preview regressions compare poses and clocks with existing ECS playback
 blend/blend fades, nested quaternion blending, pose-input layers, seeking, invalid
 draft preservation and project reloads. Grid tests include one-row/column/cell
 cases, bound/unbound forms and validation of paired slot bindings.
+Blend-sync regressions cover batched pair/grid timing, reverse marker rates,
+marker offsets and unequal intervals, stable reference clocks across parameter
+changes and loops, reference-clock fades, snapshot ownership, form validation
+and project round trips.
 Project tests cover exact marker times, coincident ordering, graph/marker round
 trips, source/baked duration differences, incompatible files, preserved graph
 data in the timeline and failed-write preservation.
-2D blend-state validation (2026-11-21): focused graph, playback, graph UI,
-project, pose-task and blend-space tests passed. Regressions cover transitions
-among clip/1D/2D states, unequal clip loops, quaternion composition, degenerate
-grids, layer weights, optional form bindings and project failure preservation.
-The full test suite and `python -m graaal` also passed; the editor tests were
-rerun after the final form layout change. Prior bounded GPU scene results are
-historical; a separate GPU smoke test was not run for this authoring change.
-Use current tests rather than old test totals as the coverage inventory.
+Blend-space synchronization validation (2026-11-21): focused sync, graph,
+playback, graph UI, project and blend-space tests passed, followed by final
+regressions for selected cells that exclude the reference clip. The full test
+suite and `python -m graaal` also passed. Fixed-reference timing was selected
+for stable clocks across parameter changes; weighted cycle timing remains
+deferred. Prior bounded GPU scene results are historical; a separate GPU smoke
+test was not run for this change. Use current tests rather than old test totals
+as the coverage inventory.
 
 `python -m scenes.benchmarks.benchmark_animation --entities 64 256 1024 --bones 12 60 --repeat 10`
 measures controller, pose and combined CPU cost; see the

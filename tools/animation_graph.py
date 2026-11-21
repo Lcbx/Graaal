@@ -9,7 +9,7 @@ from graaal.Animation.SkeletalAnimation import model_matrices, sample_clip_pairs
 from .animation_preview import animation_bounds
 from .animation_viewport import draw_animation_viewport
 from .animation_asset import clip_resources, load_animations
-from .animation_graph_playback import GraphPlayback, transition_pose
+from .animation_graph_playback import GraphPlayback, sample_times, state_clock_clip, transition_pose
 from .animation_project import compile_graph, read_project, write_project
 
 
@@ -278,7 +278,8 @@ class GraphWindow:
 
 	def state_clip(self, state):
 		"""Choose a representative imported clip for the shared asset viewport."""
-		if state in self.graph.state_clips: return self.graph.state_clips[state]
+		clock = state_clock_clip(self.graph, state)
+		if clock is not None: return clock
 		if state in self.graph.state_blend_spaces:
 			return int(self.graph.blend_spaces[self.graph.state_blend_spaces[state]].clip_ids[0])
 		return int(self.graph.blend_spaces_2d[self.graph.state_blend_spaces_2d[state]].clip_ids[0, 0])
@@ -308,7 +309,7 @@ class GraphWindow:
 		self.target_state = int(targets[0]) if selected[0] else None
 		if selected[0]:
 			target = next(name for name, value in self.graph.state_ids.items() if value == self.target_state)
-			pair = self.graph.state_clips.get(state), self.graph.state_clips.get(self.target_state)
+			pair = state_clock_clip(self.graph, state), state_clock_clip(self.graph, self.target_state)
 			sync = ", marker sync" if pair in self.graph.sync_mappings else ""
 			self.decision.set(f"{self.state.get()} → {target}, fade {durations[0]:g}s{sync}")
 		else: self.decision.set("No transition selected")
@@ -442,8 +443,8 @@ class GraphWindow:
 			lower, upper = (next(label for label, index in graph.sample_slots.items() if index == position) for position in grid.sample_slots)
 			if self.bindings[lower].get() == f"{self.GRID_PREFIX}{name} / lower>" and self.bindings[upper].get() == f"{self.GRID_PREFIX}{name} / upper>":
 				ids, horizontal, vertical = grid.select(self.parameters[None])
-				grid_pairs[grid.sample_slots[0]] = (ids[0, 0], horizontal[0])
-				grid_pairs[grid.sample_slots[1]] = (ids[0, 1], horizontal[0])
+				grid_pairs[grid.sample_slots[0]] = (ids[0, 0], horizontal[0], grid.sync)
+				grid_pairs[grid.sample_slots[1]] = (ids[0, 1], horizontal[0], grid.sync)
 				weights_for_plan[0, grid.weight_slot] = vertical[0]
 		for slot, value in enumerate(self.bindings.values()):
 			binding = value.get()
@@ -451,21 +452,24 @@ class GraphWindow:
 				if state_pose is None:
 					if self.automatic.get(): state_pose = self.playback.pose(self.parameters)
 					else:
-						pair = graph.state_clips.get(state), graph.state_clips.get(self.target_state)
+						pair = state_clock_clip(graph, state), state_clock_clip(graph, self.target_state)
 						mapping = graph.sync_mappings.get(pair)
 						target_time = float(mapping.map([time])[0][0]) if mapping is not None else time
 						state_pose = transition_pose(graph, state, self.target_state, time, target_time, fade, self.parameters)
 				poses.append(state_pose)
 				continue
 			if slot in grid_pairs:
-				ids, weights = grid_pairs[slot]
+				ids, weights, sync = grid_pairs[slot]
 			elif binding.startswith(self.BLEND_PREFIX) and binding.endswith(">"):
-				ids_array, weights_array = graph.blend_spaces[binding[len(self.BLEND_PREFIX):-1]].select(self.parameters[None])
+				space = graph.blend_spaces[binding[len(self.BLEND_PREFIX):-1]]
+				ids_array, weights_array = space.select(self.parameters[None])
 				ids, weights = tuple(int(clip) for clip in ids_array[0]), tuple(float(weight) for weight in weights_array[0])
+				sync = space.sync
 			else:
 				ids, weights = (graph.clip_ids[binding],) * 2, (1, 0)
-			times = [time % graph.clips[clip].duration if graph.clips[clip].duration > 0 else 0 for clip in ids]
-			poses.append(sample_clip_pairs(self.asset.skeleton, graph.clips, np.array([ids]), np.array([times]), np.array([weights])))
+				sync = None
+			ids = np.array([ids])
+			poses.append(sample_clip_pairs(self.asset.skeleton, graph.clips, ids, sample_times(graph, ids, time, sync), np.array([weights])))
 		motions = [(None, np.array([False])) for _ in graph.root_motion_slots]
 		pose = graph.input_plan.evaluate(graph.clips, (), weights_for_plan, poses=poses, root_motions=motions)
 		return model_matrices(self.asset.skeleton, *pose)[0]

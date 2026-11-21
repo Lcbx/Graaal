@@ -32,6 +32,11 @@ class BlendSpaceWindow:
 		ttk.Entry(row, textvariable=self.name, width=25).pack(side="left", padx=5)
 		ttk.Label(row, text="Parameter").pack(side="left")
 		ttk.Combobox(row, textvariable=self.parameter, values=tuple(data.get("parameters", {})), state="readonly", width=22).pack(side="left", padx=5)
+		row = ttk.Frame(body)
+		row.pack(fill="x", pady=5)
+		self.sync_reference = tk.StringVar()
+		ttk.Label(row, text="Sync reference (optional)").pack(side="left")
+		ttk.Combobox(row, textvariable=self.sync_reference, values=("", *host.graph.clip_ids), state="readonly", width=30).pack(side="left", padx=5)
 		ttk.Label(body, text="Points in increasing position order").pack(anchor="w", pady=(10, 0))
 		self.point_list = ttk.Treeview(body, columns=("position", "clip"), show="headings", height=7, selectmode="browse")
 		for column in ("position", "clip"):
@@ -76,6 +81,7 @@ class BlendSpaceWindow:
 		self.selected_name = None
 		self.name.set("")
 		self.parameter.set(next(iter(self.data.get("parameters", {})), ""))
+		self.sync_reference.set("")
 		self.points = []
 		self.refresh_points()
 		self.position.set("0")
@@ -88,6 +94,7 @@ class BlendSpaceWindow:
 		space = self.data["blend_spaces"][self.selected_name]
 		self.name.set(self.selected_name)
 		self.parameter.set(space["parameter"])
+		self.sync_reference.set(space.get("sync_reference", ""))
 		self.points = deepcopy(space["points"])
 		self.refresh_points()
 
@@ -136,6 +143,7 @@ class BlendSpaceWindow:
 		candidate.setdefault("blend_spaces", {})
 		if update: del candidate["blend_spaces"][self.selected_name]
 		candidate["blend_spaces"][name] = {"parameter": self.parameter.get(), "points": deepcopy(self.points)}
+		if self.sync_reference.get(): candidate["blend_spaces"][name]["sync_reference"] = self.sync_reference.get()
 		try: self.host.compile_definition(candidate)
 		except (ValueError, TypeError) as exc:
 			self.status.set(f"Cannot stage blend space: {exc}")
@@ -223,6 +231,11 @@ class BlendGridWindow:
 			ttk.Label(row, text=label).pack(side="left")
 			ttk.Entry(row, textvariable=variable, width=30).pack(side="left", padx=5)
 		ttk.Button(row, text="Apply axes", command=self.set_axes).pack(side="left", padx=5)
+		row = ttk.Frame(body)
+		row.pack(fill="x", pady=5)
+		self.sync_reference = tk.StringVar()
+		ttk.Label(row, text="Sync reference (optional)").pack(side="left")
+		ttk.Combobox(row, textvariable=self.sync_reference, values=("", *host.graph.clip_ids), state="readonly", width=30).pack(side="left", padx=5)
 		ttk.Checkbutton(body, text="Bind sample slots", variable=self.bind_slots, command=self.change_bind_slots).pack(anchor="w")
 		row = ttk.Frame(body)
 		row.pack(fill="x")
@@ -274,6 +287,7 @@ class BlendGridWindow:
 		self.grids.selection_remove(*self.grids.selection())
 		self.selected_name = None
 		self.name.set("")
+		self.sync_reference.set("")
 		parameters = tuple(self.data.get("parameters", {}))
 		self.x_parameter.set(parameters[0] if parameters else "")
 		self.y_parameter.set(parameters[1] if len(parameters) > 1 else "")
@@ -297,6 +311,7 @@ class BlendGridWindow:
 		self.selected_name = selection[0]
 		grid = self.data["blend_spaces_2d"][self.selected_name]
 		self.name.set(self.selected_name)
+		self.sync_reference.set(grid.get("sync_reference", ""))
 		for key in ("x_parameter", "y_parameter"):
 			getattr(self, key).set(grid[key])
 		self.weight_slot.set(grid.get("weight_slot", ""))
@@ -367,6 +382,7 @@ class BlendGridWindow:
 			"x_positions": self.axis_x.copy(), "y_positions": self.axis_y.copy(), "clips": deepcopy(self.clip_grid),
 		}
 		if self.bind_slots.get(): candidate["blend_spaces_2d"][name].update(sample_slots=[self.lower_slot.get(), self.upper_slot.get()], weight_slot=self.weight_slot.get())
+		if self.sync_reference.get(): candidate["blend_spaces_2d"][name]["sync_reference"] = self.sync_reference.get()
 		try: self.host.compile_definition(candidate)
 		except (ValueError, TypeError) as exc:
 			self.status.set(f"Cannot stage grid: {exc}")
