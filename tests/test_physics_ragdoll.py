@@ -120,6 +120,69 @@ def test_sparse_skinning_normalizes_animation_only_parent_rotations(setup, weigh
 	np.testing.assert_array_equal(pose[1], original)
 
 
+def test_batched_held_targets_preserve_mixed_assets_owner_order_and_current_frames(pj):
+	rig = skeleton()
+	assets = {0: RagdollAsset(rig, bones=[0, 2], gravity_factor=0), 1: RagdollAsset(rig, bones=[0, 1, 2], gravity_factor=0)}
+	ecs = ECS()
+	ecs.register(Collider, RigidBody, MaterialTransform, PhysicsRagdoll)
+	owners = ecs.create(3)
+	ecs.add(owners, PhysicsRagdoll(0), MaterialTransform())
+	ecs.get(PhysicsRagdoll)[owners[1:2]].asset = 1
+	with EcsPhysicsAdapter(ecs, {}, settings=pj.WorldSettings(threads=1), ragdolls=assets) as physics:
+		tick(physics)
+		order = owners[[2, 0, 1, 2]]
+		pose = rest(rig, len(order))
+		pose[0][:, 0, 0] = [1, 2, 3, 4]
+		pose[1][:, 1] = Quaternion.from_z_rotation(0.4)
+		pose[1][:, 1] *= 2
+		pose[1][:, 2] = Quaternion.from_x_rotation(0.2)
+		pose[0][:, 3, 0] = 0.15
+		expected_pose = tuple(value[[1, 2, 3]].copy() for value in pose)
+		physics.set_ragdoll_pose(order, pose)
+		# Caller buffers may be reused immediately after submission.
+		pose[0][:] = 100
+		pose[1][:] = 0
+		for offset in (0, 2):
+			ecs.get(MaterialTransform)[owners].assign(position=np.array([[10, 1, 0], [0, 2, 10], [-10, 3, 0]]) + offset, rotation=Quaternion.from_y_rotation(0.6 + offset))
+			tick(physics)
+			expected = skin_matrices(rig, model_matrices(rig, *expected_pose))
+			np.testing.assert_allclose(physics.ragdoll_skin(owners[[0, 2]]), expected[[0, 2]], atol=3e-5)
+			np.testing.assert_allclose(physics.ragdoll_skin(owners[1:2]), expected[1:2], atol=3e-5)
+		# Updating one owner retains the other owners' independently held targets.
+		replacement = rest(rig)
+		replacement[0][:, 0, 0] = -2
+		physics.set_ragdoll_pose(owners[:1], replacement)
+		tick(physics)
+		for output, value in zip(expected_pose, replacement): output[:1] = value
+		expected = skin_matrices(rig, model_matrices(rig, *expected_pose))
+		np.testing.assert_allclose(physics.ragdoll_skin(owners[[2, 0, 2]]), expected[[2, 0, 2]], atol=3e-5)
+		np.testing.assert_allclose(physics.ragdoll_skin(owners[1:2]), expected[1:2], atol=3e-5)
+
+
+def test_invalid_batched_targets_preserve_all_held_poses(pj):
+	rig = skeleton()
+	assets = {0: RagdollAsset(rig, bones=[0, 2], gravity_factor=0), 1: RagdollAsset(rig, gravity_factor=0)}
+	ecs = ECS()
+	ecs.register(Collider, RigidBody, MaterialTransform, PhysicsRagdoll)
+	owners = ecs.create(2)
+	ecs.add(owners, MaterialTransform())
+	ecs.add(owners[0], PhysicsRagdoll(0))
+	ecs.add(owners[1], PhysicsRagdoll(1))
+	with EcsPhysicsAdapter(ecs, {}, settings=pj.WorldSettings(threads=1), ragdolls=assets) as physics:
+		tick(physics)
+		pose = rest(rig, 2)
+		pose[0][:, 0, 0] = [1, 2]
+		physics.set_ragdoll_pose(owners, pose)
+		tick(physics)
+		before = [physics.ragdoll_skin([owner]) for owner in owners]
+		pose[0][:, 0, 0] = [5, 6]
+		pose[2][1, 1] = 2
+		with pytest.raises(ValueError, match="unit local scale"): physics.set_ragdoll_pose(owners, pose)
+		with pytest.raises(ValueError, match="rows must match"): physics.set_ragdoll_pose(owners, rest(rig))
+		tick(physics)
+		for owner, expected in zip(owners, before): np.testing.assert_allclose(physics.ragdoll_skin([owner]), expected, atol=2e-5)
+
+
 @pytest.mark.parametrize("publish_initial", (False, True))
 def test_shared_capacity_body_ragdoll_transitions_both_directions(pj, publish_initial):
 	asset = RagdollAsset(skeleton(), bones=[0, 2], gravity_factor=0)
@@ -235,6 +298,10 @@ def test_authored_settings_frames_and_scale_validation(pj):
 def test_lifecycle_rebuild_recycled_handle_capacity_and_close(setup):
 	ecs, owner, physics, asset = setup
 	tick(physics)
+	pose = rest(asset.skeleton)
+	pose[0][:, 0, 0] = 2
+	physics.set_ragdoll_pose([owner], pose)
+	tick(physics)
 	handle = physics.ragdolls[int(owner)]
 	uids = handle.bones.copy()
 	physics._ragdoll_assets[1] = RagdollAsset(asset.skeleton, bones=[0, 1, 2])
@@ -243,6 +310,7 @@ def test_lifecycle_rebuild_recycled_handle_capacity_and_close(setup):
 	assert physics.ragdolls[int(owner)].id != handle.id
 	assert np.all(physics.world.latest().rows_of(uids) == -1)
 	assert physics.world.latest().count == 3
+	np.testing.assert_allclose(physics.ragdoll_skin([owner]), np.tile(np.eye(4)[:3], (1, len(asset.skeleton.parents), 1, 1)), atol=3e-5)
 	ecs.delete(owner)
 	replacement = ecs.create(1)[0]
 	assert entity_index(owner) == entity_index(replacement)
@@ -258,7 +326,34 @@ def test_lifecycle_rebuild_recycled_handle_capacity_and_close(setup):
 	assert physics.world.latest().count == 0
 	assert not len(physics.world.latest().ragdolls)
 	assert not physics.ragdolls
+	assert not physics._ragdoll_targets
 	physics.close()
+
+
+@pytest.mark.parametrize("change", ("delete", "remove_ragdoll", "remove_transform"))
+def test_held_target_is_not_sent_to_an_owner_removed_before_prepare(setup, change):
+	ecs, owner, physics, asset = setup
+	tick(physics)
+	handle = physics.ragdolls[int(owner)]
+	before = physics.world.latest().position.copy()
+	pose = rest(asset.skeleton)
+	pose[0][:, 0, 0] = 5
+	physics.set_ragdoll_pose([owner], pose)
+	if change == "delete":
+		ecs.delete(owner)
+		replacement = ecs.create(1)[0]
+		ecs.add(replacement, PhysicsRagdoll(0), MaterialTransform(position=(30, 0, 0)))
+	else:
+		ecs.remove(owner, PhysicsRagdoll if change == "remove_ragdoll" else MaterialTransform)
+	physics.prepare_inputs()
+	physics.step()
+	physics.pull()
+	physics.dispatch_events()
+	np.testing.assert_allclose(physics.world.latest().position, before, atol=1e-6)
+	tick(physics)
+	assert owner not in physics._ragdoll_targets
+	assert np.all(physics.world.latest().rows_of(handle.bones) == -1)
+	assert physics.world.stats()["rejected"] == 0
 
 
 def test_modes_strength_impulse_and_recovery(setup, pj):

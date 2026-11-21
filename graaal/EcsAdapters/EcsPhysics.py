@@ -171,6 +171,7 @@ class EcsPhysicsAdapter:
 		if any(not isinstance(asset, RagdollAsset) for asset in self._ragdoll_assets.values()): raise TypeError("ragdoll registry values must be RagdollAsset objects")
 		self._ragdoll_query = None if ragdolls is None else ecs.query(PhysicsRagdoll, transform_type)
 		self._ragdolls, self._ragdoll_poses = {}, {}
+		self._ragdoll_targets = {}
 		self._ragdoll_history = {}
 		self._ragdoll_owners, self._bone_by_uid, self._retired_bones = {}, {}, {}
 		self._character_assets = {} if characters is None else dict(characters)
@@ -376,6 +377,7 @@ class EcsPhysicsAdapter:
 				self._retired_bodies.update((int(uid), owner) for uid in handle.bones)
 				self._retired_bones.update((int(uid), i) for i, uid in enumerate(handle.bones))
 				self._ragdoll_poses.pop(owner, None)
+				self._ragdoll_targets.pop(owner, None)
 				self._ragdoll_history.pop(owner, None)
 			for row, owner in enumerate(map(int, owners)):
 				asset_key, mode, blend, strength = declarations[owner]
@@ -383,6 +385,7 @@ class EcsPhysicsAdapter:
 				if owner in added:
 					handle = self.world.add_ragdoll(asset.settings, pose.position[row], pose.rotation[row], self.pj.RagdollMode(mode))
 					self._ragdoll_poses[owner] = tuple(value[None].copy() for value in (asset.skeleton.translation, asset.skeleton.rotation, asset.skeleton.scale))
+					self._ragdoll_targets[owner] = asset.target_pose(self._ragdoll_poses[owner])
 				else:
 					_, handle, old_mode, old_blend, old_strength = self._ragdolls[owner]
 					if (mode, blend) != (old_mode, old_blend): self._seq(handle.set_mode(self.pj.RagdollMode(mode), blend))
@@ -400,12 +403,18 @@ class EcsPhysicsAdapter:
 		owners = as_entities(entities)
 		if any(int(owner) not in self._ragdolls for owner in owners): raise ValueError("reconcile ragdolls before setting poses")
 		copies = tuple(np.array(value, dtype=np.float32, copy=True) for value in pose)
+		if any(value.ndim == 0 or len(value) != len(owners) for value in copies): raise ValueError("pose rows must match owners")
+		groups, targets = {}, {}
 		for row, owner in enumerate(map(int, owners)):
-			asset = self._ragdoll_assets[self._ragdolls[owner][0]]
-			if any(len(value) != len(owners) for value in copies): raise ValueError("pose rows must match owners")
-			asset.target_pose(tuple(value[row:row + 1] for value in copies))
+			groups.setdefault(self._ragdolls[owner][0], []).append(row)
+		# Convert compatible owners together, committing only after all assets validate.
+		for asset_key, rows in groups.items():
+			translation, rotation = self._ragdoll_assets[asset_key].target_pose(tuple(value[rows] for value in copies))
+			for index, row in enumerate(rows):
+				targets[int(owners[row])] = (translation[index:index + 1].copy(), rotation[index:index + 1].copy())
 		for row, owner in enumerate(map(int, owners)):
 			self._ragdoll_poses[owner] = tuple(value[row:row + 1].copy() for value in copies)
+			self._ragdoll_targets[owner] = targets[owner]
 
 	def ragdoll_skin(self, entities, *, weight=1, alpha=None):
 		"""Read one snapshot and return a skin palette for owners sharing one asset."""
@@ -935,13 +944,15 @@ class EcsPhysicsAdapter:
 				self._seq(self.world.character_ops(ids[live], ops[live], codes[live], data[live]))
 				self._character_snap.update(map(int, ids[live & (ops == self.pj.CharacterOp.TELEPORT)]))
 			self._character_pending.pop(0)
-		for owner, (asset_key, handle, *_) in self._ragdolls.items():
-			if not self.ecs.is_alive([owner])[0] or not self.ecs.has([owner], PhysicsRagdoll)[0] or not self.ecs.has([owner], self.transform_type)[0]: continue
-			asset = self._ragdoll_assets[asset_key]
-			translation, rotation = asset.target_pose(self._ragdoll_poses[owner])
-			frame = self.transforms[[owner]]
+		if self._ragdolls:
+			owners = np.fromiter(self._ragdolls, dtype=np.uint64)
+			owners = owners[self.ecs.has(owners, PhysicsRagdoll) & self.ecs.has(owners, self.transform_type)]
+			frame = self.transforms[owners]
 			if self._has_scale and not np.allclose(frame.scale, 1, atol=1e-6): raise ValueError("ragdoll entity scale must be unit")
-			self._seq(handle.set_pose(rotation[0], translation[0], frame.position[0], frame.rotation[0]))
+			positions, rotations = frame.position, frame.rotation
+			for row, owner in enumerate(map(int, owners)):
+				translation, rotation = self._ragdoll_targets[owner]
+				self._seq(self._ragdolls[owner][1].set_pose(rotation[0], translation[0], positions[row], rotations[row]))
 		kinematic = (self._values["motion"] == 1) & self.ecs.is_alive(self._entities) & self.ecs.has(self._entities, self.transform_type)
 		kinematic &= self.ecs.has(self._entities, Collider)
 		if np.any(kinematic):
@@ -1094,6 +1105,7 @@ class EcsPhysicsAdapter:
 			self._joint_records.clear()
 			self._ragdolls.clear()
 			self._ragdoll_poses.clear()
+			self._ragdoll_targets.clear()
 			self._ragdoll_history.clear()
 			self._ragdoll_owners.clear()
 			self._bone_by_uid.clear()

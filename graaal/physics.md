@@ -291,8 +291,12 @@ remove an adapter-owned ragdoll directly; ECS reconciliation and close use nativ
 `remove_ragdolls` to free the complete structure.
 
 `set_ragdoll_pose` copies local animation targets in owner order, including
-animation-only bones. `prepare_inputs` converts them to native-parent joint frames
-and queues each held target with the entity's current world frame. The ECS frame
+animation-only bones, and converts compatible owners together to native-parent
+joint frames. Validation completes for the entire submission before any held
+pose changes; repeated owners use their last input row. Converted targets stay
+owned by the adapter until replaced or the ragdoll is rebuilt/removed.
+`prepare_inputs` queues each held target with the entity's current world frame,
+so frame changes take effect even when no new local pose is supplied. The ECS frame
 stays caller-controlled in all modes; physical root displacement lives in the
 skeletal pose. Apply root-motion requests to that frame explicitly. Do not run a
 second native `play` timeline alongside the ECS animation clock.

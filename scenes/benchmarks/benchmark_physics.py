@@ -43,6 +43,45 @@ def measure_io(physics, owners, repeat):
 	return {name: summary(values) for name, values in samples.items()}
 
 
+def measure_ragdoll_inputs(physics, owners, asset, repeat):
+	"""Probe rest-target conversion/submission after simulation, without stepping."""
+	pose = tuple(np.repeat(value[None], len(owners), axis=0) for value in (asset.skeleton.translation, asset.skeleton.rotation, asset.skeleton.scale))
+	handles = physics.ragdolls
+	frame = physics.ecs.get(MaterialTransform)[owners]
+	positions, orientations = frame.position, frame.rotation
+	samples = {name: [] for name in ("conversion_per_owner", "conversion_batched", "native_submission", "set_pose", "prepare_updated", "update_and_prepare", "prepare_held")}
+	for _ in range(repeat):
+		start = time.perf_counter_ns()
+		for row in range(len(owners)): asset.target_pose(tuple(value[row:row + 1] for value in pose))
+		end = time.perf_counter_ns()
+		samples["conversion_per_owner"].append((end - start) / 1e6)
+		start = time.perf_counter_ns()
+		translation, rotation = asset.target_pose(pose)
+		end = time.perf_counter_ns()
+		samples["conversion_batched"].append((end - start) / 1e6)
+		start = time.perf_counter_ns()
+		for row, owner in enumerate(owners): handles[int(owner)].set_pose(rotation[row], translation[row], positions[row], orientations[row])
+		end = time.perf_counter_ns()
+		samples["native_submission"].append((end - start) / 1e6)
+		physics.world.flush()
+		start = time.perf_counter_ns()
+		physics.set_ragdoll_pose(owners, pose)
+		updated = time.perf_counter_ns()
+		physics.prepare_inputs()
+		end = time.perf_counter_ns()
+		samples["set_pose"].append((updated - start) / 1e6)
+		samples["prepare_updated"].append((end - updated) / 1e6)
+		samples["update_and_prepare"].append((end - start) / 1e6)
+		physics.world.flush()
+		start = time.perf_counter_ns()
+		physics.prepare_inputs()
+		end = time.perf_counter_ns()
+		samples["prepare_held"].append((end - start) / 1e6)
+		# Bound native queue/pool use without advancing the simulation clock.
+		physics.world.flush()
+	return {name: summary(values) for name, values in samples.items()}
+
+
 def make_workload(count, workload, pj):
 	"""Build deterministic declarations; collision workloads share a static floor."""
 	ecs = ECS()
@@ -138,6 +177,7 @@ def benchmark(count, threads, interpolate, warmup, repeat, *, workload="isolated
 		if ragdolls:
 			result["skinning"] = summary(skin[warmup:])
 			result["bones_per_ragdoll"] = len(ragdolls[0].bones)
+			result["ragdoll_inputs"] = measure_ragdoll_inputs(physics, owners, ragdolls[0], repeat)
 		else:
 			result["io"] = measure_io(physics, owners, repeat)
 			if interpolate: result["render_transforms"] = summary(render[warmup:])

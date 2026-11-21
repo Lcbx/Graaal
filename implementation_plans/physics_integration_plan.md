@@ -106,14 +106,60 @@ Rigid render-pose preparation cost about 0.27 ms; conversion alone cost about
 For 20 ragdolls, fixed-tick medians ranged from roughly 6.3 to 11.0 ms across
 the matrix and a reverse-thread-order recheck, dominated by input preparation
 (roughly 5.2–9.7 ms), with separate skinning costs. Variability prevents a stable
-ragdoll thread-scaling claim. Measure held-target conversion/submission before
-adding bindings or changing the control path; the input cost exceeds native
-stepping in every measured ragdoll case. These are local observations, not GPU
+ragdoll thread-scaling claim. This prompted the held-target conversion/submission
+measurement below; input cost exceeded native stepping in every case in this
+historical matrix. These are local observations, not GPU
 FPS or CI performance thresholds.
 
 Validation: 46 benchmark, native headless and ragdoll tests passed. Workload
 tests check contact activity, compound topology, warmup exclusion, two-thread
 stepping, event draining, JSON serialization and the correct presentation path.
+
+## Phase 6 ragdoll target preparation
+
+Added the benchmark's `ragdoll_inputs` probe to separate per-owner/batched target
+conversion, native submission, full adapter target updates and held preparation.
+It runs after simulation, applying commands with `flush()` outside timed sections
+without stepping or draining events. It submits rest targets, so it does not
+measure animation evaluation or powered motor simulation.
+
+Profiling identified repeated Python pose conversion and per-owner ECS reads as
+the input bottleneck. The adapter now retains the native-parent conversion
+already validated by `set_ragdoll_pose`, batches conversion by asset, and gathers
+live owners' current entity frames together. Updates remain atomic across assets;
+input order, repeated owners, detached caller buffers, animation-only bones,
+generation checks and rebuild/removal cleanup are preserved. Native pose
+submission remains per handle; these measurements do not justify new bindings.
+
+On Windows x64, CPython 3.14.10, NumPy 2.5.5 and pyjoltphysics 0.1.0a3, matching
+one-thread runs used 60 warmup and 240 measured ticks, 10/20 ragdolls and both
+interpolation modes. At 20 ragdolls, median CPU times were:
+
+| Measurement | Before (ms) | After (ms) |
+| --- | --- | --- |
+| Input preparation | 5.45–6.06 | 0.26–0.27 |
+| Fixed tick | 6.63–7.40 | 1.46–1.56 |
+| Full target update plus preparation probe | 9.61–9.90 | 0.66 |
+
+Standalone per-owner conversion cost 3.39–3.50 ms versus 0.27–0.30 ms batched;
+native submission cost roughly 0.15–0.16 ms in these cases.
+
+A reverse-thread-order recheck covered 1/2/4 threads. At 20 ragdolls, preparation
+medians ranged from 0.20 to 0.35 ms and full target update plus preparation from
+0.58 to 0.99 ms. Every case had contacts in all 240 measured ticks, with no dropped
+events or rejected commands. Variability still prevents a stable thread-scaling
+claim. Raw local reports (ignored benchmark artifacts) are
+`scenes/benchmarks/results/physics_ragdoll_inputs_probe_before_windows.json`,
+`scenes/benchmarks/results/physics_ragdoll_inputs_probe_after_windows.json` and
+`scenes/benchmarks/results/physics_ragdoll_inputs_recheck_windows.json`.
+
+Validation: 185 focused physics, character, replay, locomotion, benchmark and
+import-boundary checks passed, including mixed-asset/repeated-owner targets,
+caller buffer reuse, current entity frames, invalid update atomicity, stale
+owners, cache lifecycle and probe clock/event preservation. The import-boundary
+module required a retry outside the sandbox because pytest's temporary directory
+was inaccessible. `python -m graaal` and the 960-tick headless ragdoll example
+passed. No GPU or additional platform validation was performed.
 
 ## Phase 6 body checkpoints and selective resets
 

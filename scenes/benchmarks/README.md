@@ -82,6 +82,19 @@ poses after the timed simulation. This probe applies to rigid bodies only;
 ragdoll bone poses are converted through final skinning instead. Results depend
 on the platform and workload and do not establish GPU frame rate.
 
+Ragdoll reports include a separate `ragdoll_inputs` probe after the measured
+simulation. It compares native-parent target conversion per owner and in one
+batch, then measures per-handle native submission with precomputed targets and
+frames. `set_pose` measures the adapter's full-batch copy/validation/conversion;
+`prepare_updated` measures preparation immediately afterward, and
+`update_and_prepare` measures their combined duration. `prepare_held` measures
+another preparation without a new target. The probe repeatedly submits the
+skeleton rest pose to all owners; it does not evaluate animation or measure
+powered motor simulation. Native `flush()` calls outside the timed sections
+bound queue/pool use without advancing ticks or draining events. The probe
+replaces the held targets after simulation; the reported native diagnostics,
+contacts and presentation timings are captured before it runs.
+
 Historically, on Windows x64, CPython 3.14.10, NumPy 2.5.5 and pyjoltphysics 0.1.0a3, one
 local 240-sample run at 1,000 bodies measured median 0.55 ms per fixed tick with
 interpolation enabled (0.30 ms sync, 0.24 ms native step), plus 0.26 ms for
