@@ -112,6 +112,51 @@ dominated by Python input preparation, with substantial run-to-run variation;
 see the [physics status](../../implementation_plans/physics_integration_plan.md#phase-6-workload-measurements)
 for the measurements and limitations before making tuning decisions.
 
+## Ragdoll control prerequisites
+
+```powershell
+python -m scenes.benchmarks.benchmark_ragdoll_control --ragdolls 10 20 --threads 1 2 4 --warmup 60 --repeat 480 --output ragdoll_control.json
+python -m scenes.benchmarks.benchmark_ragdoll_control --ragdolls 10 20 --threads 1 2 4 --soft-limits --warmup 60 --repeat 480 --output ragdoll_soft_limits.json
+```
+
+Install the `physics` extra. This standalone native probe uses 120 Hz lockstep,
+the backend's 11-bone humanoid, zero gravity, no floor/self collision, no body or
+joint friction/damping, and no root anchoring. Ragdolls are spaced four metres
+apart. Both shoulders start 0.5 rad from rest after two kinematic settling ticks;
+velocities are cleared before switching to limp or powered mode. Active motor
+strengths are zero in both modes throughout the measurement.
+
+Each case compares neutral springs off/on, separating snapshot UID lookup and
+detached pose/velocity observation copies, NumPy spring evaluation, one flattened
+native torque batch, per-handle per-bone strength submission, stepping and event
+draining. Uniform probe spring gains are 1 N m/rad and 0.05 N m s/rad, with a
+0.5 N m cap per joint. Strength arrays are resubmitted every tick to measure that
+binding path even though their values stay zero. `peak_body_torque_nm` can exceed
+the joint cap because parent reactions accumulate. `fixed_tick` covers these
+stages together. Warmup is excluded from samples and native timing means;
+`ticks` also includes the initial two settling ticks. `direct_readback` separately
+times native locked `bodies_state` copies after simulation, without advancing time.
+
+`--soft-limits` adds the Python/NumPy progressive swing/twist evaluator to passive
+cases, using copied authored humanoid frames and limits. Its separate
+`limit_torques` stage uses margin 0.1 rad, stiffness 1 N m/rad, damping
+0.05 N m s/rad and a 0.5 N m cap per joint. The no-passive baseline keeps both
+force paths disabled. `soft_limits` identifies cases where the evaluator ran;
+`peak_limit_body_torque_nm` isolates its accumulated body reactions. Neutral and
+limit torque caps apply independently before their sums are submitted, so the
+combined joint torque may exceed either individual cap.
+
+`initial_joint_error_rad` and `final_joint_error_rad` average shortest relative
+rotation error across non-root joints and instances. The uniform weak gains probe
+the torque path; they do not establish natural posture quality, convergence for
+arbitrary rigs or stability at another timestep. This is not a collision workload,
+powered animation tracking, an RL environment or a training-reset benchmark.
+Contact/application observations, mass/COM features and controller state are not
+part of these pose/velocity observation copies. Check native rejection/event
+overflow counters before interpreting performance. Results and thread scaling
+depend on the machine; [current local measurements](../../implementation_plans/active_ragdolls.md#backend-validation-status)
+do not establish runtime or GPU frame rate.
+
 ## Transparency
 
 | Script | Output / purpose |

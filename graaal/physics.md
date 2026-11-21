@@ -330,6 +330,93 @@ GPU skin palette. Its skinned boxes visualize the authored capsule volumes.
 Native frame, limit, mode, ownership and interpolation regressions are in
 [test_physics_ragdoll.py](../tests/test_physics_ragdoll.py).
 
+### Passive neutral joint springs
+
+`graaal.PhysicsRagdoll.joint_spring_torques` is a standalone NumPy evaluator;
+it does not load the native backend or depend on ECS. Give it parent-before-child
+physical bone indices, world orientations `(instances, bones, 4)`, world angular
+velocities `(instances, bones, 3)` and neutral parent-local xyzw rotations.
+Neutral rotations broadcast to the orientation shape. Required `stiffness`,
+`damping` and `max_torque` broadcast to `(instances, bones)` and must be finite
+and nonnegative. Their units are N m/rad, N m s/rad and N m respectively.
+
+The result is detached float64 world torque `(instances, bones, 3)`. Each joint
+uses shortest-rotation error and relative angular damping, caps its torque
+magnitude, and applies an equal opposite reaction to its parent. The root has
+no world spring; its input gains/cap are unused. A parent's combined reactions
+can exceed one joint's cap. Rotations are normalized; inputs remain unchanged.
+
+For one native ragdoll, apply the result before each fixed step:
+
+```python
+from graaal.PhysicsRagdoll import joint_spring_torques
+
+state = world.bodies_state(handle.bones)
+torques = joint_spring_torques(handle.settings.parents, state.orientation[None], state.angular_velocity[None], neutral_rotations, stiffness=1, damping=0.05, max_torque=0.5)
+world.add_torques(handle.bones, torques[0])
+world.run_ticks(1)
+```
+
+`neutral_rotations` is an authored physical parent-local pose, such as
+`handle.settings.rest_rotations`; render-local poses with unmapped intermediate
+bones must first pass through `RagdollAsset.target_pose`. Native torque submission
+accepts all ragdolls' flattened bone UIDs in one batch. The helper does not read
+motor mode/strength: neutral springs can remain active while native motors are
+disabled, including powered mode with zero strength. Author gains for the body's
+inertia and fixed timestep; explicit torque control can oscillate with large
+gains. Native hard constraints still apply. Add the soft-limit forces below when
+needed; balance and control-state resets are separate work.
+
+The [control benchmark](../scenes/benchmarks/README.md#ragdoll-control-prerequisites)
+and [tests](../tests/test_physics_joint_springs.py) cover torque reactions,
+motor independence, per-bone strengths and native observation costs.
+
+### Passive soft angular limits
+
+`ragdoll_limit_parameters(settings)` prepares detached, read-only arrays from
+authored native `RagdollSettings`: parent indices, bone-local constraint frames,
+twist intervals and swing half angles. It resolves implicit axes, orthogonalizes
+the plane axis, and includes rest rotations and cone `bend`. Prepare it once per
+immutable asset; rebuild the parameters after changing that asset. Preparation
+uses Python metadata and does not import the native backend.
+
+`joint_limit_torques` consumes the same batched world orientations/angular
+velocities as the neutral spring and returns detached float64 world torques.
+Low-level callers can supply `parents`, bone-local `parent_frames`/`child_frames`
+xyzw arrays, `twist=(min, max)` in `[-pi, pi]`, and `swing=(first, second)` half
+angles in `[0, pi]` directly. Frames and limits broadcast to `(instances, bones,
+4/2)`. Constraint X is the twist axis, Y the plane axis, Z their cross product.
+Swing uses the [Jolt quaternion ellipse](https://jrouwe.github.io/JoltPhysicsDocs/5.6.0/class_swing_twist_constraint_part.html),
+including locked axes and unrestricted angles.
+
+Required positive `margin` insets each angular bound to define a comfortable
+range. Narrow intervals collapse to their midpoint; narrow swing axes collapse
+to zero. Free axes remain free across the quaternion wrap. Outside the comfortable
+range, the evaluator radially projects swing onto the inset ellipse and clamps
+twist, then uses rotation error toward that feasible pose. For error magnitude
+`d`, spring magnitude is `stiffness * d**2 / margin`. Outward-only damping ramps
+from zero to `damping` across the margin, allowing inward recovery. Gains and
+`max_torque` broadcast to `(instances, bones)`, with the neutral spring's units.
+Each soft joint is capped before equal opposite parent reactions accumulate.
+
+```python
+from graaal.PhysicsRagdoll import joint_limit_torques, ragdoll_limit_parameters
+
+limit_parameters = ragdoll_limit_parameters(handle.settings)  # Once per asset.
+# Each fixed tick, before stepping:
+state = world.bodies_state(handle.bones)
+soft = joint_limit_torques(orientations=state.orientation[None], angular_velocity=state.angular_velocity[None], margin=0.1, stiffness=1, damping=0.05, max_torque=0.5, **limit_parameters)
+world.add_torques(handle.bones, soft[0])
+```
+
+Neutral and limit torques may be added before one native torque submission;
+their separate caps do not cap the sum. Both remain independent of active motor
+strength. These are Python/NumPy forces applied through the existing binding;
+Jolt continues to solve hard constraints and contacts. A soft band is not a hard
+clamp or a stability guarantee for arbitrary gains, timesteps or inertias.
+Native pressure tests cover twist, swing and bent joints with non-identity rest
+frames; full humanoid anatomical tuning and fall/impact validation remain pending.
+
 ## Character controllers
 
 Register `PhysicsCharacter` and `CharacterState` alongside the usual body and

@@ -127,6 +127,7 @@ from graaal.RenderPasses.pass_settings import AmbientOcclusionSettings, Antialia
 from graaal.UI.diagnostics_visualizer import DiagnosticsVisualizer
 from graaal.EcsAdapters import EcsPhysics
 from graaal import PhysicsRagdoll
+assert PhysicsRagdoll.joint_spring_torques([-1], [[[0, 0, 0, 1]]], [[[0, 0, 0]]], [[0, 0, 0, 1]], stiffness=1, damping=1, max_torque=1).tolist() == [[[0, 0, 0]]]
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 world = ECS()
 world.register(MaterialTransform)
@@ -139,6 +140,7 @@ assert strip_comments('fn main() {} // comment').startswith('fn main() {}')
 assert AmbientOcclusionSettings().radius > 0
 assert AntialiasingSettings().faaa_quality > 0
 from types import SimpleNamespace as NS
+assert not PhysicsRagdoll.joint_limit_torques([-1], [[[0, 0, 0, 1]]], [[[0, 0, 0]]], [[0, 0, 0, 1]], [[0, 0, 0, 1]], twist=(-0.6, 0.6), swing=(0.6, 0.6), margin=0.1, stiffness=1, damping=1, max_torque=1).any()
 from graaal.__main__ import simulate
 from graaal.Diagnostics import WatchTimer, setup_memory_monitor
 with WatchTimer("cpu"): pass

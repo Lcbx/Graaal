@@ -3,8 +3,108 @@
 General native integration already exists; see the
 [physics status](physics_integration_plan.md) and
 [ragdoll API](../graaal/physics.md#native-ragdolls-and-skeletons).
-This plan concerns additional passive mechanics and learned control; those
-capabilities still require backend validation.
+This plan concerns additional passive mechanics and learned control; verified
+prerequisites and remaining work are distinguished below.
+
+Implementation stays in Python and NumPy, using the existing pyjoltphysics API.
+Changes to Jolt or its native bindings, and implementations in other programming
+languages, are out of scope. Missing backend capabilities remain explicit limits.
+
+## Backend validation status
+
+The pinned pyjoltphysics 0.1.0a3 already supports batched body torques, detached
+native body-state reads, snapshot pose/velocity arrays and per-bone motor torque
+limits. Added standalone NumPy [neutral joint springs](../graaal/physics.md#passive-neutral-joint-springs)
+with bounded joint torques and equal opposite parent reactions. The evaluator
+requires explicit gains/neutral rotations and has no ECS or native dependency.
+It supplies neutral-posture mechanics; it does not implement anatomical soft
+limits or a balance controller. No binding extension was needed for this path.
+
+Native tests confirm relaxation of isolated spherical-body joints in both limp
+and powered modes at zero active strength, per-bone motor weakening, repeated
+one-/two-thread trajectories in independent worlds, and isolation of impacts
+between worlds. Pure NumPy tests check restoring direction, relative damping,
+joint caps, branching reactions, world rotation covariance, quaternion signs,
+normalization and rejected invalid inputs. Snapshot observations preserve UID
+order/duplicates after native compaction and own their retained arrays.
+
+The [headless control benchmark](../scenes/benchmarks/README.md#ragdoll-control-prerequisites)
+measures observation copies, neutral springs, one bulk torque submission,
+per-handle strength submission, native stepping and event draining. A Windows x64
+run with CPython 3.14.10, NumPy 2.5.5 and pyjoltphysics 0.1.0a3 covered 24 cases:
+10/20 native humanoids, 1/2/4 threads, limp/powered modes and springs off/on, using
+60 warmup and 480 measured ticks. All active strengths were zero; the environment
+had zero gravity, no floor, no self collision and no root anchoring.
+
+At 20 ragdolls with springs, median CPU timings across the matrix were:
+
+| Stage | Median range (ms) |
+| --- | --- |
+| Snapshot observation copies | 0.039–0.051 |
+| NumPy spring evaluation | 0.219–0.298 |
+| Bulk torque submission | 0.014–0.018 |
+| Per-handle per-bone strength submission | 0.055–0.088 |
+| Native step | 0.165–0.206 |
+| Complete control tick | 0.531–0.685 |
+| Separate direct body-state readback | 0.008–0.014 |
+
+There were no rejected commands or dropped events. With the probe's weak uniform
+gains, mean joint error fell from 0.100 to roughly 0.078 rad after 4.5 seconds;
+the no-spring baseline remained at 0.100 rad. This modest reduction is a mechanism
+check, not convincing passive motion or a stable thread-scaling claim. Stronger
+initial gains oscillated in light limbs, reinforcing the need for authored gains
+and timestep/inertia validation. Local raw output is the ignored artifact
+`scenes/benchmarks/results/ragdoll_control_windows.json`.
+
+Validation: 136 focused spring, benchmark, quaternion, native ragdoll, replay and
+import-boundary tests passed; `python -m graaal` passed. The boundary module ran
+outside the sandbox to access pytest's temporary directory. No GPU or additional
+platform validation was performed.
+
+Remaining prerequisites: author the humanoid's feet/ankles, relaxed pose and
+per-joint gains; validate combined passive forces in drops, falls and impacts
+with active control disabled. Full character/ragdoll replay and
+selective training resets still need native control-state capture. Body pose and
+velocity writes do not provide that reset contract. Expanded observations and
+training/runtime parity remain future work.
+
+## Python soft angular limits
+
+Added standalone NumPy `joint_limit_torques` and one-time
+`ragdoll_limit_parameters` preparation from authored native Bone metadata. The
+evaluator uses asymmetric twist bounds and the quaternion swing ellipse with
+rest frames, plane/twist axes and cone bend. It insets a comfortable range,
+applies quadratic restoring torque and outward-only damping, caps each soft
+joint, and accumulates equal opposite reactions. Locked/narrow axes, free-angle
+wraps and antiparallel orientations are handled. Neutral and soft-limit forces
+have independent caps and remain active independently of animation motors.
+
+Pressure tests run Python control against the existing native hard constraints
+in limp and powered modes at zero motor strength, with one and two threads.
+Twist, swing and bent joints use non-identity rest rotations. Under 0.1 N m
+pressure, the tested joints settle more than 0.1 rad before the hard boundary;
+late variation stays below 0.02 rad. Pressure exceeding the 0.5 N m soft cap
+still reaches the native hard backstop within the tested solver tolerance.
+Pure NumPy checks cover the interior dead zone, quadratic growth, outward-only
+damping, elliptic swing coupling, asymmetric/locked/free limits, per-instance
+caps, frame covariance, metadata copies and invalid values.
+
+The control benchmark's `--soft-limits` option measures the combined path.
+On the same Windows x64/CPython 3.14.10/NumPy 2.5.5/pyjoltphysics 0.1.0a3 setup,
+a 24-case run covered 10/20 humanoids, 1/2/4 threads, limp/powered modes and
+passive forces off/on with 60 warmup and 480 measured ticks. At 20 humanoids with
+both force paths, soft-limit evaluation medians were 0.559–0.575 ms, torque
+submission 0.017–0.019 ms and complete control ticks 1.236–1.374 ms. Every case
+retained 480 native timing samples, with no rejected commands or dropped events.
+The raw local report is the ignored artifact
+`scenes/benchmarks/results/ragdoll_soft_limits_windows.json`.
+
+Validation: 179 focused physics, quaternion, replay, benchmark and optional-import
+tests passed; `python -m graaal` passed. The import-boundary module used its
+previously required access outside the sandbox for pytest's temporary directory.
+No GPU or additional platform validation was performed. These tests validate
+the force mechanism and the measured zero-gravity workload; humanoid anatomical
+tuning and full passive drops, stairs and impacts remain unfinished.
 
 ## Overview
 
@@ -23,7 +123,7 @@ The system separates three sources of joint forces:
 - Test pyjoltphysics rigid bodies, ragdolls, joint constraints, motors, impulses and state snapshots.
 - Verify independent training environments, selective resets and reproducibility.
 - Benchmark batched observations, motor commands and native multithreaded stepping.
-- Identify missing APIs for passive joint torques, bulk motor updates or efficient resets; extend bindings if necessary.
+- Identify missing APIs for passive joint torques, bulk motor updates or efficient resets; keep implementation within Python and the existing binding.
 
 **Deliverable:** Working headless ragdoll prototype and measured simulation throughput.
 

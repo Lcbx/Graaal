@@ -5,6 +5,9 @@ events, joints, native characters and ragdolls. The supported API and limitation
 live in the [physics guide](../graaal/physics.md); subsequent neural/passive
 control work belongs to the [active-ragdoll plan](active_ragdolls.md).
 
+Control implementation stays in Python and NumPy through the existing pinned
+binding. Changes to Jolt or its native bindings are out of scope.
+
 ## Delivery status
 
 | Phase | Delivered | Canonical examples/tests |
@@ -192,9 +195,14 @@ character and ragdoll capture gaps rather than assuming those resources replay.
   control-state capture (held targets, modes/strengths, transitions, character
   timers/controls) as well as Python animation/gameplay clocks, queues and events.
   Body checkpoints and pose/velocity resets do not satisfy that training contract.
-- Measure binding gaps before extending passive torques, neutral springs,
-  per-joint strengths, bulk observations/actions or training resets. Revisit
-  free-running simulation only with an explicit latency/synchronization contract.
+- The [active-ragdoll backend validation](active_ragdolls.md#backend-validation-status)
+  now verifies native bulk torques, per-bone strengths and pose/velocity readback,
+  and delivers standalone Python/NumPy neutral springs and progressive soft
+  angular limits with a headless control benchmark. Anatomical tuning, expanded
+  observations/actions, training resets and complete passive-motion validation
+  remain pending. Record missing native capabilities without extending bindings.
+  Revisit free-running simulation only with an explicit latency/synchronization
+  contract.
 
 Retain headless tests for lifecycle/generation reuse, authority, shared capacity,
 event retirement, query namespaces, joint limits, ragdoll frames/inverse binds,

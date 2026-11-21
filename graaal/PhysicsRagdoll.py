@@ -1,4 +1,4 @@
-"""CPU skeleton/native-ragdoll pose conversion, independent of ECS and rendering."""
+"""CPU ragdoll pose conversion and joint springs, independent of ECS and rendering."""
 
 import numpy as np
 
@@ -20,6 +20,157 @@ def _frame(position, rotation, count):
 	result = np.tile(np.eye(4, dtype=np.float64), (count, 1, 1))
 	result[:, :3, :3], result[:, :3, 3] = Quaternion.matrix_batch(rotation), position
 	return result
+
+
+def _joint_state(parents, orientations, angular_velocity):
+	parents = np.asarray(parents)
+	if parents.ndim != 1 or not len(parents) or parents.dtype.kind not in "iu" or parents[0] != -1 or np.any(parents[1:] < 0) or np.any(parents[1:] >= np.arange(1, len(parents))):
+		raise ValueError("parents must describe one parent-before-child tree")
+	parents = parents.astype(np.intp, copy=False)
+	orientations = np.asarray(orientations)
+	if orientations.ndim != 3 or orientations.shape[1:] != (len(parents), 4):
+		raise ValueError("orientations must have shape (instances, bones, 4)")
+	count, bones = orientations.shape[:2]
+	turns = _rotations(orientations, (count, bones, 4), "orientations")
+	angular = np.asarray(angular_velocity, dtype=np.float64)
+	if angular.shape != (count, bones, 3) or not np.isfinite(angular).all():
+		raise ValueError("angular velocity must be finite (instances, bones, 3)")
+	return parents, turns, angular
+
+
+def _rotation_vector(error):
+	error = np.where(error[..., 3:] < 0, -error, error)
+	sine = np.linalg.norm(error[..., :3], axis=-1, keepdims=True)
+	factor = np.divide(2 * np.arctan2(sine, error[..., 3:]), sine, out=np.full_like(sine, 2), where=sine > 1e-8)
+	return error[..., :3] * factor
+
+
+def _joint_reactions(parents, torque, limit):
+	length = np.linalg.norm(torque, axis=-1, keepdims=True)
+	torque = torque * np.minimum(1, np.divide(limit, length, out=np.ones_like(length), where=length > 0))
+	result = np.zeros((len(torque), len(parents), 3), dtype=np.float64)
+	result[:, 1:] = torque
+	# Several joints can react on the same parent; accumulate those contributions.
+	np.add.at(result, (np.arange(len(torque))[:, None], parents[None, 1:]), -torque)
+	return result
+
+
+def joint_spring_torques(parents, orientations, angular_velocity, neutral_rotations, *, stiffness, damping, max_torque):
+	"""Return bounded world-space joint spring reactions as (instances, bones, 3).
+
+	Orientations/velocities are world-space; neutral xyzw rotations are relative
+	to each parent. Gains and each joint's torque cap broadcast to (instances,
+	bones). Stiffness is N m/rad, damping N m s/rad, and the cap N m. The root
+	has no world spring; every child torque has an equal opposite parent torque.
+	"""
+	parents, turns, angular = _joint_state(parents, orientations, angular_velocity)
+	count, bones = turns.shape[:2]
+	neutral = _rotations(np.broadcast_to(neutral_rotations, (count, bones, 4)), (count, bones, 4), "neutral rotations")
+	controls = []
+	for value, name in ((stiffness, "stiffness"), (damping, "damping"), (max_torque, "max torque")):
+		values = np.broadcast_to(np.asarray(value, dtype=np.float64), (count, bones))
+		if not np.isfinite(values).all() or np.any(values < 0): raise ValueError(f"{name} must be finite and nonnegative")
+		controls.append(values[:, 1:, None])
+	stiffness, damping, limit = controls
+	desired = Quaternion.multiply_batch(turns[:, parents[1:]], neutral[:, 1:])
+	error = Quaternion.multiply_batch(desired, turns[:, 1:] * [-1, -1, -1, 1])
+	torque = stiffness * _rotation_vector(error) - damping * (angular[:, 1:] - angular[:, parents[1:]])
+	return _joint_reactions(parents, torque, limit)
+
+
+def ragdoll_limit_parameters(settings):
+	"""Copy authored Bone axes, bend and limits into detached soft-limit parameters.
+
+	Call once per immutable native RagdollSettings asset. No backend is imported;
+	the returned arrays are read-only and can be passed to joint_limit_torques.
+	"""
+	parents = np.array(settings.parents, dtype=np.intp, copy=True)
+	bones = len(parents)
+	rotations = _rotations(settings.rest_rotations, (bones, 4), "rest rotations")
+	translations = np.asarray(settings.rest_translations, dtype=np.float64)
+	first_child = {}
+	for i, parent in enumerate(parents):
+		if parent >= 0: first_child.setdefault(int(parent), i)
+	axes, planes = [], []
+	for i, bone in enumerate(settings.bones):
+		if bone.twist_axis is not None: axis = np.asarray(bone.twist_axis, dtype=np.float64)
+		elif i in first_child: axis = translations[first_child[i]]
+		else:
+			axis = Quaternion.matrix_batch(rotations[i]).T @ translations[i]
+		if bone.twist_axis is None and np.linalg.norm(axis) < 1e-9: axis = np.array([0, 1, 0.0])
+		if axis.shape != (3,) or not np.isfinite(axis).all() or np.linalg.norm(axis) < 1e-8: raise ValueError("twist axis must be a finite nonzero vector")
+		axis = axis / np.linalg.norm(axis)
+		plane = np.cross(axis, (0, 0, 1) if abs(axis[2]) < 0.9 else (1, 0, 0)) if bone.plane_axis is None else np.asarray(bone.plane_axis, dtype=np.float64)
+		if plane.shape != (3,) or not np.isfinite(plane).all(): raise ValueError("plane axis must be a finite vector")
+		plane = plane - axis * np.dot(axis, plane)
+		if np.linalg.norm(plane) < 1e-8: raise ValueError("plane axis must not be parallel to twist axis")
+		axes.append(axis)
+		planes.append(plane / np.linalg.norm(plane))
+	axes, planes = np.asarray(axes), np.asarray(planes)
+	child_frames = Quaternion.from_matrices_batch(np.stack((axes, planes, np.cross(axes, planes)), axis=-1))
+	bend = np.asarray([bone.bend for bone in settings.bones], dtype=np.float64)
+	if not np.isfinite(bend).all(): raise ValueError("bend must be finite")
+	bend_rotations = np.column_stack((np.zeros(bones), np.sin(bend / 2), np.zeros(bones), np.cos(bend / 2)))
+	parent_frames = Quaternion.multiply_batch(Quaternion.multiply_batch(rotations, child_frames), bend_rotations)
+	result = dict(parents=parents, parent_frames=parent_frames, child_frames=child_frames, twist=np.array([bone.twist for bone in settings.bones], dtype=np.float64), swing=np.array([bone.swing for bone in settings.bones], dtype=np.float64))
+	for value in result.values(): value.flags.writeable = False
+	return result
+
+
+def joint_limit_torques(parents, orientations, angular_velocity, parent_frames, child_frames, *, twist, swing, margin, stiffness, damping, max_torque):
+	"""Return progressive swing/twist soft-limit torques, with parent reactions.
+
+	Frames are bone-local xyzw, limits are (min, max) twist and two swing half
+	angles in radians, broadcasting to (instances, bones, 4/2). The comfortable
+	range is inset by margin radians. Outside it, spring magnitude is
+	stiffness * distance**2 / margin; damping opposes only outward motion and
+	fades in across the margin. Gains/cap use the same units as joint springs.
+	"""
+	parents, turns, angular = _joint_state(parents, orientations, angular_velocity)
+	count, bones = turns.shape[:2]
+	frames = [_rotations(np.broadcast_to(value, (count, bones, 4)), (count, bones, 4), name)[:, 1:] for value, name in ((parent_frames, "parent frames"), (child_frames, "child frames"))]
+	parent = Quaternion.multiply_batch(turns[:, parents[1:]], frames[0])
+	child = Quaternion.multiply_batch(turns[:, 1:], frames[1])
+	relative = Quaternion.multiply_batch(parent * [-1, -1, -1, 1], child)
+	relative = np.where(relative[..., 3:] < 0, -relative, relative)
+	limits = [np.broadcast_to(np.asarray(value, dtype=np.float64), (count, bones, 2)) for value in (twist, swing)]
+	twist, swing = limits
+	if not np.isfinite(twist).all() or np.any(twist[..., 0] > twist[..., 1]) or np.any(np.abs(twist) > np.pi + 1e-6): raise ValueError("twist limits must be ordered finite angles in [-pi, pi]")
+	if not np.isfinite(swing).all() or np.any(swing < 0) or np.any(swing > np.pi + 1e-6): raise ValueError("swing half angles must be finite in [0, pi]")
+	twist, swing = np.clip(twist[:, 1:], -np.pi, np.pi), np.clip(swing[:, 1:], 0, np.pi)
+	controls = []
+	for value, name in ((margin, "margin"), (stiffness, "stiffness"), (damping, "damping"), (max_torque, "max torque")):
+		values = np.broadcast_to(np.asarray(value, dtype=np.float64), (count, bones))
+		if not np.isfinite(values).all() or np.any(values < 0) or (name == "margin" and np.any(values == 0)): raise ValueError(f"{name} must be finite and {'positive' if name == 'margin' else 'nonnegative'}")
+		controls.append(values[:, 1:, None])
+	margin, stiffness, damping, limit = controls
+	# q = swing * twist, with twist around constraint X and swing in Y/Z.
+	twist_q = np.zeros_like(relative)
+	length = np.hypot(relative[..., 0], relative[..., 3])
+	twist_q[..., 0] = np.divide(relative[..., 0], length, out=np.zeros_like(length), where=length > 1e-8)
+	twist_q[..., 3] = np.divide(relative[..., 3], length, out=np.ones_like(length), where=length > 1e-8)
+	swing_q = Quaternion.multiply_batch(relative, twist_q * [-1, -1, -1, 1])
+	angle = 2 * np.arctan2(twist_q[..., 0:1], twist_q[..., 3:])
+	midpoint = np.mean(twist, axis=-1, keepdims=True)
+	clamped = np.clip(angle, np.minimum(twist[..., :1] + margin, midpoint), np.maximum(twist[..., 1:] - margin, midpoint))
+	free_twist = (twist[..., :1] <= -np.pi + 1e-6) & (twist[..., 1:] >= np.pi - 1e-6)
+	clamped = np.where(free_twist, angle, clamped)
+	twist_target = np.concatenate((np.sin(clamped / 2), np.zeros(clamped.shape[:-1] + (2,)), np.cos(clamped / 2)), axis=-1)
+	radii = np.where(swing >= np.pi - 1e-6, 1, np.sin(np.maximum(swing - margin, 0) / 2))
+	projected = np.where(radii > 1e-8, swing_q[..., 1:3], 0)
+	radius = np.linalg.norm(np.divide(projected, radii, out=np.zeros_like(projected), where=radii > 1e-8), axis=-1, keepdims=True)
+	projected = projected / np.maximum(radius, 1)
+	swing_target = np.concatenate((np.zeros(projected.shape[:-1] + (1,)), projected, np.sqrt(np.maximum(1 - np.sum(projected**2, axis=-1, keepdims=True), 0))), axis=-1)
+	clamp_swing = (radius > 1) | np.any((radii <= 1e-8) & (np.abs(swing_q[..., 1:3]) > 1e-8), axis=-1, keepdims=True)
+	swing_target = np.where(clamp_swing, swing_target, swing_q)
+	desired = Quaternion.multiply_batch(parent, Quaternion.multiply_batch(swing_target, twist_target))
+	error = _rotation_vector(Quaternion.multiply_batch(desired, child * [-1, -1, -1, 1]))
+	distance = np.linalg.norm(error, axis=-1, keepdims=True)
+	direction = np.divide(error, distance, out=np.zeros_like(error), where=distance > 1e-7)
+	outward_speed = np.maximum(-np.sum((angular[:, 1:] - angular[:, parents[1:]]) * direction, axis=-1, keepdims=True), 0)
+	weight = distance / margin
+	torque = direction * (stiffness * distance * weight + damping * outward_speed * np.minimum(weight, 1))
+	return _joint_reactions(parents, torque, limit)
 
 
 class RagdollAsset:
