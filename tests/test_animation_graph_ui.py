@@ -155,6 +155,71 @@ def test_state_selection_conditions_and_manual_crossfade_use_existing_viewport(w
 	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[2, 0, 0], [2, 1, 0]])
 
 
+def test_blend_state_manual_and_automatic_playback_preserve_layers_and_seek(window):
+	editor = window
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"].update({"amount": 0.25, "upper_weight": 0.5})
+	data["states"]["0: idle"] = {"blend_space": "motion"}
+	data["blend_spaces"] = {"motion": {"parameter": "amount", "points": [{"position": 0, "clip": "0: idle"}, {"position": 1, "clip": "1: walk"}]}}
+	data["sample_slots"].append("upper")
+	data["weight_slots"] = ["upper_weight"]
+	data["masks"] = {"upper_body": {"root": 1}}
+	data["tasks"] += [
+		{"name": "upper", "op": "sample", "slot": "upper"},
+		{"name": "layered", "op": "blend", "base": "output", "overlay": "upper", "weight": "upper_weight", "mask": "upper_body"},
+	]
+	set_draft(editor, data)
+	assert "Compiled draft" in editor.status.get()
+	editor.bindings["upper"].set("2: upper")
+	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[0.5, 0, 0], [0.5, 2, 0]])
+	editor.advance_playback(1.4)
+	assert editor.position == 1.4
+	editor.parameter_entries["advance"].set("1")
+	editor.apply_parameters()
+	editor.fade.set(0.5)
+	np.testing.assert_allclose(editor.joint_model(1.4)[:, :3, 3], [[1.25, 0, 0], [1.25, 2, 0]])
+	editor.automatic.set(True)
+	editor.change_playback()
+	assert editor.position == 1.4
+	editor.advance_playback(0.125)
+	assert editor.playback.target_state == 1
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.25, 0, 0], [1.25, 2, 0]])
+	editor.parameter_entries["amount"].set("0.75")
+	editor.parameter_entries["advance"].set("0")
+	editor.apply_parameters()
+	assert editor.playback.target_state == 1
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.75, 0, 0], [1.75, 2, 0]])
+	editor.advance_playback(0.375)
+	assert editor.state.get() == "1: walk" and editor.position == 0.5
+	editor.pick_state("0: idle")
+	editor.change_time("2.4")
+	assert editor.position == editor.playback.time == 2.4
+	assert editor.playback.target_state is None
+	np.testing.assert_allclose(editor.joint_model(editor.position)[:, :3, 3], [[1.5, 0, 0], [1.5, 2, 0]])
+	graph, playback = editor.graph, editor.playback
+	data["states"]["0: idle"]["blend_space"] = "missing"
+	set_draft(editor, data)
+	assert "states.0: idle.blend_space" in editor.status.get()
+	assert editor.graph is graph and editor.playback is playback
+
+
+def test_blend_state_project_load_restores_compiled_preview(window, tmp_path):
+	editor = window
+	data = json.loads(editor.editor.get("1.0", "end-1c"))
+	data["parameters"]["amount"] = 0.75
+	data["blend_spaces"] = {"motion": {"parameter": "amount", "points": [{"position": 0, "clip": "0: idle"}, {"position": 1, "clip": "1: walk"}]}}
+	data["states"]["0: idle"] = {"blend_space": "motion"}
+	set_draft(editor, data)
+	path = tmp_path / "blend.animation.json"
+	editor.save_project(path)
+	editor.parameter_entries["amount"].set("0")
+	editor.apply_parameters()
+	editor.load_project(path)
+	assert "Loaded graph" in editor.status.get() and editor.definition.data == data
+	assert editor.graph.state_blend_spaces == {0: "motion"}
+	np.testing.assert_allclose(editor.joint_model(0)[:, :3, 3], [[1.5, 0, 0], [1.5, 1, 0]])
+
+
 def test_layer_bindings_parameters_and_validation_keep_last_good_preview(window):
 	editor = window
 	data = json.loads(editor.editor.get("1.0", "end-1c"))

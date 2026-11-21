@@ -202,7 +202,7 @@ Version 1 fields are:
 | --- | --- |
 | `version` | Required integer `1`. |
 | `parameters` | Optional ordered name-to-finite-default mapping. |
-| `states` | Required nonempty ordered mapping of state names to `{"clip": clip_name}`. |
+| `states` | Required nonempty ordered mapping of state names to either `{"clip": clip_name}` or `{"blend_space": named_1d_space}`. Each state has exactly one source. |
 | `initial_state` | Required state name. |
 | `transitions` | Optional ordered list of `{source, target, conditions, duration}` mappings. Conditions are `{parameter, comparison, threshold}` mappings; all must match. Fade durations must fit positive float32 playback storage. |
 | `sample_slots` | Required list of unique sample-slot names, populated by the caller. |
@@ -223,9 +223,12 @@ Unknown fields and unsupported operations fail rather than being ignored.
 
 Insertion order determines IDs and columns within a compiled result. Use
 `graph.state_ids`, `clip_ids`, `parameter_columns`, `sample_slots` and
-`root_motion_slots` to bind application data. `state_clips` feeds
-`EcsAnimationStateAdapter`; `graph.clips` maps compiled clip IDs to the original
-shared `Clip` objects. All supplied clips must match the skeleton's bone count;
+`root_motion_slots` to bind application data. `state_clips` contains only clip
+states and feeds `EcsAnimationStateAdapter` for clip-only graphs.
+`state_blend_spaces` maps blend-state IDs to names in `graph.blend_spaces`;
+the existing ECS state adapter does not play these states. `graph.clips` maps
+compiled clip IDs to the original shared `Clip` objects. All supplied clips must
+match the skeleton's bone count;
 the caller must also ensure matching bone order. Compiled metadata is read-only.
 
 Initialize parameter rows with `np.tile(graph.parameter_defaults, (count, 1))`
@@ -234,6 +237,13 @@ sample and motion slots in their compiled order, then call
 `graph.plan.evaluate(graph.clips, samples, parameters[:, graph.weight_columns], ...)`.
 That output uses the existing model/skin matrix and material-palette path.
 Compiled plans own reusable pose buffers with the usual `PosePlan` lifetime.
+For externally composed state poses, `graph.input_plan` has the same authored
+operations with sample tasks replaced by `PoseOp.INPUT`. Supply local TRS tuples
+in sample-slot order through `poses=...`, and pass an empty sample list:
+`graph.input_plan.evaluate(graph.clips, (), weights, poses=local_poses, ...)`.
+This lets a controller blend each state's selected clip pair, crossfade the two
+state poses, then apply the authored masks, in-place operations and additive
+layers. Both plans own separate reusable buffers.
 See [animation_graph_example.py](../scenes/animation_graph_example.py) for an ECS
 locomotion controller and an independent masked upper-body layer compiled from
 one definition.
@@ -275,13 +285,15 @@ IDs in `graph.sync_mappings`. Pass that same mapping to both
 must loop. For editable tracks, compile from `EventTimeline.snapshot()[1]` so
 subsequent edits stay separate from the existing runtime mapping.
 
-This first authoring version supports single-clip states, named 1D/2D blend-space
+This authoring version supports single-clip and named 1D blend states, 1D/2D blend-space
 sample bindings, in-place root anchoring, masked blend/additive layers and
-clip-pair sync settings. Blend-space states and IK/phase authoring
+clip-pair sync settings. 2D blend states and IK/phase authoring
 are not yet represented. The
 [graph tool](../tools/animation_graph.md) provides a definition editor,
 transition/condition forms, state diagram, manual layered-pose inspection and
-automatic single-clip state playback using this API. The standalone tools share
+automatic clip/1D blend-state playback using this API. Blend states use a shared
+seconds clock with independent clip looping; blend-state synchronization and ECS
+graph playback remain application-owned. The standalone tools share
 explicit [JSON project persistence](../tools/animation_project.md) for graph
 definitions, events and sync markers. Runtime
 blend-space, sync and IK APIs remain available for application-owned composition.

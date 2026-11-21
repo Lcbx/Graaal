@@ -93,6 +93,42 @@ def test_named_blend_space_selects_runtime_pairs_for_existing_pose_plan():
 	with pytest.raises(ValueError, match="blend-space column"): space.select([0.5])
 
 
+@pytest.mark.parametrize("op", [PoseOp.BLEND, PoseOp.ADDITIVE])
+def test_blend_states_compile_separate_bindings_and_pose_input_plan(op):
+	rig, clips = resources()
+	data = definition()
+	data["tasks"][-1]["op"] = op
+	data["blend_spaces"] = {"motion": {"parameter": "speed", "points": [{"position": 0, "clip": "idle"}, {"position": 1, "clip": "walk"}]}}
+	data["states"]["walk"] = {"blend_space": "motion"}
+	draft = AnimationGraphDefinition(data)
+	graph = draft.compile(rig, clips)
+	assert graph.state_clips == {0: 0} and graph.state_blend_spaces == {1: "motion"}
+	with pytest.raises(TypeError): graph.state_blend_spaces[1] = "other"
+	local = [sample_clip_pairs(rig, graph.clips, *sample) for sample in samples(graph)]
+	expected = tuple(value.copy() for value in evaluate(graph))
+	actual = graph.input_plan.evaluate(graph.clips, (), [[0.5]], poses=local, root_motions=[(None, np.array([False]))])
+	for value, reference in zip(actual, expected): np.testing.assert_allclose(value, reference)
+	# Both compiled plans retain their own reusable output storage.
+	evaluate(graph)
+	for value, reference in zip(actual, expected): np.testing.assert_array_equal(value, reference)
+	draft.data["states"]["walk"]["blend_space"] = "missing"
+	with pytest.raises(ValueError, match=r"states.walk.blend_space"): draft.compile(rig, clips)
+	assert graph.state_blend_spaces[1] == "motion"
+
+
+@pytest.mark.parametrize("state,error", [
+	({}, "states.walk"),
+	({"blend_space": "missing"}, "states.walk.blend_space"),
+	({"blend_space": {}}, "states.walk.blend_space"),
+	({"clip": "walk", "blend_space": "motion"}, "states.walk.blend_space"),
+	({"blend_space_2d": "motion"}, "states.walk.blend_space_2d"),
+])
+def test_invalid_blend_state_reports_its_field(state, error):
+	data = definition()
+	data["states"]["walk"] = state
+	with pytest.raises(ValueError, match=error): AnimationGraphDefinition(data).compile(*resources())
+
+
 @pytest.mark.parametrize("value,match", [
 	({"parameter": "missing", "points": [{"position": 0, "clip": "idle"}]}, "parameter"),
 	({"parameter": "speed", "points": []}, "points"),

@@ -5,8 +5,8 @@ import pytest
 
 from graaal.Animation.AnimationEvents import EventTrack
 from graaal.Animation.AnimationGraph import AnimationGraphDefinition
-from graaal.Animation.SkeletalAnimation import Clip, Skeleton
-from tools.animation_graph_playback import GraphPlayback
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, blend_poses, sample_clip_pairs
+from tools.animation_graph_playback import GraphPlayback, state_sample
 
 
 def graph(*, sync=False, duration=0.25, static=False):
@@ -138,3 +138,104 @@ def test_invalid_updates_preserve_active_transition(dt, parameters):
 	before = player.__dict__.copy()
 	with pytest.raises(ValueError): player.advance(dt, parameters)
 	assert player.__dict__ == before
+
+
+def blend_graph(initial="idle", *, static=False, sync=False):
+	base = graph()
+	clips = {}
+	for name, clip, axis in zip(("idle", "walk", "other"), base.clips.values(), np.eye(3)):
+		rotation = np.tile(np.r_[axis * np.sin(0.9), np.cos(0.9)], (2, 1, 1))
+		clips[name] = Clip(clip.translation, rotation, clip.scale, fps=2 / 3 if name == "idle" else clip.fps)
+	if static: clips = {name: Clip(clip.translation[:1], clip.rotation[:1], clip.scale[:1]) for name, clip in clips.items()}
+	data = {
+		"version": 1, "parameters": {"move": 0, "amount": 0.5},
+		"states": {"idle": {"clip": "idle"}, "motion": {"blend_space": "motion"}, "other": {"blend_space": "other"}},
+		"blend_spaces": {name: {"parameter": "amount", "points": [{"position": 0, "clip": a}, {"position": 1, "clip": b}]} for name, a, b in (("motion", "idle", "walk"), ("other", "walk", "other"))},
+		"initial_state": initial,
+		"transitions": [
+			{"source": "idle", "target": "motion", "conditions": [{"parameter": "move", "comparison": ">", "threshold": 0}], "duration": 0.25},
+			{"source": "motion", "target": "other", "conditions": [{"parameter": "move", "comparison": "<", "threshold": 0}], "duration": 0.5},
+			{"source": "other", "target": "idle", "conditions": [{"parameter": "move", "comparison": "==", "threshold": 0}], "duration": 0.25},
+		],
+		"sample_slots": ["base"], "tasks": [{"name": "output", "op": "sample", "slot": "base"}],
+	}
+	tracks = None
+	if sync:
+		data["sync_mappings"] = [{"source": "idle", "target": "walk"}]
+		tracks = {name: EventTrack(clips[name].duration, [0, right], ["left", "right"]) for name, right in (("idle", 0.5), ("walk", 1.25))}
+	return AnimationGraphDefinition(data).compile(base.plan.skeleton, clips, sync_tracks=tracks)
+
+
+def test_clip_to_blend_fade_evaluates_nested_local_poses_and_live_parameters():
+	compiled = blend_graph()
+	player = GraphPlayback(compiled)
+	player.reset(time=0.7)
+	player.advance(0.125, [1, 0.25])
+	base = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[0, 0]], [[0.825, 0.825]], [[1, 0]])
+	target = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[0, 1]], [[0.125, 0.125]], [[0.75, 0.25]])
+	expected = blend_poses(compiled.plan.skeleton, base, target, [0.5])
+	before = player.pose([1, 0.25])
+	for actual, reference in zip(before, expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	# Parameter changes affect the blend while preserving the selected transition.
+	changed = player.pose([-1, 1])
+	assert player.state == 0 and player.target_state == 1 and not np.allclose(changed[1], before[1])
+	player.advance(0.375, [-1, 1])
+	assert player.state == 1 and player.target_state is None and player.time == 0.5
+	np.testing.assert_allclose(player.pose([-1, 1])[0], [[[4.5, 0, 0]]])
+	for actual, reference in zip(before, expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	with pytest.raises(ValueError, match="pose"): player.sample()
+
+
+def test_blend_to_blend_and_clip_fades_preserve_independent_clocks():
+	compiled = blend_graph("motion")
+	player = GraphPlayback(compiled)
+	player.reset(time=2.75)
+	player.advance(0.25, [-1, 0.5])
+	assert player.state == 1 and player.target_state == 2 and player.time == 3 and player.target_time == 0.25
+	base = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[0, 1]], [[0, 1]], [[0.5, 0.5]])
+	target = sample_clip_pairs(compiled.plan.skeleton, compiled.clips, [[1, 2]], [[0.25, 0.25]], [[0.5, 0.5]])
+	expected = blend_poses(compiled.plan.skeleton, base, target, [0.5])
+	for actual, reference in zip(player.pose([-1, 0.5]), expected): np.testing.assert_allclose(actual, reference, atol=1e-6)
+	player.advance(0.5, [0, 0.5])
+	assert player.state == 2 and player.target_state is None and player.time == 0.75
+	player.advance(0.125, [0, 0.5])
+	assert player.target_state == 0 and player.target_time == 0.125
+	player.advance(0.375, [0, 0.5])
+	assert player.state == 0 and player.target_state is None and player.time == 0.5
+
+
+def test_blend_clock_does_not_restart_other_clips_at_a_loop_or_parameter_change():
+	compiled = blend_graph("motion")
+	player = GraphPlayback(compiled)
+	player.reset(time=1.9)
+	player.advance(0.2, [0, 0.5])
+	np.testing.assert_allclose(player.time, 2.1)
+	np.testing.assert_allclose(state_sample(compiled, 1, player.time, [0, 0.5])[1], [[0.6, 0.1]])
+	player.advance(0.25, [0, 1])
+	np.testing.assert_allclose(state_sample(compiled, 1, player.time, [0, 1])[1], [[0.85, 0.35]])
+	player.reset(1, 5.5)
+	assert player.time == 5.5 and player.speed == 1
+	np.testing.assert_allclose(state_sample(compiled, 1, player.time, [0, -5])[2], [[1, 0]])
+	np.testing.assert_allclose(state_sample(compiled, 1, player.time, [0, 5])[2], [[0, 1]])
+
+
+def test_static_blend_states_complete_fades_and_reject_invalid_updates_atomically():
+	player = GraphPlayback(blend_graph(static=True))
+	player.advance(0.125, [1, 0.5])
+	np.testing.assert_allclose(player.pose([1, 0.5])[0], [[[1, 0, 0]]])
+	before = player.__dict__.copy()
+	for dt, parameters in ((-1, [1, 0.5]), (0.1, [1]), (0.1, [np.nan, 0])):
+		with pytest.raises(ValueError): player.advance(dt, parameters)
+		assert player.__dict__ == before
+	player.advance(0.125, [1, 0.5])
+	assert player.state == 1 and player.target_state is None and player.time == 0.25
+	np.testing.assert_allclose(player.pose([1, 0.5])[0], [[[2, 0, 0]]])
+
+
+def test_clip_sync_mapping_does_not_retime_a_blend_state():
+	player = GraphPlayback(blend_graph(sync=True))
+	player.reset(time=0.5)
+	player.advance(0.125, [1, 1])
+	assert player.target_time == 0.125 and player.target_speed == 1
+	player.advance(0.375, [1, 1])
+	assert player.state == 1 and player.time == 0.5 and player.speed == 1

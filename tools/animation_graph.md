@@ -46,7 +46,7 @@ to inspect the first matching transition and its configured duration. The
 promoting the target state.
 
 Enable **Automatic state playback**, apply parameters and choose **Play** to run
-the compiled single-clip states. The first matching rule starts a fade using its
+the compiled clip and 1D blend states. The first matching rule starts a fade using its
 configured duration. Its target starts at time zero, or at the corresponding
 marker phase when a sync mapping exists. Both clips advance during the fade;
 completion promotes the target with its current time and speed. Applied parameter
@@ -61,6 +61,30 @@ the fade at the displayed source time and restores unit speed. The manual weight
 slider is disabled in automatic mode. All preview clips loop, including targets
 after promotion; marker synchronization ends when the fade completes, retaining
 the target speed at that endpoint. Static clips can still transition.
+
+To use a named 1D blend as a state, replace that state's `clip` entry in JSON:
+
+```json
+"states": {
+  "idle": {"clip": "1: 1_idle"},
+  "moving": {"blend_space": "locomotion"}
+}
+```
+
+Define `locomotion` in `blend_spaces` as shown below, then compile. State/transition
+bindings evaluate its pair from the applied parameters in both manual and
+automatic modes. During a fade, each state's clip pair is blended first, then
+the state poses are crossfaded before authored masks and additive layers.
+Parameter changes update active blend weights without restarting clocks or fades.
+
+A blend state's clock measures elapsed seconds and remains unwrapped; each
+selected clip loops at its own duration. This preserves clip clocks when the
+selected pair changes or clips have unequal durations. Static clips sample time
+zero. The clip dropdown shows the state's first blend point as the representative
+asset for the viewport. Marker synchronization applies only between two clip
+states; blend states use independent source/target clocks during fades. 2D blend
+states and synchronization within a blend space remain future work. These state
+definitions also round-trip through JSON project saves.
 
 Sample slots can use the state/transition pair or a specific clip, allowing
 independent masked override and additive layers defined in the draft. Other
