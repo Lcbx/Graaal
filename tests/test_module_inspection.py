@@ -376,9 +376,10 @@ def test_cli_loads_qualified_package_names_from_another_directory(package, tmp_p
 	result = cli(*args, cwd=tmp_path)
 	assert result.returncode == 0, result.stderr
 	assert "class Public:" in result.stdout
-	assert ("sample_package module" in result.stdout) == (target != "file")
-	assert ("sample_package.api module" in result.stdout) == (target != "init" or recursive)
-	assert ("sample_package.nested.api module" in result.stdout) == recursive
+	lines = result.stdout.splitlines()
+	assert ("# module: sample_package" in lines) == (target != "file")
+	assert ("# module: sample_package.api" in lines) == (target != "init" or recursive)
+	assert ("# module: sample_package.nested.api" in lines) == recursive
 	assert "Package documentation." not in result.stdout
 
 
@@ -392,7 +393,7 @@ def test_cli_loose_module_directory_recursive_and_output(tmp_path):
 	assert result.returncode == 0, result.stderr
 	assert result.stdout == ""
 	text = output.read_text(encoding="utf-8")
-	assert "api module" in text and "nested.api module" in text
+	assert "# module: api" in text.splitlines() and "# module: nested.api" in text.splitlines()
 	assert "def first():" in text and "def second():" in text
 
 

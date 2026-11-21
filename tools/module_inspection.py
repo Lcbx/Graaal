@@ -427,14 +427,7 @@ def dump_module(
 	nodes, comments = _source_info(module) if include_comments else ({}, {})
 
 	module_name = module.__name__
-	title = f" {module_name} module "
-	lpad = (80 - len(title)) //2
-	rpad = (80 - len(title) - lpad)
-	out = [
-		'#' * 80,
-		f"{'#' * lpad}{title}{'#' * rpad}",
-		""
-	]
+	out = [f"# module: {module_name}", ""]
 
 	if include_docstrings:
 		_emit_doc(out, module, "")
