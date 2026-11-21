@@ -177,6 +177,94 @@ def test_invalid_and_empty_filters(module):
 	assert not ast.parse(dump_module(module, only=set(), include_docstrings=False)).body
 
 
+@pytest.mark.parametrize("pattern,names", [
+	("run", {"run"}),
+	("meth*", {"Item", "method"}),
+	("*method", {"Item", "method", "Nested", "nested_method"}),
+	("Item.Nested", {"Item", "Nested", "nested_method"}),
+	("inspection_fixture.Item.method", {"Item", "method"}),
+	("label", {"label"}),
+	("pending", {"pending"}),
+	("Item.field", {"Item", "field"}),
+	("Item.text", {"Item", "text"}),
+	("PublicAlias", {"PublicAlias"}),
+	("item", {"item"}),
+	("RUN", set()),
+	("missing*", set()),
+])
+def test_name_globs_filter_declarations_and_keep_containing_classes(module, pattern, names):
+	text = dump_module(module, name_filter=pattern, include_docstrings=False)
+	actual = set()
+	for node in ast.walk(ast.parse(text)):
+		if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+			actual.add(node.name)
+		elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+			actual.add(node.id)
+	assert actual == names
+
+
+@pytest.mark.parametrize("options", [{"name_filter": "*"}, {"regex": ""}])
+def test_match_all_preserves_default_output(module, options):
+	assert dump_module(module, **options) == dump_module(module)
+
+
+@pytest.mark.parametrize("pattern,names", [
+	(r"^run$", {"run"}),
+	(r"method$", {"Item", "method", "Nested", "nested_method"}),
+	(r"^Item\.method$", {"Item", "method"}),
+	(r"^inspection_fixture\.Item\.method$", {"Item", "method"}),
+	(r"^(run|conditional)$", {"run", "conditional"}),
+])
+def test_regex_search_matches_bare_and_qualified_names(module, pattern, names):
+	text = dump_module(module, regex=pattern, include_docstrings=False)
+	actual = {node.name for node in ast.walk(ast.parse(text)) if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))}
+	assert actual == names
+
+
+def test_matching_class_includes_members_and_respects_kind_selection(module):
+	text = dump_module(module, name_filter="Item", only={"classes", "methods"}, include_docstrings=False)
+	assert "class Item(" in text and "class Nested:" in text
+	assert "def method(" in text and "def nested_method(" in text
+	assert "@staticmethod" in text and "@classmethod" in text
+	assert "def __init__(" in text
+	assert "@property" not in text and "field:" not in text
+	assert "class Parent:" not in text and "class Empty:" not in text
+	assert "class PublicAlias:" not in text
+	assert "def run(" not in text
+
+
+def test_matching_property_includes_accessors_and_filters_metadata(module):
+	text = dump_module(module, name_filter="Item.value", source_ranges=True)
+	assert "class Item(" in text
+	assert all(f"@{decorator}" in text for decorator in ("property", "value.setter", "value.deleter"))
+	assert text.count("# source:") == 4
+	assert "# Getter comment." in text and "# Setter comment." in text and "# Deleter comment." in text
+	assert "# Function comment." not in text and "# Method comment." not in text
+	assert "def method(" not in text and "class Nested:" not in text
+	assert not ast.parse(dump_module(module, name_filter="Item.value", only={"methods"}, include_docstrings=False)).body
+
+
+def test_definition_filters_do_not_filter_imports(module):
+	text = dump_module(module, name_filter="missing*", include_imports=True, source_ranges=True, include_docstrings=False)
+	assert [ast.unparse(node) for node in ast.parse(text).body] == ["from pathlib import Path", "from math import sin"]
+	assert "# source:" not in text and "comment." not in text
+
+
+def test_name_filters_respect_visibility_and_exported_aliases(module):
+	assert not ast.parse(dump_module(module, name_filter="_private", include_docstrings=False)).body
+	module.__all__ = ["_private", "PublicAlias"]
+	assert "_private = 1" in dump_module(module, name_filter="_private")
+	assert "class PublicAlias:" in dump_module(module, name_filter="PublicAlias")
+	assert "class PublicAlias:" not in dump_module(module, name_filter="_Internal")
+
+
+def test_invalid_name_filters_are_rejected(module):
+	with pytest.raises(ValueError, match="Invalid regex"):
+		dump_module(module, regex="[")
+	with pytest.raises(ValueError, match="Use either name_filter or regex"):
+		dump_module(module, name_filter="*", regex=".*")
+
+
 def test_imports_are_opt_in_and_independent_of_member_filters(module):
 	assert "from pathlib import Path" not in dump_module(module)
 	text = dump_module(module, include_imports=True, only={"classes"}, include_docstrings=False, include_comments=False)
@@ -225,6 +313,43 @@ def test_import_listing_without_available_source():
 	module = ModuleType("dynamic_api")
 	module.dependency = sys
 	assert not ast.parse(dump_module(module, only={"imports"}, include_docstrings=False)).body
+
+
+@pytest.mark.parametrize("comments", [True, False])
+def test_source_ranges_cover_classes_callables_decorators_and_accessors(module, comments):
+	assert "# source:" not in dump_module(module)
+	text = dump_module(module, source_ranges=True, include_comments=comments, include_docstrings=False)
+	filename = Path(module.__file__).resolve().as_posix()
+	lines = SOURCE.splitlines()
+	cases = [
+		("", "class Item(Parent):", "class Item(Parent):", "\t\tdef nested_method(self): pass"),
+		("", "async def run", "async def run(value: int = 1, /, *, enabled: bool = True) -> str:", '\traise AssertionError("Function bodies must not run")'),
+		("\t", "def method", "\tdef method(self, value: int) -> int:", '\t\traise AssertionError("Method bodies must not run")'),
+		("\t", "@staticmethod\n\tdef create", "\t@staticmethod", "\tdef create(value: int): pass"),
+		("\t", "@classmethod\n\tdef factory", "\t@classmethod", "\tdef factory(cls): pass"),
+		("\t", "@property\n\tdef value", "\t@property", '\t\traise AssertionError("Properties must not run")'),
+		("\t", "@value.setter\n\tdef value", "\t@value.setter", "\tdef value(self, value: int): pass"),
+		("\t", "@value.deleter\n\tdef value", "\t@value.deleter", "\tdef value(self): pass"),
+		("\t", "class Nested:", "\tclass Nested:", "\t\tdef nested_method(self): pass"),
+		("\t\t", "def nested_method", "\t\tdef nested_method(self): pass", "\t\tdef nested_method(self): pass"),
+		("", "class PublicAlias:", "class _Internal: pass", "class _Internal: pass"),
+	]
+	for indent, declaration, first_line, last_line in cases:
+		first = lines.index(first_line) + 1
+		last = lines.index(last_line, first - 1) + 1
+		assert f"{indent}# source: {filename}:{first}-{last}\n{indent}{declaration}" in text
+	assert ("# Getter comment." in text) == comments
+	ast.parse(text)
+
+
+def test_source_ranges_are_omitted_when_source_is_unavailable(module):
+	module.__all__ = ["sin"]
+	text = dump_module(module, source_ranges=True, include_docstrings=False)
+	assert "def sin(" in text and "# source:" not in text
+	dynamic = ModuleType("dynamic_definitions")
+	exec("def function(): pass", dynamic.__dict__)
+	text = dump_module(dynamic, source_ranges=True)
+	assert "def function():" in text and "# source:" not in text
 
 
 @pytest.fixture
@@ -280,6 +405,77 @@ def test_cli_import_listing_and_recursive_relative_imports(package, tmp_path, im
 	assert "from .api import Public" in result.stdout
 	assert "from ..api import Public" in result.stdout
 	assert ("class Public:" in result.stdout) == (not imports_only)
+
+
+def test_cli_source_ranges_use_definition_file_for_reexports(package, tmp_path):
+	result = cli(package / "__init__.py", "--source-ranges", "--only", "classes", "methods", "--no-comments", "--no-docstrings", cwd=tmp_path)
+	assert result.returncode == 0, result.stderr
+	filename = (package / "api.py").resolve().as_posix()
+	assert f"# source: {filename}:1-2\nclass Public:" in result.stdout
+	assert f"\t# source: {filename}:2-2\n\tdef method(self):" in result.stdout
+	assert f"# source: {(package / '__init__.py').resolve().as_posix()}" not in result.stdout
+
+
+@pytest.mark.parametrize("flag,pattern", [("--filter", "Public.met*"), ("--regex", r"^Public\.method$")])
+def test_cli_definition_filters_work_recursively_with_ranges(package, tmp_path, flag, pattern):
+	result = cli(package, "-r", flag, pattern, "--source-ranges", "--only", "methods", "--no-comments", "--no-docstrings", cwd=tmp_path)
+	assert result.returncode == 0, result.stderr
+	assert "class Public:" in result.stdout and "def method(self):" in result.stdout
+	assert "class NestedPublic" not in result.stdout
+	assert f"# source: {(package / 'api.py').resolve().as_posix()}:2-2" in result.stdout
+
+
+@pytest.mark.parametrize("args,message", [(["--regex", "["], "Invalid regex"), (["--filter", "*", "--regex", ".*"], "not allowed with argument")])
+def test_cli_rejects_invalid_filters_before_importing(tmp_path, args, message):
+	path = tmp_path / "should_not_import.py"
+	path.write_text("raise AssertionError('Must not import')\n", encoding="utf-8")
+	result = cli(path, *args, cwd=tmp_path)
+	assert result.returncode == 2
+	assert message in result.stderr
+	assert "Must not import" not in result.stderr and "Traceback" not in result.stderr
+
+
+def test_source_ranges_unwrap_decorated_functions_across_modules(package, tmp_path):
+	(package / "wrappers.py").write_text('''from functools import wraps
+def traced(function):
+	@wraps(function)
+	def wrapper(*args, **kwargs):
+		return function(*args, **kwargs)
+	return wrapper
+''', encoding="utf-8")
+	path = package / "decorated.py"
+	path.write_text('''from .wrappers import traced
+@traced
+def operation(
+	value: int,
+):
+	return value
+
+# Trailing comments are outside the range.
+''', encoding="utf-8")
+	result = cli(path, "--source-ranges", "--only", "functions", "--no-docstrings", cwd=tmp_path)
+	assert result.returncode == 0, result.stderr
+	assert f"# source: {path.resolve().as_posix()}:2-6\ndef operation" in result.stdout
+	assert "wrappers.py:" not in result.stdout
+
+
+def test_source_ranges_preserve_multiline_strings_in_nested_definitions(package, tmp_path):
+	path = package / "text.py"
+	path.write_text('''def identity(cls): return cls
+@identity
+class Text:
+	@staticmethod
+	def render():
+		"""Example:
+no indentation
+"""
+		return 1
+''', encoding="utf-8")
+	result = cli(path, "--source-ranges", "--only", "classes", "methods", "--no-docstrings", cwd=tmp_path)
+	assert result.returncode == 0, result.stderr
+	filename = path.resolve().as_posix()
+	assert f"# source: {filename}:2-9\nclass Text:" in result.stdout
+	assert f"\t# source: {filename}:4-9\n\t@staticmethod\n\tdef render():" in result.stdout
 
 
 @pytest.mark.parametrize("case,message", [("missing", "Path does not exist"), ("extension", "Expected a Python file"), ("import", "Cannot import"), ("output", "Cannot write")])

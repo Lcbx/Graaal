@@ -7,7 +7,10 @@ import ast
 import importlib
 import inspect
 import io
+import re
 import tokenize
+from collections.abc import Callable
+from fnmatch import fnmatchcase
 from pathlib import Path
 from types import ModuleType, UnionType
 from typing import get_origin
@@ -15,6 +18,21 @@ from typing import get_origin
 
 MEMBER_KINDS = frozenset({"classes", "functions", "methods", "properties", "attributes", "imports"})
 DEFAULT_MEMBER_KINDS = MEMBER_KINDS - {"imports"}
+
+
+def _name_matcher(module_name: str, name_filter: str | None, regex: str | None) -> Callable[[tuple[str, ...]], bool] | None:
+	if name_filter is not None and regex is not None:
+		raise ValueError("Use either name_filter or regex, not both")
+	if regex is not None:
+		try:
+			match = re.compile(regex).search
+		except re.error as error:
+			raise ValueError(f"Invalid regex: {error}") from error
+	elif name_filter is not None:
+		match = lambda name: fnmatchcase(name, name_filter)
+	else:
+		return None
+	return lambda path: any(match(name) for name in (path[-1], ".".join(path), ".".join((module_name, *path))))
 
 
 def _doc(obj: object) -> str | None:
@@ -178,6 +196,30 @@ def _emit_doc(out: list[str], obj: object, indent: str) -> None:
 		out.extend(_doc_lines(doc, indent))
 
 
+def _emit_source_range(out: list[str], obj: object, indent: str) -> None:
+	try:
+		obj = inspect.unwrap(obj)
+		filename = inspect.getsourcefile(obj)
+		if filename is None:
+			return
+		lines, start = inspect.getsourcelines(obj)
+		if lines[0][:1].isspace():
+			# Preserve indentation inside multiline strings in nested definitions.
+			tree = ast.parse("if True:\n" + "".join(lines))
+			body = tree.body[0].body
+			start -= 1
+		else:
+			body = ast.parse("".join(lines)).body
+	except (OSError, TypeError, ValueError, SyntaxError):
+		return
+	for node in body:
+		if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+			first = start + _node_start(node) - 1
+			last = start + node.end_lineno - 1
+			out.append(f"{indent}# source: {Path(filename).resolve().as_posix()}:{first}-{last}")
+			return
+
+
 def _emit_attribute(
 	out: list[str],
 	name: str,
@@ -216,8 +258,11 @@ def _emit_function(
 	decorator: str | None = None,
 	*,
 	include_docstrings: bool = True,
+	source_ranges: bool = False,
 ) -> None:
 	_emit_comments(out, path, nodes, comments, indent)
+	if source_ranges:
+		_emit_source_range(out, obj, indent)
 
 	if decorator is not None:
 		out.append(f"{indent}@{decorator}")
@@ -242,13 +287,19 @@ def _emit_class(
 	only: frozenset[str] = DEFAULT_MEMBER_KINDS,
 	include_docstrings: bool = True,
 	ancestors: tuple[type, ...] = (),
+	source_ranges: bool = False,
+	matches: Callable[[tuple[str, ...]], bool] | None = None,
 ) -> None:
 	if cls in ancestors:
 		return
 	ancestors += (cls,)
+	class_matches = matches is None or matches(path)
+	child_matches = None if class_matches else matches
 	ast_path = ast_path or path
 	class_start = len(out)
 	_emit_comments(out, ast_path, nodes, comments, indent)
+	if source_ranges:
+		_emit_source_range(out, cls, indent)
 
 	class_name = name or cls.__name__
 	bases = [base.__qualname__ for base in cls.__bases__ if base is not object]
@@ -267,6 +318,8 @@ def _emit_class(
 
 	for attr_name, annotation in annotations.items():
 		if attr_name.startswith("_") or "attributes" not in only:
+			continue
+		if child_matches is not None and not child_matches(path + (attr_name,)):
 			continue
 
 		child_ast_path = ast_path + (attr_name,)
@@ -288,18 +341,21 @@ def _emit_class(
 		child_path = path + (attr_name,)
 		child_ast_path = ast_path + (attr_name,)
 
+		if not inspect.isclass(raw) and child_matches is not None and not child_matches(child_path):
+			continue
+
 		if isinstance(raw, staticmethod) and "methods" in only:
 			_emit_function(
 				out, attr_name, raw.__func__, child_ast_path, nodes, comments,
 				child_indent, "staticmethod",
-				include_docstrings=include_docstrings,
+				include_docstrings=include_docstrings, source_ranges=source_ranges,
 			)
 
 		elif isinstance(raw, classmethod) and "methods" in only:
 			_emit_function(
 				out, attr_name, raw.__func__, child_ast_path, nodes, comments,
 				child_indent, "classmethod",
-				include_docstrings=include_docstrings,
+				include_docstrings=include_docstrings, source_ranges=source_ranges,
 			)
 
 		elif isinstance(raw, property):
@@ -312,27 +368,28 @@ def _emit_class(
 				accessor_path = child_ast_path if decorator == "property" else child_ast_path + (decorator.rsplit(".", 1)[1],)
 				_emit_function(
 					out, attr_name, accessor, accessor_path, nodes, comments,
-					child_indent, decorator, include_docstrings=include_docstrings,
+					child_indent, decorator, include_docstrings=include_docstrings, source_ranges=source_ranges,
 				)
 
 		elif inspect.isroutine(raw):
 			if "methods" in only:
 				_emit_function(
 					out, attr_name, raw, child_ast_path, nodes, comments, child_indent,
-					include_docstrings=include_docstrings,
+					include_docstrings=include_docstrings, source_ranges=source_ranges,
 				)
 
 		elif inspect.isclass(raw):
 			_emit_class(
 				out, raw, child_path, nodes, comments, child_indent, name=attr_name,
 				ast_path=child_ast_path, only=only, include_docstrings=include_docstrings, ancestors=ancestors,
+				source_ranges=source_ranges, matches=child_matches,
 			)
 
 		elif not isinstance(raw, (staticmethod, classmethod)) and "attributes" in only and attr_name not in emitted_attributes and not attr_name.startswith("_"):
 			_emit_comments(out, child_ast_path, nodes, comments, child_indent)
 			_emit_attribute(out, attr_name, raw, None, child_indent)
 
-	if "classes" not in only and len(out) == members_start:
+	if ("classes" not in only or not class_matches) and len(out) == members_start:
 		del out[class_start:]
 	elif len(out) == body_start:
 		out.append(child_indent + "...")
@@ -345,6 +402,9 @@ def dump_module(
 	include_docstrings: bool = True,
 	only: frozenset[str] | None = None,
 	include_imports: bool = False,
+	source_ranges: bool = False,
+	name_filter: str | None = None,
+	regex: str | None = None,
 ) -> str:
 	"""Return public declarations; classes contain only selected member kinds.
 
@@ -353,7 +413,12 @@ def dump_module(
 	are shown, including ``__init__``. Classes remain as containers when selecting
 	methods, properties or class attributes. Optional imports are collected from
 	source, including conditional and local imports, independently of exports.
+	``source_ranges`` adds source locations for classes and callables when available.
+	Name filters match exported names, class-qualified names or module-qualified
+	names. Matching classes include their selected members; matching members keep
+	their containing classes. Imports are independent of definition name filters.
 	"""
+	matches = _name_matcher(module.__name__, name_filter, regex)
 	only = DEFAULT_MEMBER_KINDS if only is None else frozenset(only)
 	if include_imports:
 		only |= {"imports"}
@@ -397,19 +462,21 @@ def dump_module(
 
 		path = (name,)
 		member_start = len(out)
+		if not inspect.isclass(value) and matches is not None and not matches(path):
+			continue
 
 		if inspect.isclass(value):
 			if exports is None and value.__module__ != module_name:
 				continue
 			_emit_class(
 				out, value, path, nodes, comments, name=name, ast_path=tuple(value.__qualname__.split(".")),
-				only=only, include_docstrings=include_docstrings,
+				only=only, include_docstrings=include_docstrings, source_ranges=source_ranges, matches=matches,
 			)
 
 		elif inspect.isroutine(value):
 			if "functions" not in only or (exports is None and getattr(value, "__module__", None) != module_name):
 				continue
-			_emit_function(out, name, value, (value.__name__,), nodes, comments, include_docstrings=include_docstrings)
+			_emit_function(out, name, value, (value.__name__,), nodes, comments, include_docstrings=include_docstrings, source_ranges=source_ranges)
 
 		elif "attributes" in only:
 			_emit_comments(out, path, nodes, comments, "")
@@ -421,6 +488,8 @@ def dump_module(
 
 	for name, annotation in annotations.items():
 		if "attributes" in only and public(name) and name not in emitted and name not in module.__dict__:
+			if matches is not None and not matches((name,)):
+				continue
 			_emit_comments(out, (name,), nodes, comments, "")
 			out.append(f"{name}: {_annotation(annotation)}")
 			out.append("")
@@ -436,8 +505,16 @@ def main(argv: list[str] | None = None) -> None:
 	parser.add_argument("--no-comments", action="store_true", help="Omit comments preceding declarations")
 	parser.add_argument("--no-docstrings", action="store_true", help="Omit module, class and callable docstrings")
 	parser.add_argument("--include-imports", action="store_true", help="Include source import statements, including conditional and local imports")
+	parser.add_argument("--source-ranges", action="store_true", help="Show definition file paths and inclusive line ranges, including decorators")
 	parser.add_argument("--only", nargs="+", choices=sorted(MEMBER_KINDS), help="Include only these member kinds; classes are retained as containers")
+	filters = parser.add_mutually_exclusive_group()
+	filters.add_argument("--filter", dest="name_filter", metavar="PATTERN", help="Case-sensitive name glob, e.g. '*Query*' or 'ECS.query*'")
+	filters.add_argument("--regex", metavar="PATTERN", help="Case-sensitive regex search over definition names")
 	args = parser.parse_args(argv)
+	try:
+		_name_matcher("", args.name_filter, args.regex)
+	except ValueError as error:
+		parser.error(str(error))
 
 	package = args.package.resolve()
 	if not package.exists():
@@ -471,7 +548,10 @@ def main(argv: list[str] | None = None) -> None:
 			if module_file is None or Path(module_file).resolve() != path.resolve():
 				parser.error(f"Module {module_name} was imported from another path: {module_file}")
 			modules.append(module)
-		text = "\n\n".join(dump_module(module, include_comments=not args.no_comments, include_docstrings=not args.no_docstrings, only=args.only, include_imports=args.include_imports) for module in modules)
+		text = "\n\n".join(
+			dump_module(module, include_comments=not args.no_comments, include_docstrings=not args.no_docstrings, only=args.only, include_imports=args.include_imports, source_ranges=args.source_ranges, name_filter=args.name_filter, regex=args.regex)
+			for module in modules
+		)
 	finally:
 		sys.path[:] = previous_path
 
