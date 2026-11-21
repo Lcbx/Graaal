@@ -43,7 +43,8 @@ queries and movement acceptance outside evaluators.
 
 Authoring must reuse runtime resources, report item-specific validation errors,
 preserve stable coincident-marker selection and apply drafts explicitly. Validate
-round trips before replacing assets; current tools only keep edits in memory.
+round trips before replacing saved projects. The tools persist graph definitions
+and markers through explicit JSON sidecar saves; glTF/GLB assets stay separate.
 See the [tool guides](../tools/README.md) for available controls.
 
 ## GPU pose evaluation for crowds and distant characters

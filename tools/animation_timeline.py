@@ -1,9 +1,10 @@
-"""Inspect glTF animation tracks and edit temporary event and sync markers.
+"""Inspect glTF animation tracks and author event and sync markers.
 
 Run from the repository root: python -m tools.animation_timeline [file.gltf|file.glb]
 """
 from enum import StrEnum
 import argparse
+from pathlib import Path
 import time
 
 import numpy as np
@@ -11,6 +12,7 @@ import numpy as np
 from .animation_asset import load_animations
 from .animation_preview import animation_bounds
 from .animation_viewport import draw_animation_viewport
+from .animation_project import read_project, write_project
 
 
 class MarkerKind(StrEnum):
@@ -19,7 +21,7 @@ class MarkerKind(StrEnum):
 
 
 class TimelineWindow:
-	"""Tk interface for track keyframes and unsaved per-animation events."""
+	"""Tk interface for track keyframes and per-animation marker authoring."""
 	LABEL_WIDTH = 250
 	HEADER_HEIGHT = 42
 	ROW_HEIGHT = 27
@@ -30,6 +32,7 @@ class TimelineWindow:
 
 		self.tk, self.ttk, self.root = tk, ttk, root
 		self.animations, self.animation_id = [], -1
+		self.project_path, self.project_graph = None, None
 		self.position, self.playing, self.last_tick = 0.0, False, time.monotonic()
 		self.path = tk.StringVar(value="No file loaded")
 		self.status = tk.StringVar(value="Open a glTF or GLB file with animation.")
@@ -49,6 +52,8 @@ class TimelineWindow:
 		file_row = ttk.Frame(root, padding=8)
 		file_row.pack(fill="x")
 		ttk.Button(file_row, text="Open glTF / GLB", command=self.open_file).pack(side="left")
+		ttk.Button(file_row, text="Load project", command=self.load_project).pack(side="left", padx=5)
+		ttk.Button(file_row, text="Save project", command=self.save_project).pack(side="left")
 		ttk.Label(file_row, textvariable=self.path).pack(side="left", padx=10, fill="x", expand=True)
 		clip_row = ttk.Frame(root, padding=(8, 0, 8, 8))
 		clip_row.pack(fill="x")
@@ -150,6 +155,7 @@ class TimelineWindow:
 			self.status.set(f"Could not load file: {exc}")
 			return
 		self.animations, self.animation_id, self.position, self.playing = animations, -1, 0.0, False
+		self.project_path, self.project_graph = None, None
 		self.drag_event_id = None
 		self.event_preview.set("Preview events: none")
 		self.play_button.configure(text="Play")
@@ -164,6 +170,44 @@ class TimelineWindow:
 			self.refresh_events()
 			self.draw()
 
+	def save_project(self, path=None):
+		if not self.animations:
+			self.status.set("Open an animated asset before saving a project.")
+			return
+		if path is None:
+			from tkinter import filedialog
+			path = filedialog.asksaveasfilename(title="Save animation project", parent=self.root, defaultextension=".animation.json", initialfile=self.project_path.name if self.project_path is not None else "animation.animation.json", filetypes=[("Animation project", "*.json")])
+		if not path: return
+		try: write_project(path, self.animations, self.project_graph)
+		except (OSError, ValueError, TypeError) as exc:
+			self.status.set(f"Cannot save project: {exc}")
+			return
+		self.project_path = Path(path)
+		self.status.set(f"Saved markers to {path}.")
+
+	def load_project(self, path=None):
+		if not self.animations:
+			self.status.set("Open an animated asset before loading a project.")
+			return
+		if path is None:
+			from tkinter import filedialog
+			path = filedialog.askopenfilename(title="Load animation project", parent=self.root, filetypes=[("Animation project", "*.json")])
+		if not path: return
+		try: definition, _, timelines = read_project(path, self.animations)
+		except (OSError, ValueError, TypeError) as exc:
+			self.status.set(f"Cannot load project: {exc}")
+			return
+		self.event_list.selection_remove(*self.event_list.selection())
+		self.drag_event_id, self.playing = None, False
+		self.play_button.configure(text="Play")
+		self.event_preview.set("Preview events: none")
+		for animation, (events, sync) in zip(self.animations, timelines): animation.events, animation.sync_markers = events, sync
+		self.project_graph = definition.data if definition is not None else None
+		self.project_path = Path(path)
+		self.refresh_events()
+		self.draw()
+		self.status.set(f"Loaded markers from {path}.")
+
 	def select_animation(self, event=None):
 		self.event_list.selection_remove(*self.event_list.selection())
 		self.animation_id = self.clip_box.current()
@@ -174,7 +218,7 @@ class TimelineWindow:
 		self.event_time.set("0.000")
 		animation = self.animation
 		if animation:
-			self.status.set(f"{len(animation.tracks)} tracks, {animation.duration:.3f} s. Events are temporary.")
+			self.status.set(f"{len(animation.tracks)} tracks, {animation.duration:.3f} s. Use Save project to keep markers.")
 			self.bounds = animation_bounds(animation)
 		self.auto_fit = True
 		self.refresh_events()

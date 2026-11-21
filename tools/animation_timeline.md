@@ -47,8 +47,13 @@ shown in the viewport. The bone preview evaluates LINEAR, STEP and CUBICSPLINE
 TRS channels; morph weights are displayed as tracks but are not deformed in the
 viewport. glTF materials and textures are not shown in this CPU preview.
 
-Events and sync markers are kept separately for each animation in memory. They are discarded
-when the tool closes or a different file is opened; no asset is written. Event
+Events and sync markers are kept separately for each animation in memory. Use
+**Save project** to persist them for all animations in a JSON sidecar, and
+**Load project** to restore them for the open asset. Projects can be exchanged with
+the graph editor; a graph in a loaded project is preserved when saving marker edits.
+See [authoring projects](animation_project.md) for the format and validation rules.
+Unsaved edits are discarded when the tool closes or a different source file is
+opened; glTF/GLB assets are not modified. Event
 times must be at least zero and strictly less than the animation duration,
 matching `EventTrack`. Zero-duration animations can be inspected but cannot
 receive markers. For imported rigs, sync-marker duration uses the baked runtime

@@ -18,10 +18,13 @@ clock can be scrubbed or played independently of the timeline tool.
 Edit states, transition conditions, masks and layered tasks in the draft, then
 choose **Compile draft**. Validation uses
 [`AnimationGraphDefinition`](../graaal/skeletal_animation.md#editable-graph-definitions)
-and identifies invalid fields/tasks. Successful compilation resets the preview
-to the initial state, parameter defaults, zero fade and state-driven sample
+and identifies invalid fields/tasks. Successful compilation pauses and resets the preview
+to the initial state, parameter defaults, zero clock/fade and state-driven sample
 bindings. Invalid drafts preserve the previous compiled preview and controls.
-No graph or glTF file is saved.
+Compilation does not save files. Use **Save project** to persist the current draft
+and all event/sync markers in a JSON sidecar. **Load project** validates and applies
+a project for the open asset. See [authoring projects](animation_project.md) for
+the shared format and replacement rules.
 
 Choose **Edit transitions** to configure rules in a form using the current valid
 JSON draft. Select a rule to edit its source, target and fade duration, or choose
@@ -39,12 +42,31 @@ are chosen from the draft; add new ones in JSON before opening the form.
 
 Edit preview parameter values and choose **Apply parameters / evaluate conditions**
 to inspect the first matching transition and its configured duration. The
-**Manual transition weight** slider blends its source and target poses; it does
-not run an automatic state controller or promote the target state. Sample slots
-can use that state/transition pair or a specific clip, allowing independent
-masked override and additive layers defined in the draft. Clips loop at the
-graph clock time in seconds; configured sync mappings align the target
-phase to the source markers. Root-motion extraction is disabled, so in-place
+**Manual transition weight** slider blends its source and target poses without
+promoting the target state.
+
+Enable **Automatic state playback**, apply parameters and choose **Play** to run
+the compiled single-clip states. The first matching rule starts a fade using its
+configured duration. Its target starts at time zero, or at the corresponding
+marker phase when a sync mapping exists. Both clips advance during the fade;
+completion promotes the target with its current time and speed. Applied parameter
+changes do not interrupt an active fade. Conditions are checked again on the next
+playback tick after promotion, so a condition that remains true can cycle states.
+Even a tick longer than a fade starts at most one transition.
+
+**Pause** holds the clip clocks and fade progress; **Play** resumes them.
+Scrubbing in automatic mode pauses, cancels the fade and seeks the current state
+at unit speed. Selecting a state restarts it at time zero. Switching modes cancels
+the fade at the displayed source time and restores unit speed. The manual weight
+slider is disabled in automatic mode. All preview clips loop, including targets
+after promotion; marker synchronization ends when the fade completes, retaining
+the target speed at that endpoint. Static clips can still transition.
+
+Sample slots can use the state/transition pair or a specific clip, allowing
+independent masked override and additive layers defined in the draft. Other
+bindings use the displayed source-state clock, which follows the target clock
+after promotion. In manual mode both state clips use the graph clock, with sync
+mappings aligning target phase. Root-motion extraction is disabled, so in-place
 tasks receive an empty instance mask. This graph preview does not dispatch events.
 
 Choose **Edit 1D blends** to add, rename, update or remove named 1D blend
@@ -107,9 +129,9 @@ at once; shared slots fail compilation.
 Graph poses use the existing `PosePlan`, model matrices and CPU-skinned viewport.
 Camera framing uses the union of sampled clip bone bounds. Selecting a clip in
 the graph tool turns graph preview off; enable **Preview graph in viewport** to
-restore it. Closing the window discards the draft.
+restore it. Closing the window discards unsaved changes.
 See `python -m scenes.animation_graph_example` for ECS integration of the same
-definition format. Forms for other graph items and persistence remain future work.
+definition format. Forms for other graph items remain future work.
 
 Choose **Edit sync markers** to add, update or remove markers for each imported
 clip. Markers remain in memory and must have unique names and times within each
@@ -123,5 +145,6 @@ directional pair in the graph draft:
 Choose **Compile draft** to snapshot and validate the marker tracks. Later
 marker edits do not change the compiled preview until recompilation. Invalid
 markers or incompatible tracks leave the last compiled preview in place. The
-timeline tool has its own temporary marker session; no marker data is saved.
+timeline tool has its own marker session; exchange markers through explicitly
+saved [authoring projects](animation_project.md).
 

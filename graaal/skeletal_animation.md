@@ -274,9 +274,11 @@ This first authoring version supports single-clip states, named 1D/2D blend-spac
 sample bindings, in-place root anchoring, masked blend/additive layers and
 clip-pair sync settings. Blend-space states and IK/phase authoring
 are not yet represented. The
-[graph tool](../tools/animation_graph.md) provides an in-memory definition editor,
-transition/condition forms, state diagram and explicit layered-pose/transition
-previews using this API. Runtime
+[graph tool](../tools/animation_graph.md) provides a definition editor,
+transition/condition forms, state diagram, manual layered-pose inspection and
+automatic single-clip state playback using this API. The standalone tools share
+explicit [JSON project persistence](../tools/animation_project.md) for graph
+definitions, events and sync markers. Runtime
 blend-space, sync and IK APIs remain available for application-owned composition.
 
 ## Conditional state transitions
