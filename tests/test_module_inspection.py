@@ -177,6 +177,56 @@ def test_invalid_and_empty_filters(module):
 	assert not ast.parse(dump_module(module, only=set(), include_docstrings=False)).body
 
 
+def test_imports_are_opt_in_and_independent_of_member_filters(module):
+	assert "from pathlib import Path" not in dump_module(module)
+	text = dump_module(module, include_imports=True, only={"classes"}, include_docstrings=False, include_comments=False)
+	assert "from pathlib import Path\nfrom math import sin" in text
+	assert "class Item(" in text
+	assert "def run(" not in text
+	assert "documentation." not in text and "comment." not in text
+	module.__all__ = []
+	text = dump_module(module, only={"imports"}, include_docstrings=False)
+	assert [ast.unparse(node) for node in ast.parse(text).body] == ["from pathlib import Path", "from math import sin"]
+
+
+def test_import_listing_preserves_aliases_relative_imports_and_source_order(tmp_path):
+	path = tmp_path / "imports.py"
+	path.write_text('''import os as operating_system, sys
+from . import sibling as local
+from ..other import (
+	First,
+	Second as Alias,
+)
+if TYPE_CHECKING:
+	from optional_dependency import Thing
+def deferred():
+	import local_dependency as dependency
+try:
+	from .fallback import *
+except ImportError:
+	pass
+module = __import__("dynamic_dependency")
+''', encoding="utf-8")
+	module = ModuleType("imports_fixture")
+	module.__file__ = str(path)
+	text = dump_module(module, only={"imports"}, include_docstrings=False)
+	assert [ast.unparse(node) for node in ast.parse(text).body] == [
+		"import os as operating_system, sys",
+		"from . import sibling as local",
+		"from ..other import First, Second as Alias",
+		"from optional_dependency import Thing",
+		"import local_dependency as dependency",
+		"from .fallback import *",
+	]
+	assert "dynamic_dependency" not in text
+
+
+def test_import_listing_without_available_source():
+	module = ModuleType("dynamic_api")
+	module.dependency = sys
+	assert not ast.parse(dump_module(module, only={"imports"}, include_docstrings=False)).body
+
+
 @pytest.fixture
 def package(tmp_path):
 	package = tmp_path / "sample_package"
@@ -219,6 +269,17 @@ def test_cli_loose_module_directory_recursive_and_output(tmp_path):
 	text = output.read_text(encoding="utf-8")
 	assert "api module" in text and "nested.api module" in text
 	assert "def first():" in text and "def second():" in text
+
+
+@pytest.mark.parametrize("imports_only", [False, True])
+def test_cli_import_listing_and_recursive_relative_imports(package, tmp_path, imports_only):
+	args = [package, "-r", "--no-comments", "--no-docstrings"]
+	args.extend(["--only", "imports"] if imports_only else ["--include-imports"])
+	result = cli(*args, cwd=tmp_path)
+	assert result.returncode == 0, result.stderr
+	assert "from .api import Public" in result.stdout
+	assert "from ..api import Public" in result.stdout
+	assert ("class Public:" in result.stdout) == (not imports_only)
 
 
 @pytest.mark.parametrize("case,message", [("missing", "Path does not exist"), ("extension", "Expected a Python file"), ("import", "Cannot import"), ("output", "Cannot write")])

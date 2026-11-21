@@ -13,7 +13,8 @@ from types import ModuleType, UnionType
 from typing import get_origin
 
 
-MEMBER_KINDS = frozenset({"classes", "functions", "methods", "properties", "attributes"})
+MEMBER_KINDS = frozenset({"classes", "functions", "methods", "properties", "attributes", "imports"})
+DEFAULT_MEMBER_KINDS = MEMBER_KINDS - {"imports"}
 
 
 def _doc(obj: object) -> str | None:
@@ -145,6 +146,15 @@ def _source_info(module: ModuleType) -> tuple[dict[tuple[str, ...], int], dict[i
 	return nodes, comments
 
 
+def _source_imports(module: ModuleType) -> list[str]:
+	try:
+		source = inspect.getsource(module)
+	except (OSError, TypeError):
+		return []
+	nodes = (node for node in ast.walk(ast.parse(source)) if isinstance(node, (ast.Import, ast.ImportFrom)))
+	return [ast.unparse(node) for node in sorted(nodes, key=lambda node: node.lineno)]
+
+
 def _emit_comments(
 	out: list[str],
 	path: tuple[str, ...],
@@ -229,7 +239,7 @@ def _emit_class(
 	name: str | None = None,
 	ast_path: tuple[str, ...] | None = None,
 	*,
-	only: frozenset[str] = MEMBER_KINDS,
+	only: frozenset[str] = DEFAULT_MEMBER_KINDS,
 	include_docstrings: bool = True,
 	ancestors: tuple[type, ...] = (),
 ) -> None:
@@ -328,15 +338,25 @@ def _emit_class(
 		out.append(child_indent + "...")
 
 
-def dump_module(module: ModuleType, *, include_comments: bool = True, include_docstrings: bool = True, only: frozenset[str] | None = None) -> str:
+def dump_module(
+	module: ModuleType,
+	*,
+	include_comments: bool = True,
+	include_docstrings: bool = True,
+	only: frozenset[str] | None = None,
+	include_imports: bool = False,
+) -> str:
 	"""Return public declarations; classes contain only selected member kinds.
 
 	Explicit ``__all__`` includes re-exports; otherwise imported classes and
 	functions and private names are omitted. Only directly defined class members
 	are shown, including ``__init__``. Classes remain as containers when selecting
-	methods, properties or class attributes.
+	methods, properties or class attributes. Optional imports are collected from
+	source, including conditional and local imports, independently of exports.
 	"""
-	only = MEMBER_KINDS if only is None else frozenset(only)
+	only = DEFAULT_MEMBER_KINDS if only is None else frozenset(only)
+	if include_imports:
+		only |= {"imports"}
 	if only - MEMBER_KINDS:
 		raise ValueError(f"Unknown member kinds: {', '.join(sorted(only - MEMBER_KINDS))}")
 	nodes, comments = _source_info(module) if include_comments else ({}, {})
@@ -356,6 +376,12 @@ def dump_module(module: ModuleType, *, include_comments: bool = True, include_do
 
 	if out[-1]:
 		out.append("")
+
+	if "imports" in only:
+		imports = _source_imports(module)
+		if imports:
+			out.extend(imports)
+			out.append("")
 
 	annotations = getattr(module, "__annotations__", {})
 	exports = getattr(module, "__all__", None)
@@ -409,6 +435,7 @@ def main(argv: list[str] | None = None) -> None:
 	parser.add_argument("-r", "--recursive", action="store_true", help="Include subdirectories (or sibling modules when targeting __init__.py)")
 	parser.add_argument("--no-comments", action="store_true", help="Omit comments preceding declarations")
 	parser.add_argument("--no-docstrings", action="store_true", help="Omit module, class and callable docstrings")
+	parser.add_argument("--include-imports", action="store_true", help="Include source import statements, including conditional and local imports")
 	parser.add_argument("--only", nargs="+", choices=sorted(MEMBER_KINDS), help="Include only these member kinds; classes are retained as containers")
 	args = parser.parse_args(argv)
 
@@ -444,7 +471,7 @@ def main(argv: list[str] | None = None) -> None:
 			if module_file is None or Path(module_file).resolve() != path.resolve():
 				parser.error(f"Module {module_name} was imported from another path: {module_file}")
 			modules.append(module)
-		text = "\n\n".join(dump_module(module, include_comments=not args.no_comments, include_docstrings=not args.no_docstrings, only=args.only) for module in modules)
+		text = "\n\n".join(dump_module(module, include_comments=not args.no_comments, include_docstrings=not args.no_docstrings, only=args.only, include_imports=args.include_imports) for module in modules)
 	finally:
 		sys.path[:] = previous_path
 
