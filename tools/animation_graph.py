@@ -1,11 +1,14 @@
-"""In-memory graph configuration and pose inspection for the timeline tool."""
+"""Standalone in-memory graph configuration and pose inspection tool."""
 import json
+import time
 
 import numpy as np
 
 from graaal.AnimationGraph import AnimationGraphDefinition
 from graaal.SkeletalAnimation import model_matrices
 from .animation_preview import animation_bounds
+from .animation_viewport import draw_animation_viewport
+from .animation_asset import load_animations
 
 
 def clip_resources(animations):
@@ -35,19 +38,24 @@ class GraphWindow:
 	BLEND_PREFIX = "<blend: "
 	GRID_PREFIX = "<grid: "
 
-	def __init__(self, root, animations, *, select_clip, redraw, closed):
+	def __init__(self, root, animations, *, closed=None):
 		import tkinter as tk
 		from tkinter import ttk
 
 		self.tk, self.ttk = tk, ttk
 		self.animations, self.asset = animations, animations[0].preview.asset
-		self.select_clip, self.redraw, self.closed = select_clip, redraw, closed
+		self.closed = closed
+		self.animation_id, self.position, self.playing = 0, 0.0, False
+		self.last_tick = time.monotonic()
 		self.graph, self.parameters, self.target_state = None, None, None
 		self.parameter_entries, self.bindings = {}, {}
 		self.transition_window = None
+		self.blend_space_window = None
+		self.blend_grid_window = None
+		self.sync_marker_window = None
 		self.window = tk.Toplevel(root)
 		self.window.title("Animation graph configuration")
-		self.window.geometry("1120x820")
+		self.window.geometry("1500x850")
 		self.window.minsize(850, 650)
 		self.window.protocol("WM_DELETE_WINDOW", self.close)
 		self.status = tk.StringVar(value="Edit the definition, then compile to preview it.")
@@ -55,20 +63,47 @@ class GraphWindow:
 		self.decision = tk.StringVar(value="No transition selected")
 		self.fade = tk.DoubleVar(value=0)
 		self.preview_enabled = tk.BooleanVar(value=True)
-		bounds = [animation_bounds(animation) for animation in animations]
-		self.bounds = np.min([bound[0] for bound in bounds], axis=0), np.max([bound[1] for bound in bounds], axis=0)
+		self.clip_bounds = [animation_bounds(animation) for animation in animations]
+		self.bounds = np.min([bound[0] for bound in self.clip_bounds], axis=0), np.max([bound[1] for bound in self.clip_bounds], axis=0)
 
 		toolbar = ttk.Frame(self.window, padding=8)
 		toolbar.pack(fill="x")
 		ttk.Button(toolbar, text="Compile draft", command=self.compile_draft).pack(side="left")
 		ttk.Button(toolbar, text="Edit transitions", command=self.open_transitions).pack(side="left", padx=5)
+		ttk.Button(toolbar, text="Edit sync markers", command=self.open_sync_markers).pack(side="left", padx=5)
+		ttk.Button(toolbar, text="Edit 1D blends", command=self.open_blend_spaces).pack(side="left", padx=5)
+		ttk.Button(toolbar, text="Edit 2D grids", command=self.open_blend_grids).pack(side="left", padx=5)
 		ttk.Checkbutton(toolbar, text="Preview graph in viewport", variable=self.preview_enabled, command=self.change_preview).pack(side="left", padx=10)
-		ttk.Label(toolbar, text="Draft edits stay in memory. Playback uses the timeline.").pack(side="left")
+		ttk.Label(toolbar, text="Draft edits stay in memory.").pack(side="left")
+		clock_row = ttk.Frame(self.window, padding=(8, 0, 8, 8))
+		clock_row.pack(fill="x")
+		ttk.Label(clock_row, text="Clip").pack(side="left")
+		self.clip_box = ttk.Combobox(clock_row, state="readonly", values=tuple(clip_resources(animations)), width=35)
+		self.clip_box.pack(side="left", padx=5)
+		self.clip_box.current(0)
+		self.clip_box.bind("<<ComboboxSelected>>", self.change_clip)
+		self.play_button = ttk.Button(clock_row, text="Play", command=self.toggle_play)
+		self.play_button.pack(side="left", padx=5)
+		self.clock = tk.DoubleVar(value=0)
+		self.clock_scale = ttk.Scale(clock_row, from_=0, to=max(animation.clip.duration for animation in animations), variable=self.clock, command=self.change_time)
+		self.clock_scale.pack(side="left", fill="x", expand=True, padx=5)
+		self.clock_label = ttk.Label(clock_row, text="0.000s")
+		self.clock_label.pack(side="left")
 		panes = ttk.Panedwindow(self.window, orient="horizontal")
 		panes.pack(fill="both", expand=True, padx=8)
-		draft_frame, controls = ttk.Frame(panes), ttk.Frame(panes)
+		draft_frame, controls, view_frame = ttk.Frame(panes), ttk.Frame(panes), ttk.Frame(panes)
 		panes.add(draft_frame, weight=3)
 		panes.add(controls, weight=2)
+		panes.add(view_frame, weight=2)
+		view_controls = ttk.Frame(view_frame)
+		view_controls.pack(fill="x")
+		ttk.Label(view_controls, text="Animation viewport").pack(side="left", padx=5)
+		self.show_mesh, self.show_bones = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+		ttk.Checkbutton(view_controls, text="Mesh", variable=self.show_mesh, command=self.draw_viewport).pack(side="left")
+		ttk.Checkbutton(view_controls, text="Bones", variable=self.show_bones, command=self.draw_viewport).pack(side="left")
+		self.viewport = tk.Canvas(view_frame, background="#171c24", highlightthickness=0)
+		self.viewport.pack(fill="both", expand=True)
+		self.viewport.bind("<Configure>", lambda _: self.draw_viewport())
 		ttk.Label(draft_frame, text="Graph definition (JSON)").pack(anchor="w")
 		self.editor = tk.Text(draft_frame, wrap="none", width=62, undo=True)
 		self.editor.pack(side="left", fill="both", expand=True)
@@ -98,10 +133,11 @@ class GraphWindow:
 		ttk.Label(controls, text="Sample bindings").pack(anchor="w", pady=(8, 0))
 		self.binding_frame = ttk.Frame(controls)
 		self.binding_frame.pack(fill="x")
-		ttk.Label(controls, text="Slot clips loop at timeline time. State samples use the manual fade. Root-motion extraction is disabled.", wraplength=370).pack(anchor="w", pady=10)
+		ttk.Label(controls, text="Slot clips loop at the graph clock. State samples use the manual fade. Root-motion extraction is disabled.", wraplength=370).pack(anchor="w", pady=10)
 		ttk.Label(self.window, textvariable=self.status, wraplength=1050, padding=8).pack(fill="x")
 		self.editor.insert("1.0", json.dumps(default_definition(animations), indent=2))
 		self.compile_draft()
+		self.window.after(33, self.tick)
 
 	def compile_definition(self, data):
 		definition = AnimationGraphDefinition(data)
@@ -120,6 +156,39 @@ class GraphWindow:
 			return
 		from .animation_graph_forms import TransitionWindow
 		self.transition_window = TransitionWindow(self, definition.data, text)
+
+	def open_sync_markers(self):
+		if self.sync_marker_window is not None:
+			self.sync_marker_window.window.lift()
+			return
+		from .animation_graph_forms import SyncMarkerWindow
+		self.sync_marker_window = SyncMarkerWindow(self)
+
+	def open_blend_spaces(self):
+		if self.blend_space_window is not None:
+			self.blend_space_window.window.lift()
+			return
+		try:
+			text = self.editor.get("1.0", "end-1c")
+			definition, _ = self.compile_definition(json.loads(text))
+		except (ValueError, TypeError) as exc:
+			self.status.set(f"Cannot edit 1D blends: {exc}")
+			return
+		from .animation_blend_space_forms import BlendSpaceWindow
+		self.blend_space_window = BlendSpaceWindow(self, definition.data, text)
+
+	def open_blend_grids(self):
+		if self.blend_grid_window is not None:
+			self.blend_grid_window.window.lift()
+			return
+		try:
+			text = self.editor.get("1.0", "end-1c")
+			definition, _ = self.compile_definition(json.loads(text))
+		except (ValueError, TypeError) as exc:
+			self.status.set(f"Cannot edit 2D grids: {exc}")
+			return
+		from .animation_blend_space_forms import BlendGridWindow
+		self.blend_grid_window = BlendGridWindow(self, definition.data, text)
 
 	def compile_draft(self):
 		try:
@@ -159,7 +228,7 @@ class GraphWindow:
 		self.evaluate_conditions()
 		if self.preview_enabled.get(): self.select_clip(self.graph.state_clips[self.graph.state_ids[self.state.get()]])
 		self.draw_diagram()
-		self.redraw()
+		self.draw_viewport()
 
 	def apply_parameters(self):
 		if self.graph is None: return
@@ -175,7 +244,7 @@ class GraphWindow:
 		self.fade.set(0)
 		self.evaluate_conditions()
 		self.draw_diagram()
-		self.redraw()
+		self.draw_viewport()
 		self.status.set("Preview parameters applied.")
 
 	def evaluate_conditions(self):
@@ -190,7 +259,7 @@ class GraphWindow:
 		else: self.decision.set("No transition selected")
 
 	def change_fade(self, value):
-		self.redraw()
+		self.draw_viewport()
 
 	def change_binding(self, slot):
 		binding = self.bindings[slot].get()
@@ -206,11 +275,60 @@ class GraphWindow:
 			if (self.bindings[lower].get() == labels[0]) != (self.bindings[upper].get() == labels[1]):
 				for item, label in zip((lower, upper), labels):
 					if self.bindings[item].get() == label: self.bindings[item].set(self.STATE_SAMPLE)
-		self.redraw()
+		self.draw_viewport()
 
 	def change_preview(self):
 		if self.graph is not None and self.preview_enabled.get(): self.change_state()
-		else: self.redraw()
+		else: self.draw_viewport()
+
+	def select_clip(self, clip):
+		self.animation_id = clip
+		self.clip_box.current(clip)
+		self.position = 0.0
+		self.clock.set(0)
+		self.clock_label.configure(text="0.000s")
+		self.draw_viewport()
+
+	def change_clip(self, event=None):
+		self.preview_enabled.set(False)
+		self.animation_id = self.clip_box.current()
+		self.position = 0.0
+		self.clock.set(0)
+		self.clock_label.configure(text="0.000s")
+		self.draw_viewport()
+
+	def change_time(self, value):
+		self.position = float(value)
+		self.clock_label.configure(text=f"{self.position:.3f}s")
+		self.draw_viewport()
+
+	def toggle_play(self):
+		self.playing = not self.playing
+		self.last_tick = time.monotonic()
+		self.play_button.configure(text="Pause" if self.playing else "Play")
+
+	def tick(self):
+		now = time.monotonic()
+		if self.playing:
+			duration = self.animations[self.animation_id].clip.duration
+			if duration > 0:
+				self.position = (self.position + now - self.last_tick) % duration
+				self.clock.set(self.position)
+				self.clock_label.configure(text=f"{self.position:.3f}s")
+				self.draw_viewport()
+		self.last_tick = now
+		self.window.after(33, self.tick)
+
+	def draw_viewport(self):
+		animation = self.animations[self.animation_id]
+		graph = self.graph if self.preview_enabled.get() else None
+		try: model = self.joint_model(self.position) if graph is not None else None
+		except (ValueError, IndexError, FloatingPointError) as exc:
+			self.viewport.delete("all")
+			self.viewport.create_text(8, 8, anchor="nw", fill="#ff9aa5", text=f"Preview unavailable: {exc}")
+			return
+		camera = draw_animation_viewport(self.viewport, animation, self.position, self.bounds if graph is not None else self.clip_bounds[self.animation_id], joint_model=model, show_mesh=self.show_mesh.get(), show_bones=self.show_bones.get())
+		if camera is not None: self.camera_position, self.camera_target = camera
 
 	def joint_model(self, time):
 		graph = self.graph
@@ -271,4 +389,35 @@ class GraphWindow:
 	def close(self):
 		self.preview_enabled.set(False)
 		self.window.destroy()
-		self.closed()
+		if self.closed is not None: self.closed()
+
+
+def main(argv=None):
+	"""Open a supported skinned glTF/GLB in the standalone graph editor."""
+	import argparse
+	import tkinter as tk
+	from tkinter import filedialog, messagebox
+
+	parser = argparse.ArgumentParser(description="Inspect and configure an in-memory animation graph")
+	parser.add_argument("file", nargs="?", help="Animated glTF or GLB file")
+	args = parser.parse_args(argv)
+	root = tk.Tk()
+	root.withdraw()
+	path = args.file or filedialog.askopenfilename(title="Open animated glTF", filetypes=[("glTF files", "*.gltf *.glb"), ("All files", "*")])
+	if not path:
+		root.destroy()
+		return 0
+	try:
+		animations = load_animations(path)
+		if not animations or animations[0].preview.asset is None or any(animation.clip is None for animation in animations): raise ValueError("Graph configuration requires a skinned asset supported by the runtime importer")
+	except (OSError, ValueError, TypeError, IndexError, KeyError, AttributeError) as exc:
+		messagebox.showerror("Cannot open animation graph", str(exc), parent=root)
+		root.destroy()
+		return 1
+	GraphWindow(root, animations, closed=root.quit)
+	root.mainloop()
+	root.destroy()
+	return 0
+
+
+if __name__ == "__main__": raise SystemExit(main())

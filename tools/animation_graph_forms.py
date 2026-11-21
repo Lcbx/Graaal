@@ -192,3 +192,93 @@ class TransitionWindow:
 	def close(self):
 		self.window.destroy()
 		self.host.transition_window = None
+
+
+class SyncMarkerWindow:
+	"""Edit in-memory sync tracks consumed on the next graph compilation."""
+	def __init__(self, host):
+		self.host = host
+		tk, ttk = host.tk, host.ttk
+		self.window = tk.Toplevel(host.window)
+		self.window.title("Edit graph sync markers")
+		self.window.geometry("520x430")
+		self.window.protocol("WM_DELETE_WINDOW", self.close)
+		self.status = tk.StringVar(value="Markers are in memory. Compile draft to apply them to the preview.")
+		body = ttk.Frame(self.window, padding=10)
+		body.pack(fill="both", expand=True)
+		ttk.Label(body, text="Clip").pack(anchor="w")
+		self.clip = tk.StringVar()
+		self.clip_box = ttk.Combobox(body, textvariable=self.clip, values=tuple(host.graph.clip_ids), state="readonly")
+		self.clip_box.pack(fill="x")
+		self.clip_box.current(0)
+		self.clip_box.bind("<<ComboboxSelected>>", self.refresh)
+		self.markers = ttk.Treeview(body, columns=("time", "name"), show="headings", selectmode="browse")
+		for column in ("time", "name"):
+			self.markers.heading(column, text=column.capitalize())
+		self.markers.pack(fill="both", expand=True, pady=7)
+		self.markers.bind("<<TreeviewSelect>>", self.select_marker)
+		row = ttk.Frame(body)
+		row.pack(fill="x")
+		self.marker_time, self.marker_name = tk.StringVar(value="0"), tk.StringVar()
+		ttk.Label(row, text="Time (s)").pack(side="left")
+		ttk.Entry(row, textvariable=self.marker_time, width=13).pack(side="left", padx=5)
+		ttk.Label(row, text="Name").pack(side="left")
+		ttk.Entry(row, textvariable=self.marker_name, width=22).pack(side="left", padx=5)
+		row = ttk.Frame(body)
+		row.pack(fill="x", pady=6)
+		for label, command in (("Add", self.add), ("Update selected", self.update), ("Remove selected", self.remove)):
+			ttk.Button(row, text=label, command=command).pack(side="left", padx=2)
+		ttk.Label(body, textvariable=self.status, wraplength=490).pack(anchor="w")
+		self.refresh()
+
+	@property
+	def track(self):
+		return self.host.animations[self.clip_box.current()].sync_markers
+
+	def refresh(self, event=None, selected=None):
+		self.markers.delete(*self.markers.get_children())
+		if self.track is None: return
+		ids, track = self.track.snapshot()
+		for marker_id, marker_time, name in zip(ids, track.times, track.names):
+			self.markers.insert("", "end", iid=str(marker_id), values=(f"{marker_time:.17g}", name))
+		if selected is not None: self.markers.selection_set(str(selected))
+
+	def select_marker(self, event=None):
+		selection = self.markers.selection()
+		if not selection: return
+		self.marker_time.set(self.markers.set(selection[0], "time"))
+		self.marker_name.set(self.markers.set(selection[0], "name"))
+
+	def add(self):
+		if self.track is None:
+			self.status.set("This clip has no duration for sync markers.")
+			return
+		try: marker_id = self.track.add(float(self.marker_time.get()), self.marker_name.get())
+		except (ValueError, TypeError) as exc:
+			self.status.set(f"Cannot add marker: {exc}")
+			return
+		self.refresh(selected=marker_id)
+		self.status.set("Marker added. Compile draft to apply its sync mappings.")
+
+	def update(self):
+		selection = self.markers.selection()
+		if not selection: return
+		if self.track is None: return
+		try: self.track.update(int(selection[0]), time=float(self.marker_time.get()), name=self.marker_name.get())
+		except (ValueError, TypeError, KeyError) as exc:
+			self.status.set(f"Cannot update marker: {exc}")
+			return
+		self.refresh(selected=selection[0])
+		self.status.set("Marker updated. Compile draft to apply its sync mappings.")
+
+	def remove(self):
+		selection = self.markers.selection()
+		if not selection: return
+		if self.track is None: return
+		self.track.remove(int(selection[0]))
+		self.refresh()
+		self.status.set("Marker removed. Compile draft to apply its sync mappings.")
+
+	def close(self):
+		self.window.destroy()
+		self.host.sync_marker_window = None

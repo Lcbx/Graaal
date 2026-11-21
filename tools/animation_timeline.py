@@ -1,94 +1,21 @@
 """Inspect glTF animation tracks and edit temporary event and sync markers.
 
-Run from the repository root: python -m tool.animation_timeline [file.gltf|file.glb]
+Run from the repository root: python -m tools.animation_timeline [file.gltf|file.glb]
 """
-from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 import argparse
 import time
 
 import numpy as np
 
-from graaal.AnimationEvents import EventTimeline, EventTrack
-from graaal.Assets import read_gltf_accessor
-from .animation_preview import animation_bounds, camera_from_bounds, load_preview, mesh_triangles, pose_matrices, project
-
-
-@dataclass(frozen=True)
-class Track:
-	label: str
-	interpolation: str
-	times: np.ndarray
-	values: np.ndarray
-	node: int | None = None
-	path: str = ""
-	tangents: np.ndarray | None = None
-
-
-@dataclass
-class Animation:
-	name: str
-	duration: float
-	tracks: tuple[Track, ...]
-	events: EventTimeline | None
-	preview: object = None
-	clip: object = None
-	sync_markers: EventTimeline | None = None
-
-	def __post_init__(self):
-		duration = self.clip.duration if self.clip is not None else self.duration
-		if self.sync_markers is None and duration > 0: self.sync_markers = EventTimeline(EventTrack(duration, [], []))
+from .animation_asset import load_animations
+from .animation_preview import animation_bounds
+from .animation_viewport import draw_animation_viewport
 
 
 class MarkerKind(StrEnum):
 	EVENTS = "Events"
 	SYNC = "Sync markers"
-
-
-def load_animations(path):
-	"""Read source channels and load supported runtime clips for the viewport."""
-	from pygltflib import GLTF2
-
-	path = Path(path)
-	gltf = GLTF2().load(str(path))
-	preview = load_preview(gltf, path)
-	animations = []
-	for animation_id, animation in enumerate(gltf.animations or ()):
-		tracks = []
-		for channel in animation.channels or ():
-			if channel.sampler is None or not 0 <= channel.sampler < len(animation.samplers): raise ValueError("Animation references an invalid sampler")
-			sampler = animation.samplers[channel.sampler]
-			if sampler.input is None or sampler.output is None or not 0 <= sampler.input < len(gltf.accessors) or not 0 <= sampler.output < len(gltf.accessors):
-				raise ValueError("Animation sampler references an invalid accessor")
-			times = read_gltf_accessor(gltf, sampler.input, path.parent)
-			values = read_gltf_accessor(gltf, sampler.output, path.parent)
-			if times.ndim != 2 or times.shape[1] != 1 or not len(times) or not np.isfinite(times).all() or np.any(times < 0) or np.any(np.diff(times[:, 0]) <= 0):
-				raise ValueError("Animation key times must be finite, nonnegative and strictly increasing")
-			interpolation = sampler.interpolation or "LINEAR"
-			factor = 3 if interpolation == "CUBICSPLINE" else 1
-			if interpolation not in ("LINEAR", "STEP", "CUBICSPLINE") or values.size == 0 or values.size % (len(times) * factor) or not np.isfinite(values).all():
-				raise ValueError("Invalid animation sampler values or interpolation")
-			samples = values.reshape(len(times), factor, -1)
-			tangents = samples[:, (0, 2)].copy() if factor == 3 else None
-			values = samples[:, 1 if factor == 3 else 0].copy()
-			times = times[:, 0].astype(np.float64, copy=True)
-			times.flags.writeable = False
-			values.flags.writeable = False
-			target = channel.target
-			if target is None: raise ValueError("Animation channel has no target")
-			node = target.node
-			if node is None: node_name = "Unbound target"
-			elif not 0 <= node < len(gltf.nodes): raise ValueError("Animation references an invalid node")
-			else: node_name = f"{gltf.nodes[node].name or 'Node'} [{node}]"
-			label = f"{node_name} / {target.path or 'unknown'}"
-			if target.path in ("translation", "scale", "rotation") and values.shape[1] != (4 if target.path == "rotation" else 3): raise ValueError("Invalid transform channel width")
-			tracks.append(Track(label, interpolation, times, values, node, target.path or "", tangents))
-		duration = max((float(track.times[-1]) for track in tracks), default=0.0)
-		events = EventTimeline(EventTrack(duration, [], [])) if duration > 0 else None
-		clip = preview.asset.clips[animation_id][1] if preview.asset is not None else None
-		animations.append(Animation(animation.name or f"Animation {animation_id}", duration, tuple(tracks), events, preview, clip))
-	return animations
 
 
 class TimelineWindow:
@@ -112,7 +39,6 @@ class TimelineWindow:
 		self.marker_kind = tk.StringVar(value=MarkerKind.EVENTS)
 		self.event_preview = tk.StringVar(value="Preview events: none")
 		self.drag_event_id = None
-		self.graph_window = None
 		self.zoom = tk.DoubleVar(value=100)
 		self.auto_fit, self.bounds = True, None
 		self.show_mesh, self.show_bones = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
@@ -123,7 +49,6 @@ class TimelineWindow:
 		file_row = ttk.Frame(root, padding=8)
 		file_row.pack(fill="x")
 		ttk.Button(file_row, text="Open glTF / GLB", command=self.open_file).pack(side="left")
-		ttk.Button(file_row, text="Graph configuration", command=self.open_graph).pack(side="left", padx=5)
 		ttk.Label(file_row, textvariable=self.path).pack(side="left", padx=10, fill="x", expand=True)
 		clip_row = ttk.Frame(root, padding=(8, 0, 8, 8))
 		clip_row.pack(fill="x")
@@ -224,7 +149,6 @@ class TimelineWindow:
 		except (OSError, ValueError, TypeError, IndexError, KeyError, AttributeError) as exc:
 			self.status.set(f"Could not load file: {exc}")
 			return
-		if self.graph_window is not None: self.graph_window.close()
 		self.animations, self.animation_id, self.position, self.playing = animations, -1, 0.0, False
 		self.drag_event_id = None
 		self.event_preview.set("Preview events: none")
@@ -240,8 +164,7 @@ class TimelineWindow:
 			self.refresh_events()
 			self.draw()
 
-	def select_animation(self, event=None, *, graph_preview=False):
-		if self.graph_window is not None and not graph_preview: self.graph_window.preview_enabled.set(False)
+	def select_animation(self, event=None):
 		self.event_list.selection_remove(*self.event_list.selection())
 		self.animation_id = self.clip_box.current()
 		self.position, self.playing = 0.0, False
@@ -256,25 +179,6 @@ class TimelineWindow:
 		self.auto_fit = True
 		self.refresh_events()
 		self.fit_timeline()
-
-	def open_graph(self):
-		if self.graph_window is not None:
-			self.graph_window.window.lift()
-			return
-		if not self.animations or self.animations[0].preview.asset is None:
-			self.status.set("Graph configuration requires a skinned asset supported by the runtime importer.")
-			return
-		from .animation_graph import GraphWindow
-		self.graph_window = GraphWindow(self.root, self.animations, select_clip=self.select_graph_clip, redraw=self.draw_viewport, closed=self.close_graph)
-		self.draw_viewport()
-
-	def select_graph_clip(self, clip):
-		self.clip_box.current(clip)
-		self.select_animation(graph_preview=True)
-
-	def close_graph(self):
-		self.graph_window = None
-		self.draw_viewport()
 
 	def fit_timeline(self):
 		self.auto_fit = True
@@ -437,42 +341,8 @@ class TimelineWindow:
 		self.draw_viewport()
 
 	def draw_viewport(self):
-		canvas, animation = self.viewport, self.animation
-		canvas.delete("all")
-		if not animation or not len(animation.preview.nodes): return
-		width, height = max(canvas.winfo_width(), 1), max(canvas.winfo_height(), 1)
-		try:
-			graph = self.graph_window
-			graph = graph if graph is not None and graph.preview_enabled.get() and graph.graph is not None else None
-			model = pose_matrices(animation, self.position, joint_model=graph.joint_model(self.position) if graph is not None else None)
-			self.camera_position, self.camera_target = camera_from_bounds(graph.bounds if graph is not None else self.bounds, width / height)
-			points = model[:, :3, 3]
-			screen, depth = project(points, self.camera_position, self.camera_target, width, height)
-			if self.show_mesh.get():
-				triangles = mesh_triangles(animation.preview, model)
-				if len(triangles):
-					vertices, distances = project(triangles.reshape(-1, 3), self.camera_position, self.camera_target, width, height)
-					vertices, distances = vertices.reshape(-1, 6), distances.reshape(-1, 3)
-					normal = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-					normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-8)
-					brightness = 0.35 + 0.65 * np.abs(normal @ (np.array([0.3, 0.8, 0.5]) / np.linalg.norm([0.3, 0.8, 0.5])))
-					for face in np.argsort(distances.mean(axis=1))[::-1]:
-						if np.any(distances[face] <= 0): continue
-						color = tuple((np.array([100, 185, 125]) * brightness[face]).astype(int))
-						canvas.create_polygon(*vertices[face], fill="#%02x%02x%02x" % color, outline="")
-			if self.show_bones.get():
-				bones = set(map(int, animation.preview.bones))
-				for bone in bones:
-					parent = int(animation.preview.parents[bone])
-					while parent != -1 and parent not in bones: parent = int(animation.preview.parents[parent])
-					if parent != -1 and min(depth[bone], depth[parent]) > 0: canvas.create_line(*screen[parent], *screen[bone], fill="#f4c96a", width=2)
-					if depth[bone] > 0:
-						x, y = screen[bone]
-						canvas.create_oval(x-3, y-3, x+3, y+3, fill="#ffe3a3", outline="")
-			canvas.create_text(8, 8, anchor="nw", fill="#bbc6d5", width=max(width-16, 1), text=animation.preview.message)
-		except (ValueError, IndexError, FloatingPointError) as exc:
-			canvas.create_text(8, 8, anchor="nw", fill="#ff9aa5", text=f"Preview unavailable: {exc}", width=max(width-16, 1))
-
+		camera = draw_animation_viewport(self.viewport, self.animation, self.position, self.bounds, show_mesh=self.show_mesh.get(), show_bones=self.show_bones.get())
+		if camera is not None: self.camera_position, self.camera_target = camera
 	def draw(self):
 		canvas, animation = self.canvas, self.animation
 		canvas.delete("all")

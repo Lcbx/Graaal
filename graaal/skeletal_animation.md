@@ -269,7 +269,7 @@ This first authoring version supports single-clip states, named 1D/2D blend-spac
 sample bindings, in-place root anchoring, masked blend/additive layers and
 clip-pair sync settings. Blend-space states and IK/phase authoring
 are not yet represented. The
-[timeline tool](../tool/README.md) provides an in-memory definition editor,
+[graph tool](../tools/animation_graph.md) provides an in-memory definition editor,
 transition/condition forms, state diagram and explicit layered-pose/transition
 previews using this API. Runtime
 blend-space, sync and IK APIs remain available for application-owned composition.
@@ -715,12 +715,16 @@ For scheduled phases, use `animation.advance` and `animation.finalize` instead o
 Order any root-motion consumer and physics between them, and order rendering
 after finalization. Samples retain full entity handles from the advance step;
 applications must coordinate structural changes so removed entities are not
-rendered from stale snapshots. This split does not yet provide post-physics IK
-or pose modifiers.
+rendered from stale snapshots. A separate post-physics `PosePlan` can consume
+the copied pre-physics pose for IK or alignment; see `foot_ik_example.py`.
 
 Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
 example that submits root-motion requests to a bounded movement system and
 reports the accepted displacement. It uses synthetic clips and a simple boundary.
+Run `python -m scenes.physics_locomotion_example` to accept the same requests
+against a native shape sweep in one ECS scheduler. The character's kinematic
+transform receives only the accepted displacement, while the animation pose
+remains in place. This demonstrates blocking, not sliding or step climbing.
 For the same flow with GPU-skinned materials, run
 `python main.py scenes/locomotion_example.py`. Greenman's walk clip is augmented
 with synthetic root translation; the boundary is an example movement constraint.

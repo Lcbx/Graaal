@@ -48,6 +48,10 @@ opposite directions; a scheduled event consumer counts their footstep markers.
 Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
 crossfade with synthetic root motion and a movement boundary. It prints the
 requested and accepted displacement for each tick.
+Run `python -m scenes.physics_locomotion_example` for the same request/acceptance
+split against a native collision shape. A kinematic ECS character sweeps toward
+an obstacle, records the accepted displacement, and finalizes its in-place pose
+after the physics step. It requires the `physics` extra and no graphics.
 Run `python -m scenes.animation_graph_example` for conditional ECS clip
 transitions and a masked upper-body pose task compiled from an editable
 `AnimationGraphDefinition`. It prints skin-matrix
