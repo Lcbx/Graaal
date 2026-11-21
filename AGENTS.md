@@ -5,61 +5,45 @@ Python game engine built on wgpu and numpy. It has an ECS core and a set of rend
 See [README.md](README.md) for an overview and [graaal/README.md](graaal/README.md)
 for APIs and architecture.
 
-## Where to look
-- ECS storage, queries, commands, and scheduling: `graaal/ECS/`;
-  reference: [graaal/ECS_API.md](graaal/ECS_API.md).
-- CPU animation resources, graphs, pose tasks, and sampling: `graaal/Animation/`;
-  reference: [graaal/skeletal_animation.md](graaal/skeletal_animation.md).
-- ECS adapters and shared transform component: `graaal/EcsAdapters/`;
-  reference: [graaal/physics.md](graaal/physics.md).
-- GPU resources, command recording, mesh storage and shader utilities: `graaal/RenderContext/`.
-- Draw grouping/culling: `graaal/DrawBatches/`,
-  `graaal/EcsAdapters/EcsDrawing.py`.
-- Materials and ECS integration: `graaal/Materials/`,
-  `graaal/EcsAdapters/EcsMaterials.py`; reference: [graaal/materials.md](graaal/materials.md).
-- Transparency, postprocessing, HZB, resolution presentation and shared settings:
-  `graaal/RenderPasses/`;
-  reference: [graaal/stochastic_transparency.md](graaal/stochastic_transparency.md).
-- CPU/render diagnostics and GPU profiling: `graaal/Diagnostics/`.
-- ImGui, rendering controls and diagnostic displays: `graaal/UI/`.
-- Runnable examples: [scenes/README.md](scenes/README.md).
-- Tests: `tests/test_*.py` (use the subsystem guides to find relevant tests).
+## Navigation and skills
+Prefer [tools/module_inspection.py](tools/module_inspection.py) for discovering
+Python APIs. Use focused text searches, AST inspection or direct file reads when
+module inspection cannot answer the question. Use the relevant repo-local skill for its workflow and
+guide/test map; read only references relevant to the task:
 
-Consult specialized guides when working on their subsystems; do not read every
-reference file for unrelated changes.
+- [Repository refactoring](.agents/skills/graaal-repo-refactor/SKILL.md): navigation, downstream impact, directory structure, imports and exports.
+- [Documentation](.agents/skills/graaal-documentation/SKILL.md): API guides, examples, links and plan/status documents.
+- [ECS](.agents/skills/graaal-ecs/SKILL.md): storage, queries, mutations, commands and scheduling.
+- [Rendering](.agents/skills/graaal-rendering/SKILL.md): GPU resources, shaders/layouts, draws, materials, passes and UI.
+- [Animation](.agents/skills/graaal-animation/SKILL.md): sampling, graphs, IK, skinning and authoring tools.
+- [Physics](.agents/skills/graaal-physics/SKILL.md): native integration, fixed ticks, identity and interpolation.
+- [Performance](.agents/skills/graaal-performance/SKILL.md): array access, allocations, benchmarks and profiling.
+
+## Architecture
 ECS, DrawBatches, Materials, RenderContext and Diagnostics expose their main APIs
 from `__init__.py`; edit implementations in `core.py` and sibling modules.
 Animation, EcsAdapters, RenderPasses and UI expose individual modules.
 Keep package imports free of optional backends until an API requiring them is requested.
 
 ## Ground rules
-- Each tool must work without the ECS or any other tool. ECS integration goes in an adapter, not in the tool.
+- Keep tools independent of the ECS; shared infrastructure dependencies are allowed. ECS integration belongs in adapters under `graaal/EcsAdapters/`.
 - Do what was asked. Suggestions are welcome, but wait for approval before acting on them.
-- If the request rests on a wrong assumption or leaves out critical information, point it out and stop. Don't guess.
+- Explain incorrect assumptions and ask before proceeding. Ask about missing information rather than making assumptions, even when they seem minor.
 - Don't add abstraction layers the task doesn't need. Low-level APIs must stay usable.
 
 ## Code style
-- Indent with tabs, never spaces.
+- Indent Python code with tabs, never spaces. Respect required indentation in other formats.
 - Keep existing comments and variable names unless the task requires changing them.
 - add concise comments when they help readability. do not enumerate steps (ex ```# 1. first step```) 
 - Prefer composition over inheritance.
 - Prefer procedural code over OOP.
-- Use functional style for small expressions (comprehensions, short lambdas, `map`).
+- Prefer concise, readable functional expressions such as comprehensions and short lambdas. Use `map` when it improves clarity.
 - Keep call arguments on one line. Break them only if an argument is a complex expression or there are 6+ parameters.
 - Use vectorized numpy operations instead of Python loops over array data.
-
-## Docs
-- Document public API usage, architectural boundaries, integration contracts,
-  and invariants that a maintainer must preserve. Prefer short examples and links
-  to canonical scenes/tests over repeating implementation details.
-- Don't write implementation diaries or describe work done in API guides.
-- If a task has a plan/status doc, record what was done, how, and why in it,
-  and keep it current as work progresses.
 
 ## Validation
 - Install from the repository root: `python -m pip install -e ".[render,assets,ui,examples,test]"`.
 - CPU smoke test: `python -m graaal`.
-- Focused ECS tests: `python -m pytest tests/test_ecs_main.py -q`.
 - Full suite: `python -m pytest tests -q -p no:cacheprovider`.
 - Optional GPU smoke test: `python -m graaal --offscreen --frames 1`.
 - Run tests for changed subsystems first. Rendering tests and GPU smoke tests
