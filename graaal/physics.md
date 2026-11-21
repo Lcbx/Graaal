@@ -107,11 +107,13 @@ dispatch tick. It preserves all native fields and adds `entity_a`, `entity_b`
 `WORLD_ENTITY` is the maximum uint64 value and means world/unresolved ownership;
 entity zero is a valid owner. Native `a`/`b` IDs retain their original namespace:
 body IDs for contacts/triggers/state, joint ID in `a` for joint events, character
-ID in `a` for character events. Characters created directly on the native world
-have unresolved `entity_a`; their contacted body can still resolve `entity_b`.
+ID in `a` for character events. Adapter-owned characters resolve `entity_a`;
+characters created directly on the native world remain unresolved, while their
+contacted body can still resolve `entity_b`.
 Ragdoll body records also resolve `bone_a`/`bone_b` to native physical bone
 indices; other or unresolved endpoints use -1. The asset's `bones` array maps
-these indices to render bones. Character-owner mapping remains a later phase.
+these indices to render bones. Character and joint namespaces are resolved
+separately from body pairs.
 
 ```python
 def on_contact(ecs, commands, events):
@@ -324,6 +326,130 @@ GPU skin palette. Its skinned boxes visualize the authored capsule volumes.
 Native frame, limit, mode, ownership and interpolation regressions are in
 [test_physics_ragdoll.py](../tests/test_physics_ragdoll.py).
 
+## Character controllers
+
+Register `PhysicsCharacter` and `CharacterState` alongside the usual body and
+transform types, and pass immutable native capability assets through `characters=`:
+
+```python
+from graaal.EcsPhysics import CharacterState, PhysicsCharacter
+
+ecs.register(PhysicsCharacter, CharacterState)
+character = ecs.create(1)[0]
+ecs.add(character, PhysicsCharacter(capabilities=0), CharacterState(), MaterialTransform())
+caps = pj.CharacterCapabilities(stepHeight=0.35, maxSlope=50, jumpHeight=1.2)
+physics = EcsPhysicsAdapter(ecs, shapes, characters={0: caps}, interpolate=True)
+physics.reconcile()
+physics.move_characters([character], [1, 0, 0], speed=2)
+physics.prepare_inputs()
+physics.step()
+physics.pull()
+physics.dispatch_events()
+print(ecs.get(CharacterState)[[character]].grounded)
+```
+
+The component's numeric `capabilities` key selects native settings, including
+capsule dimensions, walk/run speeds, acceleration, step height, slope limit,
+jump height, air control and pushing behavior. Native capability units are
+metres, seconds, kilograms and **degrees** for slope angles. The adapter validates
+capsule dimensions; the remaining settings retain their native meaning. Unit
+entity scale is required. `gravity` is downward acceleration in m/s², with NaN
+selecting the length of world gravity. Character up is world +Y. `group`, `mask`
+and `pass_group` retain native collision semantics; a shared nonzero pass group
+lets characters pass through each other.
+
+The ECS transform is at the **feet**, suitable for a skinned character's placement.
+Native creation, `Character.position`, and native TELEPORT operations use the
+capsule **center**. The adapter adds half the standing height on creation and
+subtracts half the current snapshot height on readback, including when crouched.
+Jolt owns positional motion; editing the ECS mirror does not teleport the
+controller. Rotation stays caller-controlled for facing/rendering and does not
+rotate the native upright capsule.
+
+`pull` mirrors feet position and, for owners with a `CharacterState` instance,
+velocity, grounded/state codes, current height, ground normal, stuck flag and
+full ground entity handle. Missing or unowned ground resolves to `WORLD_ENTITY`.
+Register the output component type when enabling characters; attaching an
+instance is optional. These fields are physics outputs, not movement inputs.
+Removing/disabling a controller clears a surviving output instance. Native
+`world.latest().characters` exposes additional landing and eye-position data.
+
+`move_characters(owners, directions, speed=None, mode=0)` queues held world-space
+input. Native walking flattens direction onto the ground; zero direction stops.
+Modes are walk=0, run=1, sprint=2, crouch=3. Omitting speed uses the capability's
+mode speed. Directions and speeds may broadcast or supply one row per owner.
+`jump_characters(owners)` queues native grounded/coyote/buffered jumping.
+Inputs are copied, resolve full handles during `prepare_inputs`, and apply at the
+next native tick. Removed, disabled or deleted owners' queued inputs are dropped.
+Reconcile active owners before sending inputs.
+
+`character_commands(owners, op, code=0, values=(0, 0, 0, 0))` provides the native
+`pj.CharacterOp` batch interface for crouching, slides, gravity, knockback,
+swimming, flight and teleports. Ops/codes/values broadcast or align with owners;
+the native command order is preserved. MOVE uses xyz direction plus speed;
+only its speed can be NaN to select a native default. TELEPORT uses xyz **center**
+plus downward search distance. For example, on the default standing capsule:
+
+```python
+physics.character_commands([character], pj.CharacterOp.CROUCH, code=True)
+physics.character_commands([character], pj.CharacterOp.TELEPORT, values=(5, 0.9, 0, 4))
+```
+
+`physics.characters` exposes read-only owner-to-native-handle membership. Do not
+remove these handles or their proxies directly; change ECS declarations and
+reconcile. Changing capabilities, gravity, groups, masks or proxy settings
+rebuilds the controller while retaining its latest native feet and velocity.
+Rebuilds reset held input and native action state. `enabled=False`, removal of
+the component/transform, and deletion remove it. Active characters cannot share
+an owner with a rigid body, collider or ragdoll. A disabled declaration can remain
+on a ragdoll owner for a later hand-off.
+
+Every character reserves one slot from shared `max_bodies`, including with
+`proxy=False`. The optional proxy appears in queries and trigger records under
+the character's native ID; it is not a regular rigid-body snapshot row. The
+controller still collides with terrain without a proxy. `entities_of` resolves
+owned character/proxy IDs, and `exclude=[owner]` excludes the proxy in queries.
+LAND/JUMP and other character records use the separate character namespace;
+trigger pairs use the proxy's body identity. Removed/deleted handles follow the
+same retirement and generation rules as other owned resources.
+
+With `interpolate=True`, `pull` retains owned feet arrays aligned by native ID;
+`render_transforms` samples them using the caller's alpha. Rebuilds and queued
+TELEPORT commands reset history; skipped ticks snap and repeated pulls preserve
+the interval. Queue teleports through `character_commands` to reset this history.
+
+### Animation and ragdoll hand-off
+
+The [character example](../scenes/character_example.py) compiles idle/walk states
+and an in-place pose plan using `AnimationGraphDefinition`. The existing ECS
+animation clock supplies `RootMotionBatch` requests; their horizontal distance
+over the fixed interval becomes requested controller speed. Gameplay placement
+comes from accepted native motion, so a wall can reduce actual velocity to zero
+while animation still requests movement. Post-physics batched rays, excluding
+the character, drive foot IK only on grounded, valid upward-facing hits. The
+example publishes one final skin palette per owner. Facing follows horizontal
+movement, with foot queries and IK goals converted through the entity's yaw.
+The scripted route jumps a 0.75 m hurdle on approach; this scene uses full native
+air control to maintain forward speed through the jump.
+
+Hand-off policy belongs to gameplay. The example captures controller feet and
+velocity, disables it, creates a kinematic ragdoll with the held local pose, then
+holds that pose for two fixed ticks to settle it before switching to limp and
+applying inherited bone velocities. The native API spawns in its asset rest pose;
+setting a limp pose target alone does not place its bones in an animated pose.
+No controller collides while the ragdoll is active. Recovery projects below the
+physical root, checks standing capsule clearance, removes the whole ragdoll,
+and recreates the controller at those feet with root-body velocity. It suppresses
+new locomotion input for that transfer tick to avoid adding it to inherited
+velocity. If standing space is blocked, it remains a ragdoll until recovery is
+requested again. This is a standing recovery placement, not continuous active
+ragdoll locomotion; the separate active-ragdoll plan covers that control problem.
+
+Run `python -m scenes.character_example --headless --frames 960` for the full
+scripted cycle, or use WASD/Space/R/G in the rendered scene. Native regression
+coverage is in [test_ecs_characters.py](../tests/test_ecs_characters.py) and
+[test_character_example.py](../tests/test_character_example.py).
+
 ## Render interpolation
 
 Construct the adapter with `interpolate=True` to retain two ticks of owned
@@ -373,7 +499,7 @@ costs. This headless benchmark uses isolated moving boxes and reports CPU wall
 times; it does not measure GPU frame rate or collision-heavy workloads.
 
 At body capacity, the pinned backend needs removals applied before additions
-can reserve space. Reconciliation validates body and ragdoll declarations against
+can reserve space. Reconciliation validates body, ragdoll and character declarations against
 their shared capacity before removing either type, allowing replacements in both
 directions within one call. It uses `flush()` when outgoing resources must free
 space for additions, without advancing time; native queries must not run

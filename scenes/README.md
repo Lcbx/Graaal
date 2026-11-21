@@ -98,6 +98,16 @@ fixed ticks. Run the complete cycle without graphics using
 `python -m scenes.ragdoll_example --headless --frames 960`, or check GPU skinning
 with `python -m scenes.ragdoll_example --offscreen --frames 6`.
 
+Run `python main.py scenes/character_example.py` for native controller locomotion
+with idle/walk animation graphs, collision-backed foot IK, triggers and ragdoll
+hand-off. WASD moves, Space jumps, R falls, G recovers when standing clearance is
+available, and T resumes the eight-second scripted cycle. Root motion supplies
+requested speed; native accepted motion positions the character. It faces its
+movement direction and jumps a 0.75 m hurdle on approach during the scripted
+cycle. Run `python -m scenes.character_example --headless --frames 960` for the
+full cycle, or `python -m scenes.character_example --offscreen --frames 6` for
+the existing GPU skinning path. These scenes require the `physics` extra.
+
 ## Rendering and transparency settings
 
 In `transparency_example.py`, the ImGui settings panel is visible at startup.

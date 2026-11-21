@@ -1,4 +1,4 @@
-"""Optional ECS rigid-body ownership over a standalone pyjoltphysics world."""
+"""Optional ECS body, character and ragdoll ownership over standalone Jolt."""
 
 from dataclasses import fields
 from types import MappingProxyType
@@ -39,6 +39,33 @@ class Collider:
 
 
 WORLD_ENTITY = np.uint64(0xffffffffffffffff)
+
+
+@component
+class PhysicsCharacter:
+	"""Capability asset and native controller settings; ECS position is at the feet."""
+	capabilities: np.uint32 = 0
+	gravity: np.float64 = np.nan
+	pass_group: np.uint32 = 0
+	group: np.uint32 = 1
+	mask: np.uint32 = 0xffffffff
+	proxy: bool = True
+	enabled: bool = True
+
+
+@component
+class CharacterState:
+	"""Physics output only; ground is a full entity handle or WORLD_ENTITY."""
+	velocity: Vec3 = (0, 0, 0)
+	grounded: bool = False
+	ground: np.uint64 = WORLD_ENTITY
+	ground_normal: Vec3 = (0, 0, 0)
+	state: np.uint8 = 3
+	height: np.float32 = 0
+	stuck: bool = False
+
+
+_CHARACTER_FIELDS = ("capabilities", "gravity", "pass_group", "group", "mask", "proxy")
 
 
 @component
@@ -107,7 +134,7 @@ class EcsPhysicsAdapter:
 	objects. Call reconcile, prepare_inputs, step, pull in each fixed tick.
 	The caller owns fixed time; dynamic ECS poses never become implicit inputs.
 	"""
-	def __init__(self, ecs, shapes, *, transform_type=None, settings=None, interpolate=False, joint_type=None, ragdolls=None):
+	def __init__(self, ecs, shapes, *, transform_type=None, settings=None, interpolate=False, joint_type=None, ragdolls=None, characters=None):
 		import pyjoltphysics as pj
 		if transform_type is None:
 			from .MaterialTransform import MaterialTransform
@@ -128,6 +155,15 @@ class EcsPhysicsAdapter:
 		self._ragdolls, self._ragdoll_poses = {}, {}
 		self._ragdoll_history = {}
 		self._ragdoll_owners, self._bone_by_uid, self._retired_bones = {}, {}, {}
+		self._character_assets = {} if characters is None else dict(characters)
+		for caps in self._character_assets.values():
+			if not isinstance(caps, pj.CharacterCapabilities): raise TypeError("character registry values must be CharacterCapabilities objects")
+			if not np.isfinite((caps.radius, caps.standHeight, caps.crouchHeight)).all() or caps.radius <= 0 or min(caps.standHeight, caps.crouchHeight) < 2 * caps.radius:
+				raise ValueError("character capsule heights must be finite and at least twice the positive radius")
+		self._character_query = None if characters is None else ecs.query(PhysicsCharacter, transform_type)
+		self._character_states = None if characters is None else ecs.get(CharacterState)
+		self._characters, self._character_owners, self._retired_characters = {}, {}, {}
+		self._character_pending, self._character_history, self._character_snap = [], None, set()
 		self._retired_bodies, self._retired_joints = {}, {}
 		self._subscriptions = {}
 		self._next_subscription = 1
@@ -204,12 +240,14 @@ class EcsPhysicsAdapter:
 	def reconcile(self, ecs=None, commands=None, dt=None):
 		"""Validate shared capacity, release outgoing resources, then create replacements."""
 		self._check(ecs, dt)
+		characters = self._plan_characters()
 		ragdolls = self._plan_ragdolls()
 		bodies = self._plan_bodies()
 		removed = np.empty(0, dtype=np.uint32) if bodies is None else bodies[0]
 		handles = [] if ragdolls is None else ragdolls[0]
-		needed = (0 if bodies is None else bodies[1]) + (0 if ragdolls is None else ragdolls[1])
-		freed = len(removed) + sum(len(handle.bones) for handle in handles)
+		character_ids = [] if characters is None else characters[0]
+		needed = sum(plan[1] for plan in (bodies, ragdolls, characters) if plan is not None)
+		freed = len(removed) + sum(len(handle.bones) for handle in handles) + len(character_ids)
 		capacity = self.world.settings.max_bodies
 		if self.world.reserved_bodies - freed + needed > capacity:
 			# Prior reconciliations may still have queued removals reserving space.
@@ -217,11 +255,75 @@ class EcsPhysicsAdapter:
 			if self.world.reserved_bodies - freed + needed > capacity: raise ValueError("physics declarations exceed max_bodies")
 		if len(removed): self._seq(self.world.remove_bodies(removed))
 		if handles: self._seq(self.world.remove_ragdolls([handle.id for handle in handles]))
+		if character_ids: self._seq(self.world.remove_characters(character_ids))
 		# Native additions reserve before queued removals free capacity.
 		if self.world.reserved_bodies + needed > capacity: self.world.flush()
 		ragdolls_changed = False if ragdolls is None else ragdolls[2]()
 		changed = False if bodies is None else bodies[2]()
-		return self._reconcile_joints(changed) or changed or ragdolls_changed
+		characters_changed = False if characters is None else characters[2]()
+		return self._reconcile_joints(changed) or changed or ragdolls_changed or characters_changed
+
+	@property
+	def characters(self):
+		"""Read-only full owner -> native Character handles, including pending creations."""
+		return MappingProxyType({owner: record[1] for owner, record in self._characters.items()})
+
+	def _plan_characters(self):
+		"""Validate controllers and return removed IDs, reservation count and commit."""
+		if self._character_query is None: return None
+		result = self._character_query.fetch()
+		values = result[PhysicsCharacter].selection
+		active = values.enabled
+		owners = result.entities[active]
+		pose = result[self.transform_type].selection
+		positions, rotations = pose.position[active].astype(np.float64), pose.rotation[active]
+		if np.any(self.ecs.has(owners, Collider) | self.ecs.has(owners, RigidBody)) or (self._ragdoll_query is not None and np.any(self.ecs.has(owners, PhysicsRagdoll))):
+			raise ValueError("active character owners cannot also declare bodies or ragdolls")
+		if not np.isfinite(positions).all(): raise ValueError("character feet positions must be finite")
+		_rotations(rotations)
+		if self._has_scale and not np.allclose(pose.scale[active], 1, atol=1e-6): raise ValueError("character entity scale must be unit")
+		gravity = values.gravity[active]
+		if np.any(np.isinf(gravity)) or np.any(gravity < 0): raise ValueError("character gravity must be nonnegative or NaN for world gravity")
+		columns = [getattr(values, name)[active] for name in _CHARACTER_FIELDS]
+		desired = {}
+		for row, owner in enumerate(map(int, owners)):
+			key = int(columns[0][row])
+			if key not in self._character_assets: raise ValueError(f"unknown character capabilities {key}")
+			signature = tuple(None if name == "gravity" and np.isnan(column[row]) else column[row].item() for name, column in zip(_CHARACTER_FIELDS, columns)) + (self._character_assets[key],)
+			desired[owner] = (signature, row)
+		removed = [owner for owner, record in self._characters.items() if owner not in desired or record[0] != desired[owner][0]]
+		added = [owner for owner in desired if owner not in self._characters or owner in removed]
+		velocities = {}
+		snapshot = self.world.latest()
+		if snapshot is not None:
+			rows = snapshot.characters
+			for owner in added:
+				if owner not in self._characters: continue
+				row = rows.rows.get(self._characters[owner][1].id)
+				if row is not None:
+					positions[desired[owner][1]] = rows.position[row] - [0, rows.height[row] * 0.5, 0]
+					velocities[owner] = rows.velocity[row].copy()
+		def apply():
+			if removed and self._character_history is not None:
+				tick, old_owners, old_ids, previous, current = self._character_history
+				keep = ~np.isin(old_ids, [self._characters[owner][1].id for owner in removed])
+				self._character_history = (tick, old_owners[keep], old_ids[keep], previous[keep], current[keep]) if np.any(keep) else None
+			for owner in removed:
+				_, handle = self._characters.pop(owner)
+				self._retired_characters[handle.id] = owner
+				self._retired_bodies[handle.id] = owner
+				if self.ecs.is_alive([owner])[0] and self.ecs.has([owner], CharacterState)[0]:
+					self._character_states[[owner]].assign(velocity=(0, 0, 0), grounded=False, ground=WORLD_ENTITY, ground_normal=(0, 0, 0), state=3, height=0, stuck=False)
+			for owner in added:
+				signature, row = desired[owner]
+				key, gravity, pass_group, group, mask, proxy, caps = signature
+				handle = self.world.add_character(positions[row] + [0, caps.standHeight * 0.5, 0], caps, gravity, pass_group, group, mask, proxy=proxy)
+				self._characters[owner] = (signature, handle)
+				if owner in velocities: self._seq(handle.apply_impulse(velocities[owner]))
+				else: self._seq(handle.set_move((0, 0, 0)))
+			self._character_owners = {handle.id: owner for owner, (_, handle) in self._characters.items()}
+			return bool(removed or added)
+		return [self._characters[owner][1].id for owner in removed], len(added), apply
 
 	@property
 	def ragdolls(self):
@@ -510,7 +612,7 @@ class EcsPhysicsAdapter:
 	def entities_of(self, uids):
 		"""Resolve current body UIDs to live full handles; WORLD_ENTITY means absent."""
 		self._check()
-		return self._resolve_owners(uids, self._owner_by_uid | self._ragdoll_owners)
+		return self._resolve_owners(uids, self._owner_by_uid | self._ragdoll_owners | self._character_owners)
 
 	def bone_indices_of(self, uids):
 		"""Resolve native physical bone indices, or -1 for other/unowned bodies."""
@@ -551,6 +653,7 @@ class EcsPhysicsAdapter:
 		uids = [self._uid_by_owner[int(owner)] for owner in as_entities(exclude) if int(owner) in self._uid_by_owner]
 		ragdolls = [self._ragdolls[int(owner)][1].bones for owner in as_entities(exclude) if int(owner) in self._ragdolls]
 		if ragdolls: uids.extend(np.concatenate(ragdolls).tolist())
+		uids.extend(self._characters[int(owner)][1].id for owner in as_entities(exclude) if int(owner) in self._characters)
 		return self.pj.QueryFilter(group=group, mask=mask, exclude=uids, triggers=triggers, characters=characters)
 
 	def _query_filter(self, filter, exclude):
@@ -615,8 +718,10 @@ class EcsPhysicsAdapter:
 		events["entity_a"] = events["entity_b"] = WORLD_ENTITY
 		events["bone_a"] = events["bone_b"] = -1
 		body_events = np.isin(raw["kind"], (self.pj.EventKind.CONTACT, self.pj.EventKind.TRIGGER, self.pj.EventKind.STATE))
-		owners = self._retired_bodies | self._owner_by_uid | self._ragdoll_owners
+		owners = self._retired_bodies | self._owner_by_uid | self._ragdoll_owners | self._character_owners
 		events["entity_a"][body_events] = self._resolve_owners(raw["a"][body_events], owners)
+		character = raw["kind"] == self.pj.EventKind.CHARACTER
+		events["entity_a"][character] = self._resolve_owners(raw["a"][character], self._retired_characters | self._character_owners)
 		pair = np.isin(raw["kind"], (self.pj.EventKind.CONTACT, self.pj.EventKind.TRIGGER, self.pj.EventKind.CHARACTER))
 		events["entity_b"][pair] = self._resolve_owners(raw["b"][pair], owners)
 		bones = self._retired_bones | self._bone_by_uid
@@ -634,6 +739,7 @@ class EcsPhysicsAdapter:
 		self._retired_bodies.clear()
 		self._retired_joints.clear()
 		self._retired_bones.clear()
+		self._retired_characters.clear()
 		own_commands = commands is None
 		commands = self.ecs.commands() if own_commands else commands
 		for callback, kind, entity in tuple(self._subscriptions.values()):
@@ -681,9 +787,48 @@ class EcsPhysicsAdapter:
 	def add_force(self, entities, forces, points=None):
 		self._queue("add_forces", entities, forces=forces, points=points)
 
+	def character_commands(self, entities, op, *, code=0, values=(0, 0, 0, 0)):
+		"""Queue native CharacterOp rows by full entity handle; TELEPORT values use centres."""
+		self._check()
+		owners = as_entities(entities).copy()
+		ops, codes = np.broadcast_to(op, (len(owners),)).copy(), np.broadcast_to(code, (len(owners),)).copy()
+		if ops.dtype.kind not in "iu" or not np.isin(ops, list(self.pj.CharacterOp)).all(): raise ValueError("invalid character operation")
+		if codes.dtype.kind not in "iub" or np.any(codes < 0) or np.any(codes > 255): raise ValueError("character codes must fit uint8")
+		data = np.array(np.broadcast_to(values, (len(owners), 4)), dtype=np.float64, copy=True)
+		move = ops == self.pj.CharacterOp.MOVE
+		allowed_nan = np.zeros(data.shape, dtype=bool)
+		allowed_nan[move, 3] = True
+		if np.any(np.isinf(data)) or np.any(np.isnan(data) & ~allowed_nan): raise ValueError("character values must be finite except an optional MOVE speed")
+		if np.any(codes[move] > 3) or np.any(data[move, 3] < 0): raise ValueError("character MOVE mode must be 0..3 and speed nonnegative")
+		if np.any(data[ops == self.pj.CharacterOp.TELEPORT, 3] < 0): raise ValueError("teleport search must be nonnegative")
+		self._character_pending.append((owners, ops.astype(np.uint8), codes.astype(np.uint8), data))
+
+	def move_characters(self, entities, directions, *, speed=None, mode=0):
+		"""Queue held world-space movement; zero direction stops the native controller."""
+		owners = as_entities(entities)
+		data = np.empty((len(owners), 4), dtype=np.float64)
+		data[:, :3] = _vectors(directions, len(owners), 3, "directions")
+		data[:, 3] = np.nan if speed is None else speed
+		self.character_commands(owners, self.pj.CharacterOp.MOVE, code=mode, values=data)
+
+	def jump_characters(self, entities):
+		self.character_commands(entities, self.pj.CharacterOp.JUMP)
+
 	def prepare_inputs(self, ecs=None, commands=None, dt=None):
 		"""Send current kinematic targets and queued commands for the next tick."""
 		self._check(ecs, dt)
+		while self._character_pending:
+			owners, ops, codes, data = self._character_pending[0]
+			if self._character_query is None: raise ValueError("enable characters before submitting character commands")
+			live = self.ecs.is_alive(owners) & self.ecs.has(owners, PhysicsCharacter) & self.ecs.has(owners, self.transform_type)
+			present = owners[live]
+			live[live] &= self.ecs.get(PhysicsCharacter)[present].enabled
+			ids = np.array([self._characters[int(owner)][1].id if int(owner) in self._characters else 0 for owner in owners], dtype=np.uint32)
+			if np.any(live & (ids == 0)): raise ValueError("reconcile characters before submitting inputs")
+			if np.any(live):
+				self._seq(self.world.character_ops(ids[live], ops[live], codes[live], data[live]))
+				self._character_snap.update(map(int, ids[live & (ops == self.pj.CharacterOp.TELEPORT)]))
+			self._character_pending.pop(0)
 		for owner, (asset_key, handle, *_) in self._ragdolls.items():
 			if not self.ecs.is_alive([owner])[0] or not self.ecs.has([owner], PhysicsRagdoll)[0] or not self.ecs.has([owner], self.transform_type)[0]: continue
 			asset = self._ragdoll_assets[asset_key]
@@ -717,6 +862,7 @@ class EcsPhysicsAdapter:
 		self._check(ecs, dt)
 		snapshot = self.world.latest()
 		if snapshot is None: return
+		if self._characters: self._pull_characters(snapshot)
 		rows = snapshot.rows_of(self._uids)
 		if snapshot.applied_seq >= self.last_seq and np.any(rows < 0):
 			raise RuntimeError("owned physics body disappeared; do not remove adapter bodies through world")
@@ -752,6 +898,36 @@ class EcsPhysicsAdapter:
 		if np.any(mask):
 			self.transforms[self._entities[mask]].assign(position=snapshot.position[rows[mask]], rotation=snapshot.orientation[rows[mask]])
 
+	def _pull_characters(self, snapshot):
+		rows = snapshot.characters
+		owners = np.array(list(self._characters), dtype=np.uint64)
+		ids = np.array([self._characters[int(owner)][1].id for owner in owners], dtype=np.uint32)
+		indices = np.searchsorted(rows.id, ids)
+		found = indices < len(rows)
+		if len(rows): found &= rows.id[np.minimum(indices, len(rows) - 1)] == ids
+		if snapshot.applied_seq >= self.last_seq and not found.all(): raise RuntimeError("owned character disappeared; remove controllers through ECS")
+		live = self.ecs.is_alive(owners) & self.ecs.has(owners, PhysicsCharacter) & self.ecs.has(owners, self.transform_type)
+		live[live] &= self.ecs.get(PhysicsCharacter)[owners[live]].enabled
+		selected = found & live
+		owners, ids, indices = owners[selected], ids[selected], indices[selected]
+		feet = rows.position[indices].copy()
+		feet[:, 1] -= rows.height[indices] * 0.5
+		self.transforms[owners].position = feet
+		state = self.ecs.has(owners, CharacterState)
+		if np.any(state):
+			selected_rows = indices[state]
+			self._character_states[owners[state]].assign(velocity=rows.velocity[selected_rows], grounded=rows.grounded[selected_rows], ground=self.entities_of(rows.ground_uid[selected_rows]), ground_normal=rows.ground_normal[selected_rows], state=rows.state[selected_rows], height=rows.height[selected_rows], stuck=rows.stuck[selected_rows])
+		if self._interpolate:
+			previous = feet.copy()
+			old = self._character_history
+			if old is not None and snapshot.tick in (old[0], old[0] + 1):
+				_, before, now = np.intersect1d(old[2], ids, return_indices=True)
+				previous[now] = old[3 if snapshot.tick == old[0] else 4][before]
+			previous[np.isin(ids, list(self._character_snap))] = feet[np.isin(ids, list(self._character_snap))]
+			order = np.argsort(owners)
+			self._character_history = (snapshot.tick, owners[order].copy(), ids[order].copy(), previous[order], feet[order]) if len(owners) else None
+		self._character_snap.clear()
+
 	def render_transforms(self, entities, *, alpha):
 		"""Return interpolated TRS copies in requested entity order, without ECS writes.
 
@@ -774,12 +950,21 @@ class EcsPhysicsAdapter:
 			selected = rows[moving]
 			position[moving] = self._previous_position[selected] * (1 - alpha) + self._position[selected] * alpha
 			rotation[moving] = Quaternion.slerp_batch(self._previous_rotation[selected], self._rotation[selected], alpha)
+		if self._character_history is not None:
+			_, owners, _, previous, current = self._character_history
+			indices = np.searchsorted(owners, entities)
+			rows = np.minimum(indices, len(owners) - 1)
+			selected = (indices < len(owners)) & (owners[rows] == entities) & self.ecs.has(entities, PhysicsCharacter)
+			selected[selected] &= self.ecs.get(PhysicsCharacter)[entities[selected]].enabled
+			if np.any(selected): position[selected] = previous[rows[selected]] * (1 - alpha) + current[rows[selected]] * alpha
 		return position, rotation, scale
 
 	def close(self):
 		"""Join the native thread and clear ownership and queued commands; idempotent."""
 		if self._closed: return
 		try:
+			if self._characters and self.world.error is None:
+				self.world.remove_characters([handle.id for _, handle in self._characters.values()])
 			if self._ragdolls and self.world.error is None:
 				self.world.remove_ragdolls([record[1].id for record in self._ragdolls.values()])
 			if self._joint_records and self.world.error is None:
@@ -791,6 +976,12 @@ class EcsPhysicsAdapter:
 		finally:
 			self.world.stop()
 			self._pending.clear()
+			self._character_pending.clear()
+			self._characters.clear()
+			self._character_owners.clear()
+			self._retired_characters.clear()
+			self._character_history = None
+			self._character_snap.clear()
 			self._shape_cache.clear()
 			self._uid_by_owner.clear()
 			self._owner_by_uid.clear()
