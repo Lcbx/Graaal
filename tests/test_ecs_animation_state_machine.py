@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from graaal.AnimationStateMachine import AnimationStateMachine
+from graaal.Animation.AnimationStateMachine import AnimationStateMachine
 from graaal.ECS import ECS
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.EcsAdapters.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 
 
 def setup():

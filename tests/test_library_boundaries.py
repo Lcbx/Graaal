@@ -5,16 +5,63 @@ import sys
 from pathlib import Path
 
 
+def test_public_package_exports_resolve_to_implementation_objects():
+	result = subprocess.run([sys.executable, "-c", '''
+import importlib
+exports = {
+    'ECS': ('ECS', 'component', 'columns', 'Scheduler', 'CommandBuffer'),
+    'DrawBatches': ('DrawBatches', 'Visibility', 'FrustumCuller'),
+    'Materials': ('MaterialShader', 'MaterialBinding', 'MaterialLibrary'),
+    'RenderContext': ('RenderContext', 'GpuBuffer', 'Shader', 'CommandContext'),
+    'Diagnostics': ('WatchTimer', 'inspect_physics'),
+}
+for name, names in exports.items():
+    package = importlib.import_module('graaal.' + name)
+    for public_name in names:
+        value = getattr(package, public_name)
+        implementation = importlib.import_module('graaal.' + name + '.core')
+        assert value is getattr(implementation, public_name)
+        assert getattr(package, public_name) is value
+'''], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
+	assert result.returncode == 0, result.stderr
+
+
+def test_subsystem_packages_are_lazy_and_animation_needs_no_ecs_or_backends():
+	result = subprocess.run([sys.executable, "-c", '''
+import sys
+import importlib
+import importlib.abc
+import graaal.ECS
+import graaal.Animation
+import graaal.DrawBatches
+import graaal.Materials
+import graaal.RenderContext
+import graaal.RenderPasses
+import graaal.EcsAdapters
+import graaal.Diagnostics
+import graaal.UI
+packages = ('ECS', 'Animation', 'DrawBatches', 'Materials', 'RenderContext', 'RenderPasses', 'EcsAdapters', 'Diagnostics', 'UI')
+assert not any(name.startswith(tuple('graaal.' + package + '.' for package in packages)) for name in sys.modules)
+class ForbidDependencies(importlib.abc.MetaPathFinder):
+	def find_spec(self, name, *args):
+		if name.startswith('graaal.ECS.') or name.split('.')[0] in {'wgpu', 'glfw', 'jinja2', 'PIL', 'pygltflib', 'pyjoltphysics', 'imgui_bundle', 'psutil'}:
+			raise AssertionError('Unexpected animation dependency: ' + name)
+sys.meta_path.insert(0, ForbidDependencies())
+for name in ('AnimationEvents', 'AnimationGraph', 'AnimationStateMachine', 'AnimationSync', 'InverseKinematics', 'PosePalette', 'PoseTasks', 'RootMotion', 'SkeletalAnimation', 'SkeletalGltf'):
+	importlib.import_module('graaal.Animation.' + name)
+'''], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
+	assert result.returncode == 0, result.stderr
+
+
 def test_inline_imports_are_confined_to_cold_paths():
 	# Frame recording, simulation updates and array operations keep imports out.
 	cold_paths = {
 		"Assets": {"load_gltf_scene", "load_gltf_first_mesh", "load_blue_noise"},
-		"Diagnostics": {"__getattr__", "setup_memory_monitor"},
+		"Diagnostics/core": {"setup_memory_monitor"},
 		"EcsPhysics": {"EcsPhysicsAdapter.__init__"},
 		"PhysicsRagdoll": {"RagdollAsset.__init__"},
 		"Geometry": {"make_cube_mesh"},
 		"ImGui": {"ImGui.__init__"},
-		"MaterialRenderer": {"__getattr__"},
 		"MeshArena": {"_Pool.__init__", "MeshArena.__init__"},
 		"SkeletalGltf": {"load_skinned_gltf"},
 		"ecs_diagnostics": {"check_world"},
@@ -25,7 +72,8 @@ def test_inline_imports_are_confined_to_cold_paths():
 	def inspect(path, node, scope=()):
 		if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
 			scope = (*scope, node.name)
-		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and ".".join(scope) not in cold_paths.get(path.stem, ()):
+		module_key = path.relative_to(root).with_suffix("").as_posix()
+		if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and ".".join(scope) not in cold_paths.get(module_key, cold_paths.get(path.stem, ())):
 			inline.extend(f"{path.name}:{item.lineno}" for item in ast.walk(node) if isinstance(item, (ast.Import, ast.ImportFrom)))
 		for child in ast.iter_child_nodes(node): inspect(path, child, scope)
 	for path in sorted(root.rglob("*.py")):
@@ -34,8 +82,19 @@ def test_inline_imports_are_confined_to_cold_paths():
 
 
 def test_module_imports_work_in_either_order():
-	for modules in (("ECS", "ecs_diagnostics"), ("ecs_diagnostics", "ECS"), ("RenderContext", "MeshArena"), ("MeshArena", "RenderContext")):
+	for modules in (("ECS.core", "ECS.ecs_diagnostics"), ("ECS.ecs_diagnostics", "ECS.core"), ("RenderContext.core", "RenderContext.MeshArena"), ("RenderContext.MeshArena", "RenderContext.core")):
 		result = subprocess.run([sys.executable, "-c", f"import graaal.{modules[0]}; import graaal.{modules[1]}"], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
+		assert result.returncode == 0, result.stderr
+
+
+def test_public_gpu_profiler_export_is_stable_in_either_import_order():
+	for first, second in (("GpuProfiler", "RenderMonitor"), ("RenderMonitor", "GpuProfiler")):
+		result = subprocess.run([sys.executable, "-c", f'''
+from graaal.Diagnostics import {first}, {second}
+from graaal.Diagnostics.gpu_profiler import GpuProfiler as implementation
+assert GpuProfiler is implementation
+assert callable(GpuProfiler)
+'''], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
 		assert result.returncode == 0, result.stderr
 
 
@@ -53,20 +112,32 @@ class BlockOptional(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockOptional())
 before = list(sys.path)
 import graaal
-from graaal import ECS, Math, Assets, TransparencyData, DrawList, InstanceData
-from graaal import draw_compiler, draw_layout, utils
-from graaal import SkeletalAnimation, SkeletalGltf, RootMotion, EcsAnimation, AnimationEvents, AnimationGraph, Geometry
-from graaal.diagnostics_visualizer import DiagnosticsVisualizer
-from graaal import EcsPhysics
+from graaal.ECS import ECS
+from graaal import Math, Assets
+from graaal.DrawBatches import InstanceData
+from graaal.RenderPasses import TransparencyData
+from graaal.DrawBatches import DrawList
+from graaal.DrawBatches import draw_compiler, draw_layout
+from graaal import utils
+from graaal.Animation import SkeletalAnimation, SkeletalGltf, RootMotion, AnimationEvents, AnimationGraph
+from graaal.EcsAdapters import EcsAnimation
+from graaal.RenderContext import Geometry
+from graaal.RenderContext.ShaderSyntax import strip_comments
+from graaal.RenderPasses.pass_settings import AmbientOcclusionSettings, AntialiasingSettings
+from graaal.UI.diagnostics_visualizer import DiagnosticsVisualizer
+from graaal.EcsAdapters import EcsPhysics
 from graaal import PhysicsRagdoll
-from graaal.MaterialTransform import MaterialTransform
-world = ECS.ECS()
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+world = ECS()
 world.register(MaterialTransform)
 entity = world.create(1)
 world.add(entity, MaterialTransform())
 assert world.get(MaterialTransform)[entity].rotation.tolist() == [[0, 0, 0, 1]]
-assert 'graaal.EcsMaterials' not in sys.modules
+assert 'graaal.EcsAdapters.EcsMaterials' not in sys.modules
 assert Math.Quaternion.from_y_rotation(0.5).shape == (4,)
+assert strip_comments('fn main() {} // comment').startswith('fn main() {}')
+assert AmbientOcclusionSettings().radius > 0
+assert AntialiasingSettings().faaa_quality > 0
 from types import SimpleNamespace as NS
 from graaal.__main__ import simulate
 from graaal.Diagnostics import WatchTimer, setup_memory_monitor
@@ -128,7 +199,10 @@ class ForbidBackends(importlib.abc.MetaPathFinder):
         if name.split('.')[0] in {'wgpu', 'glfw', 'jinja2', 'PIL', 'pygltflib', 'pyjoltphysics', 'imgui_bundle', 'psutil'}:
             raise AssertionError('Unexpected optional import: ' + name)
 sys.meta_path.insert(0, ForbidBackends())
-from graaal import Assets, SkeletalGltf, Geometry, EcsPhysics, PhysicsRagdoll, Diagnostics
+from graaal import Assets, PhysicsRagdoll, Diagnostics
+from graaal.RenderContext import Geometry
+from graaal.EcsAdapters import EcsPhysics
+from graaal.Animation import SkeletalGltf
 from graaal.__main__ import simulate
 from graaal.Diagnostics import WatchTimer, inspect_physics
 assert simulate().shape == (2, 3)
@@ -136,7 +210,7 @@ with WatchTimer('cpu'): pass
 from types import SimpleNamespace as NS
 native = NS(tick=0, settings=NS(tick_hz=120), lockstep=True, stats=lambda: {'tick_ms': 0.0})
 assert inspect_physics(native)['stats'] == {'tick_ms': 0.0}
-assert 'graaal.RenderDiagnostics' not in sys.modules
+assert 'graaal.Diagnostics.RenderDiagnostics' not in sys.modules
 assert Assets.load_blue_noise().shape == (64, 64)
 """], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
 	assert result.returncode == 0, result.stderr
@@ -146,31 +220,27 @@ def test_ragdoll_helper_has_no_ecs_or_rendering_dependency():
 	result = subprocess.run([sys.executable, "-c", """
 import sys
 from graaal.PhysicsRagdoll import RagdollAsset
-assert not {'graaal.ECS', 'graaal.EcsPhysics', 'graaal.RenderContext', 'pyjoltphysics'} & sys.modules.keys()
+assert not {'graaal.ECS', 'graaal.ECS', 'graaal.EcsAdapters.EcsPhysics', 'graaal.RenderContext', 'pyjoltphysics'} & sys.modules.keys()
 """], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
 	assert result.returncode == 0, result.stderr
 
 
-def test_rendering_imports_do_not_load_ecs_and_legacy_exports_still_work():
+def test_rendering_imports_do_not_load_ecs_or_adapters():
 	result = subprocess.run([sys.executable, "-c", """
 import sys
 import importlib.abc
 class ForbidEcs(importlib.abc.MetaPathFinder):
     def find_spec(self, name, *args):
-        if name in {'graaal.ECS', 'graaal.EcsMaterials', 'graaal.MaterialTransform'}:
+        if name == 'graaal.ECS' or name.startswith(('graaal.ECS.', 'graaal.EcsAdapters')):
             raise AssertionError('Unexpected ECS dependency: ' + name)
 blocker = ForbidEcs()
 sys.meta_path.insert(0, blocker)
-from graaal import MaterialRenderer, RenderDiagnostics, Diagnostics
+from graaal.Materials import MaterialRenderer
+from graaal import Diagnostics
+from graaal.Diagnostics import RenderDiagnostics
 assert Diagnostics.RenderMonitor is RenderDiagnostics.RenderMonitor
 assert Diagnostics.get_draw_counts is RenderDiagnostics.get_draw_counts
 assert Diagnostics.__dict__['RenderMonitor'] is RenderDiagnostics.RenderMonitor
-sys.meta_path.remove(blocker)
-from graaal.EcsMaterials import MaterialInstance, EcsMaterialAdapter
-from graaal.MaterialTransform import MaterialTransform
-assert MaterialRenderer.MaterialInstance is MaterialInstance
-assert MaterialRenderer.EcsMaterialAdapter is EcsMaterialAdapter
-assert MaterialRenderer.MaterialTransform is MaterialTransform
-assert MaterialRenderer.__dict__['MaterialInstance'] is MaterialInstance
+assert not any(name.startswith('graaal.EcsAdapters') for name in sys.modules)
 """], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
 	assert result.returncode == 0, result.stderr

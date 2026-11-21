@@ -5,7 +5,7 @@ Run: python main.py scenes/locomotion_example.py [--frames 120]
 import numpy as np
 from pathlib import Path
 
-from graaal.SkeletalAnimation import Clip
+from graaal.Animation.SkeletalAnimation import Clip
 from scenes.root_motion_example import Movement, crossfade
 from scenes.simple_animation_example import load_greenman
 
@@ -31,24 +31,24 @@ def make_locomotion_clips(named_clips):
 
 def run_scene():
 	from imgui_bundle import imgui
-	from graaal.DefaultMaterial import DefaultMaterialShader
+	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.DrawBatches import DrawBatches, RenderShader, ShaderPass
 	from graaal.ECS import ECS, Scheduler
-	from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialTransform import MaterialTransform
-	from graaal.ImGui import ImGui
-	from graaal.Geometry import make_cube_mesh
-	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
-	from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+	from graaal.UI.ImGui import ImGui
+	from graaal.RenderContext.Geometry import make_cube_mesh
+	from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
+	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera, Vec3
-	from graaal.PosePalette import PosePalette
+	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext, RenderPipeline, Shader
-	from graaal.RootMotion import RootMotion
-	from graaal.SkinMatrixBuffer import SkinMatrixBuffer
-	from graaal.TransparencyPass import record_transparency
-	from graaal.render_resolution import ResolutionPresenter
-	from graaal.rendering_settings import RenderingSettings
+	from graaal.Animation.RootMotion import RootMotion
+	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+	from graaal.RenderPasses.TransparencyPass import record_transparency
+	from graaal.RenderPasses.render_resolution import ResolutionPresenter
+	from graaal.UI.rendering_settings import RenderingSettings
 	from scenes.example_overlay import ExampleOverlay
 
 	rig, vertices, indices, named_clips = load_greenman()

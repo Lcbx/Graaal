@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from graaal.AnimationEvents import EventTrack
-from graaal.AnimationSync import SyncMapping
-from graaal.RootMotion import RootMotion
-from graaal.SkeletalAnimation import Clip, Skeleton, sample_clip_pairs
+from graaal.Animation.AnimationEvents import EventTrack
+from graaal.Animation.AnimationSync import SyncMapping
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, sample_clip_pairs
 
 
 def test_mapping_marker_phase_looping_reverse_and_rate():

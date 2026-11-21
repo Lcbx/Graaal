@@ -5,7 +5,7 @@ import weakref
 
 import numpy as np
 import pytest
-from graaal import RenderContext as rc
+from graaal.RenderContext import core as rc
 
 
 def test_optional_gpu_features_are_enabled_only_when_supported(monkeypatch):

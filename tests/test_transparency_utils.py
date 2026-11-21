@@ -2,7 +2,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from graaal.TransparencyPass import record_transparency
+from graaal.RenderPasses.TransparencyPass import record_transparency
 
 
 @pytest.mark.parametrize("mixed", [False, True])

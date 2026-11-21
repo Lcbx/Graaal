@@ -3,11 +3,11 @@
 import numpy as np
 import pytest
 
-from graaal.EcsPhysics import CharacterState
-from graaal.EcsAnimation import ClipPlayer
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import CharacterState
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
-from graaal.SkeletalAnimation import model_matrices
+from graaal.Animation.SkeletalAnimation import model_matrices
 
 
 def advance(schedule, count=1):
@@ -123,7 +123,7 @@ def test_merged_graph_crossfades_between_idle_and_walk_without_a_second_clock():
 
 def test_recovery_waits_until_the_standing_capsule_has_clearance():
 	pytest.importorskip("pyjoltphysics")
-	from graaal.EcsPhysics import Collider
+	from graaal.EcsAdapters.EcsPhysics import Collider
 	from scenes.character_example import create_demo
 	ecs, owner, environment, physics, schedule, state, asset = create_demo()
 	state["auto"] = False

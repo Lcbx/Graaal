@@ -1,7 +1,7 @@
 """Profiler widget state and ImGui frame smoke tests."""
 import pytest
 
-from graaal.diagnostics_visualizer import DiagnosticsVisualizer
+from graaal.UI.diagnostics_visualizer import DiagnosticsVisualizer
 
 
 def report(gpu=None, cpu=2.0):

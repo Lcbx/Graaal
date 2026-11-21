@@ -10,8 +10,8 @@ see [the standalone example](../scenes/physics_headless_example.py).
 ```python
 import pyjoltphysics as pj
 from graaal.ECS import ECS, Scheduler
-from graaal.MaterialTransform import MaterialTransform
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
 
 ecs = ECS()
 ecs.register(MaterialTransform, Collider, RigidBody)
@@ -54,7 +54,7 @@ All dimensions and translations are metres; quaternions use **xyzw**.
 Use `transform_type=YourTransform` to bind another component with numeric
 `position` (3) and `rotation` (4) fields. Optional `scale` (3) defaults to unit
 scale. Transform and collider scales must be positive and finite. The default
-is `MaterialTransform`, defined in `graaal.MaterialTransform`; importing it
+is `MaterialTransform`, defined in `graaal.EcsAdapters.MaterialTransform`; importing it
 requires no shader or graphics package.
 
 - Dynamic bodies own their native pose and velocity. `pull` writes changed
@@ -199,7 +199,7 @@ Creation waits until both referenced bodies exist. Multiple joints on an owner
 need distinct explicit `key` values; the default key is zero.
 
 ```python
-from graaal.EcsPhysics import PhysicsJoint, WORLD_ENTITY
+from graaal.EcsAdapters.EcsPhysics import PhysicsJoint, WORLD_ENTITY
 
 ecs.register(PhysicsJoint)
 ecs.add(box, PhysicsJoint(key=1, kind=2, target=WORLD_ENTITY, anchor=(0, 3, 0), axis=(0, 0, 1), lower=(-0.5,) * 6, upper=(0.5,) * 6))
@@ -267,7 +267,7 @@ including animation-only parents of physical bones.
 Register `EcsPhysics.PhysicsRagdoll` and pass an asset mapping through `ragdolls=`:
 
 ```python
-from graaal.EcsPhysics import PhysicsRagdoll
+from graaal.EcsAdapters.EcsPhysics import PhysicsRagdoll
 
 ecs.register(PhysicsRagdoll)
 ecs.add(character, PhysicsRagdoll(asset=0, mode=0), MaterialTransform())
@@ -332,7 +332,7 @@ Register `PhysicsCharacter` and `CharacterState` alongside the usual body and
 transform types, and pass immutable native capability assets through `characters=`:
 
 ```python
-from graaal.EcsPhysics import CharacterState, PhysicsCharacter
+from graaal.EcsAdapters.EcsPhysics import CharacterState, PhysicsCharacter
 
 ecs.register(PhysicsCharacter, CharacterState)
 character = ecs.create(1)[0]
@@ -470,7 +470,7 @@ kinematic render interpolation never writes into controller targets.
 For an existing renderer and shape mapping:
 
 ```python
-from graaal.EcsMaterials import EcsMaterialAdapter
+from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter
 
 physics = EcsPhysicsAdapter(ecs, shapes, interpolate=True)
 alpha = 0.0

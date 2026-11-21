@@ -4,11 +4,11 @@ Run: python -m scenes.animation_graph_example
 """
 import numpy as np
 
-from graaal.AnimationGraph import AnimationGraphDefinition
+from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 from graaal.ECS import ECS, component
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.EcsAdapters.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
 
 
 @component

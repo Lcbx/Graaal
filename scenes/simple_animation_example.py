@@ -1,10 +1,10 @@
-﻿"""Greenman skeletal animation: 1 pose, 2 idle, 3 move, 4 attack; Space pauses.
+"""Greenman skeletal animation: 1 pose, 2 idle, 3 move, 4 attack; Space pauses.
 
 Run from the repository root: python main.py scenes/simple_animation_example.py
 """
 from pathlib import Path
 
-from graaal.SkeletalGltf import load_skinned_gltf
+from graaal.Animation.SkeletalGltf import load_skinned_gltf
 
 
 ASSET = Path(__file__).parent / "resources" / "greenman.glb"
@@ -18,16 +18,16 @@ def load_greenman(path=ASSET):
 
 
 def run_scene():
-	from graaal.DefaultMaterial import DefaultMaterialShader
+	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.ECS import ECS
-	from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialTransform import MaterialTransform
-	from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera, Vec3
-	from graaal.PosePalette import PosePalette
+	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext
-	from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 
 	rig, vertices, indices, clips = load_greenman()
 	RenderContext.init_window(960, 720, "Greenman | 1-4: animation | Space: pause", required_gpu_features=["indirect-first-instance"])

@@ -3,11 +3,11 @@ from unittest.mock import Mock
 import numpy as np
 
 from graaal.ECS import ECS
-from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Vec3
 from graaal.Materials import MaterialShader
-from graaal.MaterialRenderer import MaterialRenderer, MaterialMesh
+from graaal.Materials.MaterialRenderer import MaterialRenderer, MaterialMesh
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from scenes.material_example import make_world, sphere_vertices
 

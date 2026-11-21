@@ -31,8 +31,8 @@ For code changes, use the [entity lifecycle](#entity-lifecycle) and
 [structural queries](#structural-queries-and-joins) for query invalidation;
 [version tokens](#version-tokens-and-caches) for mutation notification; and
 [scheduling](#scheduling) for execution ordering. Implementation entry points
-are `ECS.py`, `ecs_schema.py`, `ecs_types.py`, `ecs_commands.py`, and
-`ecs_schedule.py`. Relevant regression tests are
+are `ECS/core.py`, `ECS/ecs_schema.py`, `ECS/ecs_types.py`,
+`ECS/ecs_commands.py`, and `ECS/ecs_schedule.py`. Relevant regression tests are
 [`test_ecs_main.py`](../tests/test_ecs_main.py),
 [`test_ecs_queries.py`](../tests/test_ecs_queries.py), and
 [`test_ecs_schedule.py`](../tests/test_ecs_schedule.py). Run the focused tests:

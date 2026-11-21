@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 from graaal.ECS import ECS
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsJoint, RigidBody, WORLD_ENTITY
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsJoint, RigidBody, WORLD_ENTITY
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 
 
 @pytest.fixture

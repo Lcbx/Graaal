@@ -55,10 +55,10 @@ if __name__ == "__main__":
 		if args.compile:
 			from subprocess import run
 			cwd = graaal.__path__[0]
-			run( f'py -m mypyc -m graaal.ECS', cwd=cwd)
-			run( f'py -m mypyc -m graaal.RenderContext', cwd=cwd)
+			run( f'py -m mypyc -m graaal.ECS.core', cwd=cwd)
+			run( f'py -m mypyc -m graaal.RenderContext.core', cwd=cwd)
 			run( f'py -m mypyc -m graaal.Math', cwd=cwd)
-			run( f'py -m mypyc -m graaal.DrawBatches', cwd=cwd)
+			run( f'py -m mypyc -m graaal.DrawBatches.core', cwd=cwd)
 			if scene: run( f'py -m nuitka --output-dir=build --standalone {scene}'.split(' ') )
 		else:
 			from graaal.RenderContext import RenderContext

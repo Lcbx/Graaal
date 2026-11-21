@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 
 from graaal.ECS import ECS
-from graaal.EcsPhysics import CharacterState, Collider, EcsPhysicsAdapter, PhysicsCharacter, PhysicsJoint, PhysicsRagdoll, RigidBody
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import CharacterState, Collider, EcsPhysicsAdapter, PhysicsCharacter, PhysicsJoint, PhysicsRagdoll, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.PhysicsRagdoll import RagdollAsset
-from graaal.SkeletalAnimation import Skeleton
+from graaal.Animation.SkeletalAnimation import Skeleton
 
 
 @pytest.fixture

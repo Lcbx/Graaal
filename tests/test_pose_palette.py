@@ -3,9 +3,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from graaal.EcsAnimation import PoseBatch
-from graaal.PosePalette import PosePalette
-from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+from graaal.EcsAdapters.EcsAnimation import PoseBatch
+from graaal.Animation.PosePalette import PosePalette
+from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 
 
 class FakeBuffer:
@@ -27,7 +27,7 @@ def batch(owners, bones, value):
 
 class PosePaletteTests(unittest.TestCase):
 	def setUp(self):
-		self.patch = patch("graaal.SkinMatrixBuffer.GpuBuffer", FakeBuffer)
+		self.patch = patch("graaal.RenderContext.SkinMatrixBuffer.GpuBuffer", FakeBuffer)
 		self.patch.start()
 		self.addCleanup(self.patch.stop)
 

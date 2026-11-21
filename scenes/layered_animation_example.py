@@ -4,7 +4,7 @@ Run: python main.py scenes/layered_animation_example.py [--frames 120]
 """
 import numpy as np
 
-from graaal.SkeletalAnimation import additive_pose, blend_poses, model_matrices, sample_clip, skin_matrices, subtree_mask
+from graaal.Animation.SkeletalAnimation import additive_pose, blend_poses, model_matrices, sample_clip, skin_matrices, subtree_mask
 from scenes.mixing_animation_example import advance_time
 from scenes.simple_animation_example import load_greenman
 
@@ -18,17 +18,17 @@ def greenman_masks(rig):
 
 def run_scene():
 	from imgui_bundle import imgui
-	from graaal.DefaultMaterial import DefaultMaterialShader
+	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.ECS import ECS
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialTransform import MaterialTransform
-	from graaal.ImGui import ImGui
-	from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+	from graaal.UI.ImGui import ImGui
+	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera, Vec3
 	from graaal.RenderContext import RenderContext
-	from graaal.SkinMatrixBuffer import SkinMatrixBuffer
-	from graaal.render_resolution import ResolutionPresenter
-	from graaal.rendering_settings import RenderingSettings
+	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+	from graaal.RenderPasses.render_resolution import ResolutionPresenter
+	from graaal.UI.rendering_settings import RenderingSettings
 	from scenes.example_overlay import ExampleOverlay
 
 	rig, vertices, indices, clips = load_greenman()

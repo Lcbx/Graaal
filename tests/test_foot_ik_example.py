@@ -1,6 +1,6 @@
 import numpy as np
 
-from graaal.EcsAnimation import ClipPlayer, SkeletonRef
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, SkeletonRef
 from scenes.foot_ik_example import Character, create_demo, terrain_height, terrain_normal
 
 
@@ -39,8 +39,8 @@ def test_native_ray_batch_can_replace_analytic_ground():
 	import pytest
 	pj = pytest.importorskip("pyjoltphysics")
 	from graaal.ECS import ECS
-	from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
-	from graaal.MaterialTransform import MaterialTransform
+	from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
+	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 	from scenes.physics_queries_example import query_ground
 
 	ecs = ECS()

@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from graaal.ECS import ECS
-from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 
 
 def test_transform_source_refreshes_between_ticks_without_repacking_materials():

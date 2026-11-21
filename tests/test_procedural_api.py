@@ -5,13 +5,13 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from graaal import DrawBatches as batches
-from graaal import RenderContext as rc
-from graaal import TransparencyPass as transparency
+from graaal.DrawBatches import core as batches
+from graaal.RenderContext import core as rc
+from graaal.RenderPasses import TransparencyPass as transparency
 from graaal.ECS import ECS, component, columns
-from graaal.draw_resources import _DrawResources
-from graaal.draw_culling import _CullingState, default_cull_shader
-from graaal.HZB import HZB
+from graaal.DrawBatches.draw_resources import _DrawResources
+from graaal.DrawBatches.draw_culling import _CullingState, default_cull_shader
+from graaal.RenderPasses.HZB import HZB
 
 
 @pytest.fixture
@@ -263,7 +263,7 @@ def test_cull_camera_uses_explicit_keywords(draws):
 
 
 def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypatch, tmp_path):
-    from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+    from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
     rc.RenderContext.setup_graphics_backend(True)
     monkeypatch.chdir(tmp_path)
@@ -296,7 +296,7 @@ def test_gpu_array_batches_cull_in_compact_order_from_another_directory(monkeypa
 
 
 def test_gpu_lod_selection_tracks_vertical_fov(monkeypatch):
-	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+	from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
 	rc.RenderContext.setup_graphics_backend(True)
 	monkeypatch.setattr(batches, "GpuBuffer", lambda content, usage, **kw:

@@ -2,10 +2,10 @@ import unittest
 
 import numpy as np
 
-from graaal.AnimationEvents import EventTrack
+from graaal.Animation.AnimationEvents import EventTrack
 from graaal.ECS import ECS
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 
 
 class AnimationEventTests(unittest.TestCase):

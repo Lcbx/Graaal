@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from graaal.SkeletalAnimation import skin_vertices
+from graaal.Animation.SkeletalAnimation import skin_vertices
 
 
 def test_native_ragdoll_demo_animation_push_fall_and_recovery():

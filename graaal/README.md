@@ -36,7 +36,7 @@ packed draw inputs --> DrawBatches --> view-specific Visibility --> render passe
 render passes --> caller-owned commands --> RenderContext.submit / presentation
 ```
 
-- **ECS owns simulation data.** `graaal/ECS.py` and `graaal/ecs_*.py` manage
+- **ECS owns simulation data.** Modules in `graaal/ECS/` manage
   component storage and query lifetimes. Field/membership versions enable
   adapters to skip unchanged data; an in-place mutation of an `object` field
   must be followed by `touch()`. Borrowed `edit_dense()` arrays may not escape
@@ -73,24 +73,60 @@ For change-specific contracts and regression tests, see the
 
 ## Modules and useful APIs
 
-Import modules as `graaal.<Module>`. This non-exhaustive overview covers useful
-classes, methods, and helpers; the linked guides explain their contracts.
+ECS implementations live in `graaal.ECS`, and standalone CPU animation lives in
+`graaal.Animation`. Public packages expose their main APIs directly:
+
+```python
+from graaal.ECS import ECS, array_field, columns, component
+from graaal.Animation.SkeletalAnimation import Skeleton, Clip, sample_clip
+from graaal.DrawBatches import DrawBatches, FrustumCuller
+from graaal.Materials import MaterialShader, MaterialBinding, MaterialLibrary
+from graaal.RenderContext import RenderContext, GpuBuffer, Shader
+from graaal.RenderPasses.TransparencyPass import TransparencyPass
+from graaal.RenderPasses.PostprocessingPass import PostprocessingPass
+from graaal.EcsAdapters.EcsPhysics import EcsPhysicsAdapter
+```
+
+| Package | Responsibility |
+| --- | --- |
+| `ECS` | Component storage, queries, commands, scheduling and world invariants |
+| `Animation` | Standalone CPU animation resources, sampling, graphs and pose tasks |
+| `EcsAdapters` | ECS animation, drawing, materials and physics integration; shared `MaterialTransform` component |
+| `RenderContext` | GPU backend, commands, resources, mesh storage, shader syntax/templates and skin palettes |
+| `DrawBatches` | Draw grouping, instance packing, visibility and culling |
+| `Materials` | Material schemas, packing, rendering and independent pose-to-mesh skinning |
+| `RenderPasses` | Transparency, postprocessing, HZB, resolution presentation, packed pass inputs and texture processing |
+| `Diagnostics` | CPU timers, native physics inspection, render inspection and GPU timestamps |
+| `UI` | ImGui integration, rendering controls and diagnostic displays |
+
+`Math`, `Assets`, `PhysicsRagdoll` and `utils` are standalone root modules.
+Package initializers do not load implementations or optional dependencies.
+Import individual CPU helpers, such as `DrawBatches.InstanceData`,
+`RenderContext.Geometry`, `RenderContext.ShaderSyntax`,
+`RenderPasses.TransparencyData` and `RenderPasses.pass_settings`, independently
+of GPU APIs. Shared AO and antialiasing settings live in `pass_settings`.
+ECS integration belongs in `EcsAdapters`; rendering tools and CPU animation
+must not import those adapters. `Diagnostics` loads rendering inspection only
+when explicitly requested, and `UI` depends on the tools it displays.
+
+This non-exhaustive overview covers useful classes, methods, and helpers; the
+linked guides explain their contracts. ECS and CPU animation entries below use
+module names relative to their respective packages.
 
 | CPU module | Useful APIs and purpose |
 | --- | --- |
 | [ECS](ECS_API.md) | `component`, `array_field`, `columns` define data; `ECS.register/create/add/set/remove/delete` manage it; `ECS.query` joins stores. `ComponentAccessor.version/touch` track edits; `ComponentSelection.read/assign` gather and write; accessor `edit_dense` borrows store columns. |
 | `ecs_commands`, `ecs_schedule` | Re-exported by `ECS`: `CommandBuffer.flush/clear` apply or discard deferred edits; `DeferredEntities.resolve` retrieves created IDs; `Scheduler.add/compile/run` orders synchronous systems. |
-| `EcsAnimation` | `SkeletonRef`, `ClipPlayer`, and `EcsAnimationAdapter` advance ECS playback and return batched poses with generational entity handles. |
+| `EcsAdapters.EcsAnimation` | `SkeletonRef`, `ClipPlayer`, and `EcsAnimationAdapter` advance ECS playback and return batched poses with generational entity handles. |
 | `AnimationGraph` | `AnimationGraphDefinition.compile` validates editable named states, transitions, layered tasks and clip-pair sync settings into existing state-machine, pose-plan and sync resources. |
 | `SkeletalGltf` | `load_skinned_gltf` imports a supported subset of skinned glTF and resamples joint tracks into CPU animation resources. |
-| `SkinMatrixBuffer` | `SkinMatrixBuffer` allocates stable GPU skin-matrix ranges for caller-owned IDs. |
-| `MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
+| `Materials.MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
 | `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |
 | `Assets` | `load_gltf_scene` returns static triangle lists, materials and images; `read_gltf_accessor` reads attributes; `load_gltf_first_mesh_interleaved` loads one local-space primitive; `load_blue_noise` returns CPU thresholds. |
-| `InstanceData` | `MESH_INSTANCE_DTYPE` defines transforms/tint; `pack_quaternion`, `pack_scale`, `pack_rgba8_srgb` encode fields; `make_instances` packs separate component columns. |
-| `TransparencyData` | `load_transparency_scene` returns primitives, material records and images; `VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, `MATERIAL_DTYPE` define the rendering ABI. |
-| `DrawList` | `DrawList.build(lod_ids, shader_ids)` returns `.order` and `SourceBatch` ranges for CPU grouping. |
-| `Geometry` | `make_cube_mesh` creates a GPU mesh when called; importing the module needs no graphics backend. |
+| `DrawBatches.InstanceData` | `MESH_INSTANCE_DTYPE` defines transforms/tint; `pack_quaternion`, `pack_scale`, `pack_rgba8_srgb` encode fields; `make_instances` packs separate component columns. |
+| `RenderPasses.TransparencyData` | `load_transparency_scene` returns primitives, material records and images; `VERTEX_DTYPE`, `SHADING_VERTEX_DTYPE`, `MATERIAL_DTYPE` define the rendering ABI. |
+| `DrawBatches.DrawList` | `DrawList.build(lod_ids, shader_ids)` returns `.order` and `SourceBatch` ranges for CPU grouping. |
+| `RenderContext.Geometry` | `make_cube_mesh` creates a GPU mesh when called; importing the module needs no graphics backend. |
 | `Diagnostics` | `WatchTimer` times CPU scopes; `setup_gc_monitor` logs collections; `setup_memory_monitor` returns a report callback and requires separately installed `psutil`. `inspect_physics(world)` copies native physics statistics. Rendering diagnostics are re-exported on explicit access. |
 | `utils` | `cache_last` caches an instance method's most recent keyed call; `higher_pow2` returns the next strictly greater power of two. |
 
@@ -99,31 +135,31 @@ classes, methods, and helpers; the linked guides explain their contracts.
 | `RenderContext` | Singleton `RenderContext.init_window/setup_graphics_backend`, `window_loop`, `screen`, `commands/submit`, `subscribe_event`, `cleanup` manage the backend and frames; `enable_statistics/inspect_resources` expose counters. |
 | `RenderContext` resources | `GpuBuffer.write/write_changed/upload_range/reserve/set_count`, `Texture.view/color_attachment/depth_attachment`, `Sampler`, and `Mesh.release` manage GPU data. |
 | `RenderContext` recording/shaders | `CommandContext.render_pass/compute_pass/finish`, `RenderPass.draw_mesh`, `ComputePass.dispatch`, `Shader.uniform_buffer/bind_group`, `RenderPipeline`, `ComputePipeline`, `BindGroupLayout`, and `PipelineLayout` compose work. Jinja `field()`/`binding()` declarations provide shader metadata; `ShaderInterface` supplies explicit metadata. |
-| `MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
+| `RenderContext.MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
+| `RenderContext.SkinMatrixBuffer` | `SkinMatrixBuffer` allocates stable GPU skin-matrix ranges for caller-owned IDs. |
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
-| `EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
-| `PostprocessingPass` | Applies ordered antialiasing, ambient occlusion and custom effects; tuples fuse effects into one draw. |
-| `HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
+| `EcsAdapters.EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
+| `RenderPasses.PostprocessingPass` | Applies ordered antialiasing, ambient occlusion and custom effects; tuples fuse effects into one draw. |
+| `RenderPasses.HZB` | `HZB.resize` allocates `.depth_texture` and pyramid; `build` records reductions; `.view` feeds Hi-Z culling. |
 | [TransparencyPass](stochastic_transparency.md#useful-apis) | `TransparencyPass.resize/update_frame/create_geometry_passes` prepares inputs; `opaque_pass/nearest_pass/transmittance_pass/banded_pass/shade_winner/compose` records banded transparency with Kawase blur. `TransparencyTargets` and `GrazingFade` configure resources and opacity fade. |
-| `TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips. These helpers upload and submit GPU work when creating textures. |
+| `RenderPasses.TextureProcessing` | `get_default_blue_noise` shares a GPU tile; `build_material_texture_array` generates alpha-aware mips. These helpers upload and submit GPU work when creating textures. |
 | [Materials](materials.md#useful-apis) | `MaterialShader` defines shader families; `MaterialBinding` selects dictionaries/overrides; `MaterialLibrary.pack` produces CPU tables, while renderer Jinja2 templates generate hook dispatch. |
-| `DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
-| `MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
-| `RenderDiagnostics` | `RenderMonitor`, `get_draw_counts`, `get_shader_sources`, and `inspect_render_memory` inspect rendering. These names also remain available from `Diagnostics`, loaded on explicit access. |
-| `MaterialTransform` | CPU-only position, rotation and scale component used by material and physics adapters. |
-| `EcsMaterials` | `MaterialInstance` component; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
-| `ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
-| `rendering_settings` | `RenderingSettings` provides optional ImGui controls for `TransparencyPass` or `MaterialRenderer`; `set_resolution_percent/render_size` choose the scene size. |
-| `render_resolution` | `ResolutionPresenter.resize/color_attachment/record` samples a scene-sized color target into a window-sized output. |
-| `diagnostics_visualizer` | `DiagnosticsVisualizer.update(report)` keeps bounded performance history; `draw()` shows passes, commands, and resource memory inside an ImGui frame. |
+| `Materials.DefaultMaterial` | `DefaultMaterialShader` supplies lit opaque/transparent defaults, validation, and shader hooks. |
+| `Materials.MaterialRenderer` | `MaterialMesh` describes geometry; `DrawInstance` is a direct-draw input; `MaterialRenderer.update/update_transforms/record/set_sample_count` uploads arrays and records rendering. |
+| `Diagnostics.RenderDiagnostics` | `RenderMonitor`, `get_draw_counts`, `get_shader_sources`, and `inspect_render_memory` inspect rendering. Import these names from `Diagnostics` to load rendering inspection on explicit access. |
+| `EcsAdapters.MaterialTransform` | CPU-only position, rotation and scale component used by material and physics adapters. |
+| `EcsAdapters.EcsMaterials` | `MaterialInstance` component; `EcsMaterialAdapter.sync/touch_materials` extracts changes and invalidates edited dictionaries. |
+| `UI.ImGui` | `ImGui.render(callback)` draws a UI overlay and routes input; `close` removes handlers and releases its context. |
+| `UI.rendering_settings` | `RenderingSettings` provides optional ImGui controls for `TransparencyPass` or `MaterialRenderer`; `set_resolution_percent/render_size` choose the scene size. |
+| `RenderPasses.render_resolution` | `ResolutionPresenter.resize/color_attachment/record` samples a scene-sized color target into a window-sized output. |
+| `UI.diagnostics_visualizer` | `DiagnosticsVisualizer.update(report)` keeps bounded performance history; `draw()` shows passes, commands, and resource memory inside an ImGui frame. |
 
 Simulation, math, asset-data, packing, grouping, and utility modules import without
 graphics dependencies. Asset decoders and physics adapter construction load their
 optional backends when called; missing backends raise Python's normal import
 errors. Inline imports belong in setup, asset loading, or
 explicit diagnostic audits; recurring simulation, drawing, and command recording
-use module or instance references. `Diagnostics` CPU timers do not load rendering,
-and `MaterialRenderer` loads ECS compatibility exports only on explicit access.
+use module or instance references. `Diagnostics` CPU timers do not load rendering.
 Built-in engine shaders are in `graaal/shaders/` and included in the installed
 package. `scenes/shaders/` contains only scene-specific examples. `Shader(filepath=...)`
 looks up shader includes beside the supplied file, then in the engine shader
@@ -140,7 +176,7 @@ quality and shader cost. A fused tuple may contain each effect type only once;
 repeated types can be placed in separate list entries.
 
 ```python
-from graaal.PostprocessingPass import PostprocessingPass, AmbientOcclusionEffect, AntialiasingEffect
+from graaal.RenderPasses.PostprocessingPass import PostprocessingPass, AmbientOcclusionEffect, AntialiasingEffect
 from scenes.postprocessing_example import PeripheralMotionBlurEffect
 
 ao = AmbientOcclusionEffect()
@@ -219,7 +255,7 @@ pipeline for the target attachments; this example uses a color-only pass.
 ```python
 from graaal.RenderContext import RenderContext
 from graaal.DrawBatches import DrawBatches, RenderShader, ShaderPass, FrustumCuller
-from graaal.InstanceData import MESH_INSTANCE_DTYPE
+from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE
 
 draws = DrawBatches(MESH_INSTANCE_DTYPE)
 draws.register_mesh(1, mesh)
@@ -248,7 +284,7 @@ or unprepared results raise `RuntimeError` when drawn or accessed.
 Use `visibility.all_visible(lod=0)` for CPU/direct preparation, or
 `visibility.write(uint32_indices, indirect_records)` for a custom culler;
 `INDIRECT_DTYPE` describes those command records. For Hi-Z culling, create `HZB`
-(from `graaal.HZB`), call `resize(size)`, render occluder depth into
+(from `graaal.RenderPasses.HZB`), call `resize(size)`, render occluder depth into
 `hzb.depth_texture`, call `hzb.build(commands)`, then call
 `HiZCuller().record(commands, main_view, hzb_view=hzb.view)` to refine that view's
 frustum results.
@@ -425,7 +461,7 @@ report = monitor.submit(commands.finish())
 To inspect reports on screen, feed them to the standalone ImGui widget:
 
 ```python
-from graaal.diagnostics_visualizer import DiagnosticsVisualizer
+from graaal.UI.diagnostics_visualizer import DiagnosticsVisualizer
 
 visualizer = DiagnosticsVisualizer()
 visualizer.update(report)

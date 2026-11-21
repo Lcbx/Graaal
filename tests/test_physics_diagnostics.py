@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from graaal.Diagnostics import inspect_physics
-from graaal.diagnostics_visualizer import DiagnosticsVisualizer
+from graaal.UI.diagnostics_visualizer import DiagnosticsVisualizer
 
 
 def test_inspection_preserves_pending_work_events_and_snapshot_pool():

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from graaal.EcsAnimation import ClipPlayer
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer
 from scenes.root_motion_example import Movement, create_demo, crossfade
 
 

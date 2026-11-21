@@ -11,11 +11,11 @@ import numpy as np
 
 from graaal.ECS import ECS, Scheduler
 from graaal.Diagnostics import inspect_physics
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsRagdoll, RigidBody
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsRagdoll, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import RagdollAsset
-from graaal.SkeletalAnimation import Skeleton, model_matrices
+from graaal.Animation.SkeletalAnimation import Skeleton, model_matrices
 
 
 def summary(samples):

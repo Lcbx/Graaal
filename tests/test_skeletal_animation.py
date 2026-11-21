@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, sample_crossfade, skin_matrices, skin_vertices
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, sample_crossfade, skin_matrices, skin_vertices
 
 
 def skeleton(parents=(-1, 0, 1, 0)):

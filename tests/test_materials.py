@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from graaal.Materials import MaterialBinding, MaterialLibrary, MaterialShader, Parameter
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import MaterialRenderer, MaterialMesh, DrawInstance
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import MaterialRenderer, MaterialMesh, DrawInstance
 from graaal.RenderContext import RenderContext, Texture, TextureUsage, Shader, RenderPipeline
-from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 from graaal.Math import Camera
 from scenes.material_example import make_instances, sphere_vertices
 

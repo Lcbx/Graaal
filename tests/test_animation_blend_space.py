@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from graaal.SkeletalAnimation import Clip, Skeleton, blend_space_1d, blend_space_2d, model_matrices, sample_clip_pairs, skin_matrices
-from graaal.PoseTasks import PosePlan
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, blend_space_1d, blend_space_2d, model_matrices, sample_clip_pairs, skin_matrices
+from graaal.Animation.PoseTasks import PosePlan
 
 
 def test_blend_space_selects_neighbors_clamps_and_preserves_order():

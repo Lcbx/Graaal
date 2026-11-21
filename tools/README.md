@@ -8,10 +8,10 @@ file, package directory or directory of modules. Package imports retain their
 qualified names so relative imports work.
 
 ```sh
-python tools/module_inspection.py graaal/ECS.py
-python tools/module_inspection.py graaal/ECS.py --only classes methods properties --no-comments --no-docstrings
-python tools/module_inspection.py graaal/ECS.py --include-imports
-python tools/module_inspection.py graaal/ECS.py --only imports --no-docstrings
+python tools/module_inspection.py graaal/ECS/core.py
+python tools/module_inspection.py graaal/ECS/core.py --only classes methods properties --no-comments --no-docstrings
+python tools/module_inspection.py graaal/ECS/core.py --include-imports
+python tools/module_inspection.py graaal/ECS/core.py --only imports --no-docstrings
 python tools/module_inspection.py graaal -r -o api.txt
 ```
 

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.render_resolution import ResolutionPresenter
+from graaal.RenderPasses.render_resolution import ResolutionPresenter
 
 
 @pytest.mark.parametrize("format", ["rgba8unorm", "rgba8unorm-srgb"])

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from graaal.MaterialSkinning import MaterialSkinningAdapter
+from graaal.Materials.MaterialSkinning import MaterialSkinningAdapter
 
 
 def test_owner_mapping_uses_bind_pose_and_rejects_stale_handles():

@@ -1,11 +1,16 @@
-﻿# Skeletal animation
+# Skeletal animation
 
 This reference covers standalone evaluation, optional ECS playback, graph
 definitions, events, IK and GPU palette output. See the
 [scene catalog](../scenes/README.md) for runnable examples and the
 [tool guides](../tools/README.md) for timeline and graph editing.
 
-`graaal.SkeletalAnimation` is independent of ECS and graphics. `Skeleton` takes a depth-first preorder forest of parent indices (`-1` for roots), local reference translation, xyzw rotation and scale, and affine inverse-bind matrices. Resources copy their inputs into read-only float32 arrays. Matrices act on column vectors; local transforms compose as translation, rotation, then scale.
+CPU animation modules live in `graaal.Animation`; for example,
+`from graaal.Animation.SkeletalAnimation import Skeleton, Clip, sample_clip`.
+ECS playback adapters live in `graaal.EcsAdapters`; GPU palette buffers live in
+`graaal.RenderContext.SkinMatrixBuffer`.
+
+`graaal.Animation.SkeletalAnimation` is independent of ECS and graphics. `Skeleton` takes a depth-first preorder forest of parent indices (`-1` for roots), local reference translation, xyzw rotation and scale, and affine inverse-bind matrices. Resources copy their inputs into read-only float32 arrays. Matrices act on column vectors; local transforms compose as translation, rotation, then scale.
 
 `Clip` accepts equally spaced local TRS frames for every bone and a positive frame rate. Its duration is `(frames - 1) / fps`; looping wraps at that endpoint, so matching first and last frames are needed for a seamless loop. `sample_clip(clip, times, loop=True)` takes a one-dimensional array of seconds and returns batched translation, normalized quaternion rotation and scale. Set `loop=False` to clamp. The caller must match clips to skeletons with the same bone order and count.
 
@@ -59,7 +64,7 @@ selects that clip. The two returned arrays have shape `(instances, 2)` and can
 be passed directly to `sample_clip_pairs` with separately managed clip times:
 
 ```python
-from graaal.SkeletalAnimation import blend_space_1d, sample_clip_pairs
+from graaal.Animation.SkeletalAnimation import blend_space_1d, sample_clip_pairs
 
 ids, weights = blend_space_1d([0, 1, 3], [idle_id, walk_id, run_id], speeds)
 pose = sample_clip_pairs(skeleton, clips, ids, times, weights)
@@ -78,7 +83,7 @@ and vertical blend weights shaped `(instances,)`. A single-point axis is valid.
 Use the two rows as sample slots in a `PosePlan`, then blend them vertically:
 
 ```python
-from graaal.SkeletalAnimation import blend_space_2d
+from graaal.Animation.SkeletalAnimation import blend_space_2d
 
 ids, horizontal, vertical = blend_space_2d(x_axis, y_axis, clip_grid, parameters)
 samples = [(ids[:, row], times[:, row], horizontal) for row in range(2)]
@@ -99,8 +104,8 @@ to earlier task indices and use a column of per-instance layer weights. An
 optional per-bone mask is copied when the plan is created.
 
 ```python
-from graaal.PoseTasks import PosePlan
-from graaal.SkeletalAnimation import model_matrices, skin_matrices, subtree_mask
+from graaal.Animation.PoseTasks import PosePlan
+from graaal.Animation.SkeletalAnimation import model_matrices, skin_matrices, subtree_mask
 
 plan = PosePlan(skeleton, [
 	("sample", 0),
@@ -124,7 +129,7 @@ a bone axis to a direction in model space.
 Sample triples use the same arrays and validation as
 `sample_clip_pairs`. Every layer weight must be finite and in `[0, 1]`.
 Operation names can also be supplied as `PoseOp` string-enum members, such as
-`PoseOp.SAMPLE` or `PoseOp.TWO_BONE_IK` from `graaal.PoseTasks`. The plan
+`PoseOp.SAMPLE` or `PoseOp.TWO_BONE_IK` from `graaal.Animation.PoseTasks`. The plan
 validates and stores enum members when it compiles; plain strings remain valid.
 The last task is the output. The plan reuses pose buffers based on task
 dependencies; its returned arrays are views that must be consumed or copied
@@ -171,7 +176,7 @@ layer that should build on the in-place base.
 
 ## Editable graph definitions
 
-`AnimationGraphDefinition` in `graaal.AnimationGraph` owns a copied, editable
+`AnimationGraphDefinition` in `graaal.Animation.AnimationGraph` owns a copied, editable
 dictionary in `definition.data`. `definition.compile(skeleton, named_clips)`
 validates the draft and returns a `CompiledAnimationGraph` containing the existing
 `AnimationStateMachine` and `PosePlan`. It needs neither ECS nor graphics. Edits
@@ -179,7 +184,7 @@ and failed compilation leave previously compiled resources unchanged; applying a
 new graph to live instances remains application-owned. This API performs no file I/O.
 
 ```python
-from graaal.AnimationGraph import AnimationGraphDefinition
+from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 
 definition = AnimationGraphDefinition({
 	"version": 1,
@@ -303,7 +308,7 @@ Each condition reads a column in the same per-instance parameter array. Use
 separate edges for alternative conditions; edge order still defines priority.
 
 ```python
-from graaal.AnimationStateMachine import AnimationStateMachine
+from graaal.Animation.AnimationStateMachine import AnimationStateMachine
 
 machine = AnimationStateMachine([(0, 1, 0, ">", 0.2, 0.3), (1, 0, 0, "<=", 0.1, 0.3)])
 selected, target_states, durations = machine.select(states, speeds[:, None], transitioning)
@@ -323,7 +328,7 @@ For single-clip states, `EcsAnimationStateAdapter` connects this selector to
 the supplied state-to-clip mapping.
 
 ```python
-from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+from graaal.EcsAdapters.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
 
 control = EcsAnimationStateAdapter(world, machine, {0: idle_id, 1: walk_id})
 entities = control.query.fetch().entities
@@ -365,8 +370,8 @@ arrays, although evaluation still creates intermediate arrays.
 `RootMotion` extracts requested movement independently of ECS or physics:
 
 ```python
-from graaal.RootMotion import RootMotion
-from graaal.SkeletalAnimation import sample_clip
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import sample_clip
 
 motion = RootMotion(skeleton, clip, root=0)
 requests = motion.delta(previous_times, advanced_times, loop=True)  # (N, 4, 4)
@@ -407,7 +412,7 @@ For CPU material rendering, pass the deformed vertices to `MaterialRenderer.upda
 range per persistent owner and write batches from the CPU evaluator:
 
 ```python
-from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 
 palette = SkinMatrixBuffer(capacity=256)  # matrix slots, not characters
 base = palette.acquire(entity, len(skeleton.parents))
@@ -441,7 +446,7 @@ directly for custom pipelines.
 
 ## Skinned glTF import
 
-`load_skinned_gltf(path, node=None, fps=30)` from `graaal.SkeletalGltf` loads
+`load_skinned_gltf(path, node=None, fps=30)` from `graaal.Animation.SkeletalGltf` loads
 CPU data without an ECS or graphics device. It returns a `SkinnedAsset` with a
 `skeleton`, `primitives`, named `clips`, and `joint_nodes` in skeleton order.
 Each primitive has indexed vertices with `position`, `normal`, `uv`, `joints`
@@ -449,7 +454,7 @@ and `weights`, plus its original `material_id`. Assign materials separately;
 this importer does not load material definitions or textures.
 
 ```python
-from graaal.SkeletalGltf import load_skinned_gltf
+from graaal.Animation.SkeletalGltf import load_skinned_gltf
 
 asset = load_skinned_gltf("character.glb")
 primitive = asset.primitives[0]
@@ -479,7 +484,7 @@ IDs to shared skeleton and clip resources:
 
 ```python
 from graaal.ECS import ECS
-from graaal.EcsAnimation import SkeletonRef, ClipPlayer, EcsAnimationAdapter
+from graaal.EcsAdapters.EcsAnimation import SkeletonRef, ClipPlayer, EcsAnimationAdapter
 
 world = ECS()
 world.register(SkeletonRef, ClipPlayer)
@@ -532,7 +537,7 @@ used to prepare another pose evaluator without deriving controller state from
 skin matrices.
 
 ```python
-from graaal.SkeletalAnimation import sample_clip_pairs, model_matrices, skin_matrices
+from graaal.Animation.SkeletalAnimation import sample_clip_pairs, model_matrices, skin_matrices
 
 samples = animation.sample_batches[0]
 pose = sample_clip_pairs(skeleton, clips, samples.clip_ids, samples.times, samples.weights)
@@ -546,7 +551,7 @@ matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose))
 physics backend. All positions and the pole point must share a coordinate space:
 
 ```python
-from graaal.InverseKinematics import solve_two_bone
+from graaal.Animation.InverseKinematics import solve_two_bone
 
 new_joint, new_end = solve_two_bone(roots, joints, ends, targets, poles)
 ```
@@ -563,7 +568,7 @@ translation, rotation and scale arrays that can feed `model_matrices` and
 `skin_matrices`:
 
 ```python
-from graaal.InverseKinematics import two_bone_pose
+from graaal.Animation.InverseKinematics import two_bone_pose
 
 pose = two_bone_pose(skeleton, pose, (hip, knee, ankle), targets, poles, weight=weights)
 ```
@@ -594,7 +599,7 @@ starts from an `EventTrack` and returns stable IDs for selecting and editing
 individual markers, including markers at the same time:
 
 ```python
-from graaal.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
 
 timeline = EventTimeline(EventTrack(clip.duration, [], []))
 event_id = timeline.add(0.2, "footstep")
@@ -617,8 +622,8 @@ order, at distinct times, with at least two markers. The first marker in time
 may differ between tracks. Track durations must match their respective clips.
 
 ```python
-from graaal.AnimationEvents import EventTrack
-from graaal.AnimationSync import SyncMapping
+from graaal.Animation.AnimationEvents import EventTrack
+from graaal.Animation.AnimationSync import SyncMapping
 
 walk = EventTrack(1.0, [0.1, 0.6], ["left", "right"])
 run = EventTrack(0.8, [0.05, 0.35], ["left", "right"])
@@ -666,10 +671,10 @@ there is no ongoing synchronization after promotion. Supply mappings in both
 directions if transitions can run in both directions. An unconfigured pair
 keeps ordinary independent playback.
 
-`graaal.AnimationEvents.EventTrack` stores named markers independently of ECS:
+`graaal.Animation.AnimationEvents.EventTrack` stores named markers independently of ECS:
 
 ```python
-from graaal.AnimationEvents import EventTrack
+from graaal.Animation.AnimationEvents import EventTrack
 
 track = EventTrack(clip.duration, [0.2, 0.7], ["left_step", "right_step"])
 crossings = track.between(0.6, 1.3, loop=True)

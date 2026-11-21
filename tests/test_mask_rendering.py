@@ -2,11 +2,11 @@
 import numpy as np
 import pytest
 
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 from transparency_helpers import read, render
 from transparency_helpers import encoded
 
@@ -109,8 +109,8 @@ def test_route_uses_uploaded_values_when_shared_material_is_not_dirty():
 
 def test_ecs_mask_mode_edit_updates_route_and_keeps_surface_identity():
 	from graaal.ECS import ECS
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialTransform import MaterialTransform
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	mesh = MaterialMesh(quad(), unlit())
 	material = {"alpha_mode": 1, "base_color": (1, 1, 1, .75), "emission": (1, 0, 0)}

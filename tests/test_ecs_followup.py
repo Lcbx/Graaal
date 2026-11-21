@@ -4,7 +4,7 @@ from functools import partial
 
 import numpy as np
 import pytest
-from graaal import ECS as api
+import graaal.ECS as api
 from graaal.ECS import ECS, Scheduler, component
 
 

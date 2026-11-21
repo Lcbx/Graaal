@@ -2,8 +2,8 @@ from dataclasses import replace
 
 import pytest
 
-from graaal.postprocessing_settings import AmbientOcclusionSettings
-from graaal.settings_validation import checked_dataclass, float_range, int_range
+from graaal.RenderPasses.pass_settings import AmbientOcclusionSettings
+from graaal.RenderPasses.settings_validation import checked_dataclass, float_range, int_range
 
 
 @checked_dataclass(frozen=True)

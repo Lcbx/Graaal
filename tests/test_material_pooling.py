@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 from scenes.material_example import make_instances, make_world, sphere_vertices
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.EcsMaterials import EcsMaterialAdapter
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Materials import MaterialBinding, MaterialLibrary, MaterialShader
 from graaal.Math import Camera
 from graaal.RenderContext import (BindGroupLayout, BufferUsage, ComputePipeline,

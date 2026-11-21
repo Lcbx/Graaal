@@ -75,20 +75,11 @@ class CubeInstances:
 
 
 def run_scene():
-	from graaal.RenderContext import (
-	    BufferUsage,
-	    create_depth_framebuffer,
-	    create_depth_sampler,
-	    get_time,
-	    GpuBuffer,
-	    Mesh,
-	    RenderContext,
-	    RenderPipeline,
-	    Shader,
-	)
+	from time import perf_counter as get_time
+	from graaal.RenderContext import BufferUsage, create_depth_framebuffer, create_depth_sampler, GpuBuffer, Mesh, RenderContext, RenderPipeline, Shader
 	from graaal.Math import Camera, Vec3, Quaternion
-	from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
-	from graaal.Geometry import make_cube_mesh
+	from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
+	from graaal.RenderContext.Geometry import make_cube_mesh
 	from graaal.Assets import load_gltf_first_mesh_interleaved
 
 	world = ECS()

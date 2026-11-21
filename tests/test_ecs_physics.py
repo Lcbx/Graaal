@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from graaal.ECS import ECS, Scheduler, component, entity_index
-from graaal.MaterialTransform import MaterialTransform
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
 from graaal.Math import Vec3, Vec4
 
 

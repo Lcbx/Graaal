@@ -3,10 +3,10 @@ import unittest
 import numpy as np
 
 from graaal.ECS import ECS
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.RootMotion import RootMotion
-from graaal.PoseTasks import PosePlan
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.PoseTasks import PosePlan
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 
 
 def setup():

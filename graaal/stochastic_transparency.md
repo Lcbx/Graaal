@@ -1,6 +1,6 @@
 # Banded transparency
 
-[TransparencyPass.py](TransparencyPass.py) renders exact nearest transparency,
+[TransparencyPass.py](RenderPasses/TransparencyPass.py) renders exact nearest transparency,
 two complementary banded tail winners, and dual Kawase tail blur.
 The caller supplies geometry, materials, camera values, targets and commands.
 [MaterialRenderer](materials.md) records these stages for dictionary materials;
@@ -8,8 +8,8 @@ the [interactive scene](../scenes/transparency_example.py) shows direct use.
 
 ## Implementation and verification
 
-- **Entry points:** [TransparencyPass.py](TransparencyPass.py) owns the pass
-  resources, recording methods and helper; [TransparencyData.py](TransparencyData.py)
+- **Entry points:** [TransparencyPass.py](RenderPasses/TransparencyPass.py) owns the pass
+  resources, recording methods and helper; [TransparencyData.py](RenderPasses/TransparencyData.py)
   supplies input layouts.
 - **Invariants:** Resize/update camera inputs before recording, preserve the
   [recording order](#recording), and keep geometry metadata and deferred inputs
@@ -30,7 +30,7 @@ Rendering tests require a working WGPU backend.
 
 ## Useful APIs
 
-Import from `graaal.TransparencyPass`. Initialize RenderContext before creating
+Import from `graaal.RenderPasses.TransparencyPass`. Initialize RenderContext before creating
 GPU resources.
 
 | API | Usage |
@@ -94,7 +94,7 @@ transparency.shade_winner(commands, geometry)
 transparency.compose(commands, output)
 ```
 
-Alternatively, `graaal.TransparencyPass.record_transparency(commands,
+Alternatively, `graaal.RenderPasses.TransparencyPass.record_transparency(commands,
 transparency, geometry, draw)` records the transparent stages with a
 `draw(render, pass_name)` callback. The callback uses `geometry.nearest` for
 `"nearest"` and the named geometry pass otherwise. Composition and submission

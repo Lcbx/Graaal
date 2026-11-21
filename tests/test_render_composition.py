@@ -1,10 +1,10 @@
 from pathlib import Path
 import numpy as np
 import pytest
-from graaal import DrawBatches as db
-from graaal import TransparencyPass as tp
-from graaal import RenderContext as rc
-from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
+from graaal.DrawBatches import core as db
+from graaal.RenderPasses import TransparencyPass as tp
+from graaal.RenderContext import core as rc
+from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
 from graaal.Math import Camera
 
 
@@ -68,7 +68,7 @@ def test_two_view_visibility_and_named_passes_share_instances(monkeypatch):
             return vec4f(instance_position(instances[visible_instances[index]], position), 1.0);
         }
         @fragment fn fragment() -> @location(0) vec4f { return vec4f(1.0, 0.0, 0.0, 1.0); }
-    ''', basedir=str(Path(db.__file__).with_name("shaders")))
+    ''', basedir=str(Path(db.__file__).resolve().parents[1] / "shaders"))
     pipeline = rc.RenderPipeline(shader, depth_test=None, depth_write=False, cull_mode="none")
     draws.register_shader(0, db.RenderShader({"color": db.ShaderPass(pipeline)}))
     vertices = np.zeros(3, dtype=[("position", "f4", 3)])
@@ -264,7 +264,7 @@ def test_transparency_external_opaque_inputs_and_transformed_reconstruction(monk
 		render.set_bind_groups(*spec.bindings, binding)
 		render.set_vertex_buffer(0, vertex_buffer)
 		render.draw(3)
-	from graaal.TransparencyPass import record_transparency
+	from graaal.RenderPasses.TransparencyPass import record_transparency
 	record_transparency(commands, oit, geometry, draw_transparent)
 	output = rc.Texture(size, format="rgba8unorm", usage=rc.TextureUsage.RENDER_ATTACHMENT)
 	oit.compose(commands, output.color_attachment())

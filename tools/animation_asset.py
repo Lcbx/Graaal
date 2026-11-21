@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from graaal.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
 from graaal.Assets import read_gltf_accessor
 from .animation_preview import load_preview
 

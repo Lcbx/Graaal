@@ -6,8 +6,8 @@ Run: python -m scenes.physics_queries_example
 import numpy as np
 
 from graaal.ECS import ECS
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from scenes.foot_ik_example import create_demo, terrain_height
 
 

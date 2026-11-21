@@ -7,11 +7,11 @@ import glfw
 import numpy as np
 
 from graaal.DrawBatches import DrawBatches, standard_render_shader
-from graaal.Geometry import make_cube_mesh
-from graaal.ImGui import ImGui
-from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
+from graaal.RenderContext.Geometry import make_cube_mesh
+from graaal.UI.ImGui import ImGui
+from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
 from graaal.Math import Camera, Vec3
-from graaal.PostprocessingPass import PostprocessingEffect, PostprocessingPass
+from graaal.RenderPasses.PostprocessingPass import PostprocessingEffect, PostprocessingPass
 from graaal.RenderContext import RenderContext, Shader, Texture, TextureUsage
 
 

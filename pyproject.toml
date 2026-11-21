@@ -18,8 +18,11 @@ physics = ["pyjoltphysics==0.1.0a3"]
 test = ["pytest>=8.3"]
 
 [tool.setuptools]
-packages = ["graaal"]
-package-dir = {graaal = "graaal"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["graaal", "graaal.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 graaal = ["shaders/*.shader", "shaders/*.shaderlib", "shaders/*_LICENSE.txt", "data/*.otf", "data/blue_noise/*"]

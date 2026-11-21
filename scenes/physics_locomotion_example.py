@@ -5,11 +5,11 @@ Run: python -m scenes.physics_locomotion_example
 import numpy as np
 
 from graaal.ECS import ECS, Scheduler
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
-from graaal.MaterialTransform import MaterialTransform
-from graaal.RootMotion import RootMotion
-from graaal.SkeletalAnimation import Skeleton
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import Skeleton
 from scenes.root_motion_example import Movement, make_clip
 
 

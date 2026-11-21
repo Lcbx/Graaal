@@ -11,11 +11,11 @@ import wgpu
 from imgui_bundle import imgui, hello_imgui
 import wgpu.utils.imgui as backend_module
 
-from graaal.ImGui import ImGui
+from graaal.UI.ImGui import ImGui
 from graaal.RenderContext import RenderContext
 from scenes.prototype import ActorCache, Damageable, Attributes, ActorMetadata, create_world, draw_actors
-from graaal.TransparencyPass import GrazingFade
-from graaal.rendering_settings import FilterSettings
+from graaal.RenderPasses.TransparencyPass import GrazingFade
+from graaal.UI.rendering_settings import FilterSettings
 
 
 def test_rendering_resolution_scales_scene_without_changing_window(monkeypatch):

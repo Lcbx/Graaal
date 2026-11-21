@@ -1,6 +1,6 @@
 """Adapt existing image regressions to the unified postprocessing pass."""
-from graaal.PostprocessingPass import AntialiasingEffect, PostprocessingPass
-from graaal.postprocessing_settings import AntialiasingSettings
+from graaal.RenderPasses.PostprocessingPass import AntialiasingEffect, PostprocessingPass
+from graaal.RenderPasses.pass_settings import AntialiasingSettings
 from scenes.postprocessing_example import PeripheralMotionBlurEffect
 from graaal.RenderContext import Sampler
 

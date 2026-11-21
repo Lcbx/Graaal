@@ -6,21 +6,31 @@ See [README.md](README.md) for an overview and [graaal/README.md](graaal/README.
 for APIs and architecture.
 
 ## Where to look
-- ECS storage, queries, commands, and scheduling: `graaal/ECS.py`, `graaal/ecs_*.py`;
+- ECS storage, queries, commands, and scheduling: `graaal/ECS/`;
   reference: [graaal/ECS_API.md](graaal/ECS_API.md).
-- GPU resources, command recording, and shaders: `graaal/RenderContext.py`,
-  `graaal/ShaderSyntax.py`, `graaal/ShaderShorthand.py`.
-- Draw grouping/culling: `graaal/DrawBatches.py`, `graaal/draw_*.py`,
-  `graaal/EcsDrawing.py`.
-- Materials and ECS integration: `graaal/Materials.py`, `graaal/MaterialRenderer.py`,
-  `graaal/EcsMaterials.py`; reference: [graaal/materials.md](graaal/materials.md).
-- Transparency: `graaal/TransparencyPass.py`;
+- CPU animation resources, graphs, pose tasks, and sampling: `graaal/Animation/`;
+  reference: [graaal/skeletal_animation.md](graaal/skeletal_animation.md).
+- ECS adapters and shared transform component: `graaal/EcsAdapters/`;
+  reference: [graaal/physics.md](graaal/physics.md).
+- GPU resources, command recording, mesh storage and shader utilities: `graaal/RenderContext/`.
+- Draw grouping/culling: `graaal/DrawBatches/`,
+  `graaal/EcsAdapters/EcsDrawing.py`.
+- Materials and ECS integration: `graaal/Materials/`,
+  `graaal/EcsAdapters/EcsMaterials.py`; reference: [graaal/materials.md](graaal/materials.md).
+- Transparency, postprocessing, HZB, resolution presentation and shared settings:
+  `graaal/RenderPasses/`;
   reference: [graaal/stochastic_transparency.md](graaal/stochastic_transparency.md).
+- CPU/render diagnostics and GPU profiling: `graaal/Diagnostics/`.
+- ImGui, rendering controls and diagnostic displays: `graaal/UI/`.
 - Runnable examples: [scenes/README.md](scenes/README.md).
 - Tests: `tests/test_*.py` (use the subsystem guides to find relevant tests).
 
 Consult specialized guides when working on their subsystems; do not read every
 reference file for unrelated changes.
+ECS, DrawBatches, Materials, RenderContext and Diagnostics expose their main APIs
+from `__init__.py`; edit implementations in `core.py` and sibling modules.
+Animation, EcsAdapters, RenderPasses and UI expose individual modules.
+Keep package imports free of optional backends until an API requiring them is requested.
 
 ## Ground rules
 - Each tool must work without the ECS or any other tool. ECS integration goes in an adapter, not in the tool.

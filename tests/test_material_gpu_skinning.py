@@ -1,12 +1,12 @@
 import numpy as np
 import pytest
 
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.SkinMatrixBuffer import SkinMatrixBuffer
-from graaal.SkeletalAnimation import skin_vertices
+from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+from graaal.Animation.SkeletalAnimation import skin_vertices
 
 
 @pytest.mark.parametrize("transparent", [False, True])
@@ -88,8 +88,8 @@ def test_gpu_skinning_matches_cpu_material_shading(transparent, sample_count):
 
 def test_ecs_palette_reallocation_and_entity_recycling():
 	from graaal.ECS import ECS
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialTransform import MaterialTransform
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	dtype = np.dtype([("position", "f4", 3), ("normal", "f4", 3), ("uv", "f4", 2), ("joints", "u4", 4), ("weights", "f4", 4)])

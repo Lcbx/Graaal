@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from graaal.RootMotion import RootMotion, _blend_deltas
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip
+from graaal.Animation.RootMotion import RootMotion, _blend_deltas
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip
 
 
 def resources(turn=False):

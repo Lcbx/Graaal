@@ -82,10 +82,10 @@ described in the [physics guide](../graaal/physics.md).
 
 In `transparency_example.py`, the ImGui settings panel is visible at startup.
 `material_example.py` opens it with **F**. Both use
-`RenderingSettings` in [`graaal/rendering_settings.py`](../graaal/rendering_settings.py); its `handle_key` callback
+`RenderingSettings` in [`graaal/UI/rendering_settings.py`](../graaal/UI/rendering_settings.py); its `handle_key` callback
 handles keyboard editing of visible controls. The rendering resolution slider
 scales scene, AO, and AA targets from 25% to 100% of the framebuffer; a final
-sampled pass via [`ResolutionPresenter`](../graaal/render_resolution.py) fills the unchanged
+sampled pass via [`ResolutionPresenter`](../graaal/RenderPasses/render_resolution.py) fills the unchanged
 window, then ImGui draws at full size. The top section adjusts the camera's
 vertical FoV (20–120 degrees), selects MSAA, LXAA, FAAA, DDAA2, or no
 antialiasing, and controls SSAO; transparency controls are below it. **A** toggles

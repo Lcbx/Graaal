@@ -19,7 +19,7 @@ import sys
 sys.modules["pyjoltphysics"] = None
 import graaal
 from graaal.ECS import ECS
-from graaal.EcsPhysics import Collider, RigidBody, EcsPhysicsAdapter
+from graaal.EcsAdapters.EcsPhysics import Collider, RigidBody, EcsPhysicsAdapter
 from scenes.physics_headless_example import run_scene
 assert ECS().create(1).size == 1
 try:

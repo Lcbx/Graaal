@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from graaal.EcsAnimation import ClipPlayer
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from scenes.physics_locomotion_example import create_demo
 from scenes.root_motion_example import Movement
 

@@ -3,12 +3,12 @@
 import numpy as np
 import pytest
 
-from graaal import TransparencyPass as transparency
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.RenderPasses import TransparencyPass as transparency
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 
 
 def read(texture, dtype=np.float16):

@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from graaal.PoseTasks import PoseOp, PosePlan
-from graaal.RootMotion import RootMotion
-from graaal.SkeletalAnimation import Clip, Skeleton, additive_pose, blend_poses, model_matrices, sample_clip_pairs, skin_matrices
+from graaal.Animation.PoseTasks import PoseOp, PosePlan
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, additive_pose, blend_poses, model_matrices, sample_clip_pairs, skin_matrices
 
 
 def resources():

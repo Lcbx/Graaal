@@ -23,7 +23,7 @@ dense edits. Use `--implementation /path/to/compatible/ECS.py` with
 `benchmark_ecs` to compare against a *standalone* ECS implementation. The
 `benchmark_ecs_query_pairs` script similarly accepts a required
 `--implementation` and `--output`; a standalone historical snapshot is needed
-because the current `ECS.py` has package-relative imports.
+because the current `graaal/ECS/core.py` has package-relative imports.
 
 `python -m scenes.benchmarks.benchmark_animation --entities 64 256 1024 --bones 12 60 --repeat 10`
 measures controller advancement, pose evaluation and the combined update for

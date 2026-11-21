@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 
 
 def test_deformed_material_mesh_updates_raster_and_transparent_reconstruction():
@@ -38,9 +38,9 @@ def test_deformed_material_mesh_updates_raster_and_transparent_reconstruction():
 
 def test_ecs_pose_batches_update_independent_indexed_material_meshes():
 	from graaal.ECS import ECS
-	from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-	from graaal.MaterialSkinning import MaterialSkinningAdapter
-	from graaal.SkeletalAnimation import Clip, Skeleton
+	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+	from graaal.Materials.MaterialSkinning import MaterialSkinningAdapter
+	from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 
 	RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
 	dtype = np.dtype([("position", "f4", 3), ("normal", "f4", 3), ("uv", "f4", 2), ("joints", "u4", 1), ("weights", "f4", 1)])

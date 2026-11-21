@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from graaal.AnimationEvents import EventTimeline, EventTrack
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 from tools.animation_asset import Animation
 from tools.animation_project import read_project, write_project
 

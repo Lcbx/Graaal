@@ -155,7 +155,7 @@ def draw_actors(cache):
 
 
 def run_scene():
-	from graaal.ImGui import ImGui
+	from graaal.UI.ImGui import ImGui
 	from graaal.RenderContext import RenderContext
 
 	world = create_world()

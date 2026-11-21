@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from graaal.PostprocessingPass import AntialiasingEffect, AmbientOcclusionEffect, PostprocessingEffect, PostprocessingPass
+from graaal.RenderPasses.PostprocessingPass import AntialiasingEffect, AmbientOcclusionEffect, PostprocessingEffect, PostprocessingPass
 from scenes.postprocessing_example import PeripheralMotionBlurEffect
 from tests.postprocessing_harness import AntialiasingHarness, PeripheralMotionBlurHarness
-from graaal.postprocessing_settings import AmbientOcclusionSettings
+from graaal.RenderPasses.pass_settings import AmbientOcclusionSettings
 from graaal.RenderContext import RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
 
 

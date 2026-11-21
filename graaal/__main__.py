@@ -28,7 +28,7 @@ def simulate(steps=60):
 def render_example(*, window=False, frames=1):
 	from .RenderContext import Mesh, RenderContext, RenderPipeline, Shader, Texture, TextureUsage
 	from .DrawBatches import DrawBatches, RenderShader, ShaderPass
-	from .InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+	from .DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 
 	if window:
 		RenderContext.init_window(640, 480, "Graaal ECS procedural example",

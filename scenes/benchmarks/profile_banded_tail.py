@@ -5,13 +5,13 @@ from pathlib import Path
 
 import numpy as np
 
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.GpuProfiler import GpuProfiler
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Diagnostics import GpuProfiler
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import VERTEX_DTYPE
-from graaal import TransparencyPass as transparency_module
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses import TransparencyPass as transparency_module
 
 
 VARIANTS = {

@@ -10,17 +10,17 @@ import argparse
 
 import numpy as np
 
-from graaal.AnimationGraph import AnimationGraphDefinition
+from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 from graaal.ECS import ECS, Scheduler
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, PoseBatch, SkeletonRef
-from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
-from graaal.EcsPhysics import CharacterState, Collider, EcsPhysicsAdapter, PhysicsCharacter, PhysicsRagdoll, RigidBody
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, PoseBatch, SkeletonRef
+from graaal.EcsAdapters.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+from graaal.EcsAdapters.EcsPhysics import CharacterState, Collider, EcsPhysicsAdapter, PhysicsCharacter, PhysicsRagdoll, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import RagdollAsset
-from graaal.PoseTasks import PosePlan
-from graaal.RootMotion import RootMotion
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
+from graaal.Animation.PoseTasks import PosePlan
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
 
 
 def create_demo():
@@ -181,13 +181,13 @@ def run_headless(frames=960):
 
 def run_scene(*, offscreen=False, frames=None):
 	import glfw
-	from graaal.DefaultMaterial import DefaultMaterialShader
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
-	from graaal.PosePalette import PosePalette
+	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext, Texture, TextureUsage
-	from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 	from scenes.physics_example import cube_vertices
 	from scenes.ragdoll_example import skinned_boxes
 

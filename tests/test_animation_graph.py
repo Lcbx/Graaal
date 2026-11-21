@@ -3,12 +3,12 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from graaal.AnimationGraph import AnimationGraphDefinition
-from graaal.AnimationEvents import EventTimeline, EventTrack
-from graaal.AnimationSync import SyncMapping
-from graaal.AnimationStateMachine import AnimationStateMachine
-from graaal.PoseTasks import PoseOp, PosePlan
-from graaal.SkeletalAnimation import Clip, Skeleton, blend_poses, model_matrices, sample_clip_pairs, skin_matrices, subtree_mask
+from graaal.Animation.AnimationGraph import AnimationGraphDefinition
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.AnimationSync import SyncMapping
+from graaal.Animation.AnimationStateMachine import AnimationStateMachine
+from graaal.Animation.PoseTasks import PoseOp, PosePlan
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, blend_poses, model_matrices, sample_clip_pairs, skin_matrices, subtree_mask
 
 
 def resources():

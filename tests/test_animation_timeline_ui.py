@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from graaal.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
 from tools.animation_preview import Preview
 from tools.animation_asset import Animation
 from tools.animation_timeline import MarkerKind, TimelineWindow

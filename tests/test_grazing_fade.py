@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from graaal.TransparencyPass import GrazingFade
+from graaal.RenderPasses.TransparencyPass import GrazingFade
 from scenes import transparency_example as scene
 
 

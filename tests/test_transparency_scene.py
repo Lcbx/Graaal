@@ -10,11 +10,11 @@ import pytest
 
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from graaal.Assets import gltf_node_matrix, load_blue_noise
-from graaal import TransparencyData as transparency_data
-from graaal import TextureProcessing as texture_processing
+from graaal.RenderPasses import TransparencyData as transparency_data
+from graaal.RenderPasses import TextureProcessing as texture_processing
 from scenes import transparency_example as scene
-from graaal.render_resolution import ResolutionPresenter
-from graaal import TransparencyPass as transparency
+from graaal.RenderPasses.render_resolution import ResolutionPresenter
+from graaal.RenderPasses import TransparencyPass as transparency
 
 
 def test_bundled_blue_noise_loads_as_deterministic_linear_thresholds():

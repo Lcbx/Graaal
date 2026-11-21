@@ -5,7 +5,7 @@ import numpy as np
 
 from graaal.Assets import gltf_node_matrix
 from graaal.Math import Camera, Quaternion
-from graaal.SkeletalAnimation import model_matrices, sample_clip, skin_matrices, skin_vertices
+from graaal.Animation.SkeletalAnimation import model_matrices, sample_clip, skin_matrices, skin_vertices
 
 
 @dataclass
@@ -35,7 +35,7 @@ def load_preview(gltf, path):
 	if np.any(bones < 0) or np.any(bones >= len(parents)): raise ValueError("Invalid skin joints")
 	preview = Preview(gltf.nodes, parents, tuple(order), bones)
 	if gltf.skins:
-		from graaal.SkeletalGltf import load_skinned_gltf
+		from graaal.Animation.SkeletalGltf import load_skinned_gltf
 		try:
 			preview.asset = load_skinned_gltf(path)
 			preview.message = "Skinned mesh + bones"

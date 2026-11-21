@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 from graaal.Math import Camera
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 
 
 @pytest.mark.parametrize("sample_count", [1, 4])

@@ -3,8 +3,8 @@ import pytest
 from unittest.mock import patch
 
 from graaal.ECS import ECS, Scheduler
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, sample_clip_pairs, skin_matrices
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, sample_clip_pairs, skin_matrices
 
 
 def test_controller_sample_batches_reproduce_crossfaded_poses():
@@ -30,7 +30,7 @@ def test_controller_sample_batches_reproduce_crossfaded_poses():
 
 
 def test_samples_group_full_handles_indicate_in_place_and_survive_failed_updates():
-	from graaal.RootMotion import RootMotion
+	from graaal.Animation.RootMotion import RootMotion
 	rig = Skeleton([-1], [[0, 0, 0]], [[0, 0, 0, 1]], [[1, 1, 1]], [np.eye(4)])
 	clip = Clip([[[0, 0, 0]], [[1, 0, 0]]], [[[0, 0, 0, 1]], [[0, 0, 0, 1]]], np.ones((2, 1, 3)), fps=1)
 	world = ECS()
@@ -69,8 +69,8 @@ def test_standalone_clip_pairs_validate_inputs_and_clamp_times():
 
 
 def test_controller_only_update_can_be_evaluated_later_with_root_motion_and_events():
-	from graaal.AnimationEvents import EventTrack
-	from graaal.RootMotion import RootMotion
+	from graaal.Animation.AnimationEvents import EventTrack
+	from graaal.Animation.RootMotion import RootMotion
 	rig = Skeleton([-1], [[0, 0, 0]], [[0, 0, 0, 1]], [[1, 1, 1]], [np.eye(4)])
 	clip = Clip([[[0, 0, 0]], [[1, 0, 0]]], [[[0, 0, 0, 1]], [[0, 0, 0, 1]]], np.ones((2, 1, 3)), fps=1)
 	world = ECS()
@@ -79,7 +79,7 @@ def test_controller_only_update_can_be_evaluated_later_with_root_motion_and_even
 	world.add(entity, SkeletonRef(0), ClipPlayer(0, transitioning=True, target_clip_id=1, target_loop=False, transition_duration=1, extract_root_motion=True))
 	clips = {0: clip, 1: clip}
 	adapter = EcsAnimationAdapter(world, {0: rig}, clips, event_tracks={0: EventTrack(1, [0.2], ["step"])}, root_motions={(0, 0): RootMotion(rig, clip), (0, 1): RootMotion(rig, clip)})
-	with patch("graaal.EcsAnimation.sample_clip_pairs", side_effect=AssertionError("unexpected CPU pose evaluation")):
+	with patch("graaal.EcsAdapters.EcsAnimation.sample_clip_pairs", side_effect=AssertionError("unexpected CPU pose evaluation")):
 		assert adapter.update(0.25, evaluate_poses=False) == []
 	assert world.get(ClipPlayer)[[entity]].time[0] == pytest.approx(0.25)
 	assert [event.name for event in adapter.events] == ["step"]
@@ -128,11 +128,11 @@ def test_scheduler_separates_control_and_pose_finalization():
 def test_clip_pair_endpoint_weights_sample_only_the_contributing_clip():
 	rig = Skeleton([-1], [[0, 0, 0]], [[0, 0, 0, 1]], [[1, 1, 1]], [np.eye(4)])
 	clip = Clip([[[0, 0, 0]], [[1, 0, 0]]], [[[0, 0, 0, 1]], [[0, 0, 0, 1]]], np.ones((2, 1, 3)), fps=1)
-	with patch("graaal.SkeletalAnimation.sample_clip", wraps=sample_clip) as sample:
+	with patch("graaal.Animation.SkeletalAnimation.sample_clip", wraps=sample_clip) as sample:
 		local = sample_clip_pairs(rig, {0: clip}, [[0, 0], [0, 0]], [[0.25, 0.9], [0.75, 0.1]], [[1, 0], [1, 0]])
 		assert sample.call_count == 1
 	np.testing.assert_allclose(local[0][:, 0, 0], [0.25, 0.75])
-	with patch("graaal.SkeletalAnimation.sample_clip", wraps=sample_clip) as sample:
+	with patch("graaal.Animation.SkeletalAnimation.sample_clip", wraps=sample_clip) as sample:
 		local = sample_clip_pairs(rig, {0: clip}, [[0, 0]], [[0.25, 0.75]], [[0, 1]])
 		assert sample.call_count == 1
 	assert local[0][0, 0, 0] == pytest.approx(0.75)

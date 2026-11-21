@@ -6,8 +6,8 @@ import pytest
 
 from graaal.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
 from graaal.Math import Camera
-from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
-from graaal.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
+from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_scale, pack_quaternion
+from graaal.RenderPasses.TransparencyPass import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE, TransparencyPass
 
 
 @pytest.mark.parametrize("sample_count", [1, 4])
@@ -72,7 +72,7 @@ def test_procedural_transparency_records_into_caller_commands_and_output(monkeyp
 			render.set_bind_groups(*shader_pass.bindings, instance_bindings)
 			render.set_vertex_buffer(0, vertex_buffer)
 			render.draw(3)
-		from graaal.TransparencyPass import record_transparency
+		from graaal.RenderPasses.TransparencyPass import record_transparency
 		record_transparency(commands, oit, geometry, draw_transparent)
 		oit.compose(commands, output.color_attachment())
 		submit.assert_not_called()

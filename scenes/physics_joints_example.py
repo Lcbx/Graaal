@@ -6,8 +6,8 @@ Run: python -m scenes.physics_joints_example
 import numpy as np
 
 from graaal.ECS import ECS, Scheduler
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsJoint, RigidBody
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsJoint, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 
 
 def run_scene():

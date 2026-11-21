@@ -3,7 +3,7 @@
 import numpy as np
 
 from .Math import Quaternion
-from .SkeletalAnimation import _rotations, blend_poses, model_matrices, skin_matrices
+from .Animation.SkeletalAnimation import _rotations, blend_poses, model_matrices, skin_matrices
 
 
 def _rigid_pose(skeleton, pose):

@@ -2,8 +2,8 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock
 import numpy as np
 import pytest
-from graaal import RenderContext as rc
-from graaal.MeshArena import MeshArena
+from graaal.RenderContext import core as rc
+from graaal.RenderContext.MeshArena import MeshArena
 
 
 @pytest.fixture

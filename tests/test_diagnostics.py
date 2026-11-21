@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from graaal.Diagnostics import RenderMonitor, get_draw_counts, get_shader_sources, inspect_render_memory
-from graaal import RenderDiagnostics
+from graaal.Diagnostics import RenderDiagnostics
 
 
 @pytest.fixture
@@ -160,7 +160,7 @@ def test_render_monitor_keeps_gpu_samples_for_repeated_pass_labels(monkeypatch):
 
 def test_render_memory_counts_buffer_capacity_and_texture_mips(monkeypatch):
 	import numpy as np
-	from graaal.RenderDiagnostics import _resource_name
+	from graaal.Diagnostics.RenderDiagnostics import _resource_name
 	from graaal.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
 
 	device = NS(create_buffer=lambda **kwargs: NS(size=kwargs["size"]), create_texture=lambda **kwargs: NS())

@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 
 from graaal.RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader
-from graaal.SkeletalAnimation import skin_vertices
-from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+from graaal.Animation.SkeletalAnimation import skin_vertices
+from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 
 
 def test_skin_matrix_allocation_recycling_and_batch_validation():

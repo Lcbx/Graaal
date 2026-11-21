@@ -10,8 +10,8 @@ import argparse
 import numpy as np
 
 from graaal.ECS import ECS, Scheduler
-from graaal.MaterialTransform import MaterialTransform
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
 
 
 def make_world():
@@ -77,7 +77,7 @@ def run_headless(ticks=240):
 
 
 def cube_vertices():
-	from graaal.TransparencyData import VERTEX_DTYPE
+	from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 
 	# Each face has its own normals and UVs; collision geometry is a separate asset.
 	normals = np.array([(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)], dtype=np.float32)
@@ -93,9 +93,9 @@ def cube_vertices():
 
 def run_scene(*, offscreen=False, frames=None):
 	import pyjoltphysics as pj
-	from graaal.DefaultMaterial import DefaultMaterialShader
-	from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-	from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
 	from graaal.RenderContext import RenderContext, Texture, TextureUsage
 

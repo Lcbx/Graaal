@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from graaal.InverseKinematics import align_bone_axis, solve_two_bone, two_bone_pose
+from graaal.Animation.InverseKinematics import align_bone_axis, solve_two_bone, two_bone_pose
 from graaal.Math import Quaternion
-from graaal.SkeletalAnimation import Skeleton, model_matrices, skin_matrices
+from graaal.Animation.SkeletalAnimation import Skeleton, model_matrices, skin_matrices
 
 
 def test_batch_reaches_targets_and_pole_selects_bend_side():

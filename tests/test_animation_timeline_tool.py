@@ -10,7 +10,7 @@ pytest.importorskip("pygltflib")
 
 from tools.animation_asset import Animation, Track, load_animations
 from tools.animation_preview import Preview, animation_bounds, camera_from_bounds, mesh_triangles, pose_matrices, project
-from graaal.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip
 
 
 def write_gltf(path, *, times=(0, 1, 2)):

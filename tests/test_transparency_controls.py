@@ -6,9 +6,9 @@ from unittest.mock import Mock
 import pytest
 import glfw
 
-from graaal.TransparencyPass import DEBUG_VIEWS
+from graaal.RenderPasses.TransparencyPass import DEBUG_VIEWS
 from graaal.RenderContext import RenderContext
-from graaal.rendering_settings import FilterSettings
+from graaal.UI.rendering_settings import FilterSettings
 from scenes import transparency_example as scene
 from scenes.example_overlay import ExampleOverlay
 

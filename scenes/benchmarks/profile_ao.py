@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from graaal.GpuProfiler import GpuProfiler
+from graaal.Diagnostics import GpuProfiler
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
 from scenes import transparency_example as scene
 

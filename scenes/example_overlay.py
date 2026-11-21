@@ -6,7 +6,7 @@ shortcuts remain with the scene.
 """
 
 from graaal.Diagnostics import RenderMonitor
-from graaal.diagnostics_visualizer import DiagnosticsVisualizer
+from graaal.UI.diagnostics_visualizer import DiagnosticsVisualizer
 from graaal.RenderContext import RenderContext
 
 

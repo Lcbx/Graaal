@@ -6,9 +6,9 @@ import json
 
 import numpy as np
 
-from graaal.MaterialRenderer import MaterialRenderer
+from graaal.Materials.MaterialRenderer import MaterialRenderer
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal import TransparencyPass as transparency_module
+from graaal.RenderPasses import TransparencyPass as transparency_module
 from scenes.benchmarks.profile_banded_tail import make_scene, read_color
 
 

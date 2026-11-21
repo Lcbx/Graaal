@@ -6,9 +6,9 @@ Run without graphics: python -m scenes.root_motion_example
 import numpy as np
 
 from graaal.ECS import ECS, Scheduler, component
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.RootMotion import RootMotion
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 
 
 @component

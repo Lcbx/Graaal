@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("pygltflib")
 
-from graaal.SkeletalGltf import load_skinned_gltf
-from graaal.SkeletalAnimation import model_matrices, sample_clip, skin_matrices
+from graaal.Animation.SkeletalGltf import load_skinned_gltf
+from graaal.Animation.SkeletalAnimation import model_matrices, sample_clip, skin_matrices
 
 
 def write_asset(path, *, interpolation="LINEAR", ancestor_translation=None, rotation=False):

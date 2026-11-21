@@ -130,12 +130,15 @@ def m(monkeypatch):
 	monkeypatch.setitem(sys.modules, math.__name__, math)
 	loaded = {}
 	for name in ("utils", "DrawList", "draw_layout", "draw_compiler", "draw_resources", "draw_culling", "HZB", "DrawBatches"):
-		module_name = f"{prefix}.{name}"
+		suffix = f"DrawBatches.{name}" if name.startswith("draw_") or name == "DrawList" else "DrawBatches.core" if name == "DrawBatches" else "RenderPasses.HZB" if name == "HZB" else name
+		module_name = f"{prefix}.{suffix}"
 		module = importlib.import_module(module_name)
-		# Undo imported modules along with the resource stubs after the test.
-		del sys.modules[module_name]
-		monkeypatch.setitem(sys.modules, module_name, module)
 		loaded[name] = module
+	# Undo the nested package and imported modules along with the resource stubs.
+	for module_name, module in tuple(sys.modules.items()):
+		if module_name.startswith(prefix + ".") and module_name not in (rc.__name__, math.__name__):
+			del sys.modules[module_name]
+			monkeypatch.setitem(sys.modules, module_name, module)
 	return NS(_DrawResources=loaded["draw_resources"]._DrawResources,
 		_CullingState=loaded["draw_culling"]._CullingState,
 		public=loaded["DrawBatches"], hzb=loaded["HZB"])

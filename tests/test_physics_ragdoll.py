@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 
 from graaal.ECS import ECS, entity_index
-from graaal.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsRagdoll, RigidBody, WORLD_ENTITY
-from graaal.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, PhysicsRagdoll, RigidBody, WORLD_ENTITY
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import RagdollAsset
-from graaal.SkeletalAnimation import Skeleton, model_matrices, skin_matrices, skin_vertices
+from graaal.Animation.SkeletalAnimation import Skeleton, model_matrices, skin_matrices, skin_vertices
 
 
 @pytest.fixture

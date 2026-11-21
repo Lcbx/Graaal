@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from graaal.SkeletalAnimation import Skeleton, additive_pose, blend_poses, model_matrices, subtree_mask
+from graaal.Animation.SkeletalAnimation import Skeleton, additive_pose, blend_poses, model_matrices, subtree_mask
 
 
 def rig():
@@ -85,7 +85,7 @@ def test_batched_quaternion_operations_match_matrix_composition():
 
 
 def test_crossfade_and_unmasked_pose_blend_agree():
-	from graaal.SkeletalAnimation import Clip, sample_clip, sample_crossfade
+	from graaal.Animation.SkeletalAnimation import Clip, sample_clip, sample_crossfade
 	skeleton = rig()
 	translation = np.zeros((2, 6, 3), dtype=np.float32)
 	translation[1, :, 0] = 2

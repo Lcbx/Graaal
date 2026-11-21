@@ -1,8 +1,8 @@
 # Antialiasing
 
-Implementation: [PostprocessingPass.py](PostprocessingPass.py) and
+Implementation: [PostprocessingPass.py](RenderPasses/PostprocessingPass.py) and
 [antialiasing.shaderlib](shaders/antialiasing.shaderlib). Example controls:
-[rendering_settings.py](rendering_settings.py). Regression tests:
+[rendering_settings.py](UI/rendering_settings.py). Regression tests:
 [test_antialiasing.py](../tests/test_antialiasing.py). Run from the repository
 root with `python -m pytest tests/test_antialiasing.py -q` (GPU backend required
 for rendering tests).
@@ -16,8 +16,8 @@ Set `hybrid_luma_chroma=True` to include color differences in edge detection;
 `chroma_weight` controls their contribution from 0 to 5 and defaults to 0.5.
 
 ```python
-from graaal.PostprocessingPass import AntialiasingEffect, PostprocessingPass
-from graaal.postprocessing_settings import AntialiasingSettings
+from graaal.RenderPasses.PostprocessingPass import AntialiasingEffect, PostprocessingPass
+from graaal.RenderPasses.pass_settings import AntialiasingSettings
 
 aa = AntialiasingEffect("faaa", AntialiasingSettings(faaa_quality=5))
 post = PostprocessingPass([aa], target_format="rgba8unorm")

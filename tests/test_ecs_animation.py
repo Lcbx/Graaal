@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from graaal.ECS import ECS, Scheduler, columns
-from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 
 
 def resources():

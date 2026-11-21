@@ -7,8 +7,8 @@ import tempfile
 
 import numpy as np
 
-from graaal.AnimationEvents import EventTimeline, EventTrack
-from graaal.AnimationGraph import AnimationGraphDefinition
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 from .animation_asset import clip_resources
 
 

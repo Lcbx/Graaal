@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from graaal.AnimationStateMachine import AnimationStateMachine
-from graaal.SkeletalAnimation import Clip, Skeleton, sample_clip_pairs
+from graaal.Animation.AnimationStateMachine import AnimationStateMachine
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton, sample_clip_pairs
 
 
 def test_selection_priority_active_fades_and_parameter_changes():

@@ -1,6 +1,6 @@
 import pytest
 
-from graaal.AnimationEvents import EventTimeline, EventTrack
+from graaal.Animation.AnimationEvents import EventTimeline, EventTrack
 
 
 def test_edit_markers_keep_ids_and_runtime_event_order():

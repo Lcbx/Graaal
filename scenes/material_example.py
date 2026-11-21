@@ -13,20 +13,20 @@ from math import cos, sin
 
 import numpy as np
 
-from graaal.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 from graaal.DrawBatches import FrustumCuller
-from graaal.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
+from graaal.RenderPasses.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
 from graaal.ECS import ECS
-from graaal.EcsMaterials import EcsMaterialAdapter, MaterialInstance
-from graaal.MaterialTransform import MaterialTransform
-from graaal.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
+from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+from graaal.Materials.MaterialRenderer import MaterialMesh, DrawInstance, MaterialRenderer
 from graaal.Math import Camera, Vec3
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import VERTEX_DTYPE
 from scenes.example_overlay import ExampleOverlay
-from graaal.render_resolution import ResolutionPresenter
-from graaal.rendering_settings import RenderingSettings
-from graaal.TransparencyPass import record_transparency
+from graaal.RenderPasses.render_resolution import ResolutionPresenter
+from graaal.UI.rendering_settings import RenderingSettings
+from graaal.RenderPasses.TransparencyPass import record_transparency
 
 
 STRIPED_SHADER = '''
@@ -110,7 +110,7 @@ def make_world():
 
 
 def run_scene():
-	from graaal.ImGui import ImGui
+	from graaal.UI.ImGui import ImGui
 	from imgui_bundle import imgui
 	frustum_culler = FrustumCuller()
 

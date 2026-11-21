@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from graaal.AnimationEvents import EventTrack
-from graaal.AnimationGraph import AnimationGraphDefinition
-from graaal.SkeletalAnimation import Clip, Skeleton
+from graaal.Animation.AnimationEvents import EventTrack
+from graaal.Animation.AnimationGraph import AnimationGraphDefinition
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
 from tools.animation_graph_playback import GraphPlayback
 
 
@@ -106,9 +106,9 @@ def test_reset_cancels_transition_and_restores_speed_and_wrapped_clock():
 @pytest.mark.parametrize("sync", [False, True])
 def test_preview_poses_and_clocks_match_existing_ecs_playback(sync):
 	from graaal.ECS import ECS
-	from graaal.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
-	from graaal.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
-	from graaal.SkeletalAnimation import model_matrices, skin_matrices
+	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+	from graaal.EcsAdapters.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+	from graaal.Animation.SkeletalAnimation import model_matrices, skin_matrices
 
 	compiled = graph(sync=sync, duration=0.75)
 	rig = compiled.plan.skeleton

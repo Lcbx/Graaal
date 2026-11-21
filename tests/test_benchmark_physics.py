@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from graaal.EcsPhysics import Collider
+from graaal.EcsAdapters.EcsPhysics import Collider
 from scenes.benchmarks.benchmark_physics import benchmark, make_workload
 
 

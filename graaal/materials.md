@@ -1,8 +1,8 @@
 # Dictionary materials
 
-The generic [Materials.py](Materials.py) handles shader-defined schemas,
+The generic [Materials.py](Materials/core.py) handles shader-defined schemas,
 dictionary resolution and packing. It contains no lighting, alpha or
-grazing policy. [DefaultMaterial.py](DefaultMaterial.py) supplies the default
+grazing policy. [DefaultMaterial.py](Materials/DefaultMaterial.py) supplies the default
 lit schema and validation. The default WGSL
 template interprets those parameters.
 
@@ -18,10 +18,10 @@ replacement and procedural stripes with animated displacement. See the
 
 ## Implementation and verification
 
-- **Entry points:** [Materials.py](Materials.py) packs CPU-side dictionary
-  values; [DefaultMaterial.py](DefaultMaterial.py) defines the built-in lit
-  schema; [MaterialRenderer.py](MaterialRenderer.py) records GPU work;
-  [EcsMaterials.py](EcsMaterials.py) handles ECS updates.
+- **Entry points:** [Materials.py](Materials/core.py) packs CPU-side dictionary
+  values; [DefaultMaterial.py](Materials/DefaultMaterial.py) defines the built-in lit
+  schema; [MaterialRenderer.py](Materials/MaterialRenderer.py) records GPU work;
+  [EcsMaterials.py](EcsAdapters/EcsMaterials.py) handles ECS updates.
 - **Invariants:** Nested dictionary edits require `touch_materials()`;
   ECS writes advance field versions. Preserve stable, distinct `surface_id`
   values across repacking and reorder metadata with `draws.instance_order`.
@@ -86,11 +86,11 @@ template. See [material_example.py](../scenes/material_example.py) for complete 
 ```python
 from graaal.ECS import ECS
 from graaal.Math import Vec3
-from graaal.DefaultMaterial import DefaultMaterialShader
-from graaal.MaterialRenderer import MaterialMesh, MaterialRenderer
+from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 from graaal.RenderContext import RenderContext
-from graaal.MaterialTransform import MaterialTransform
-from graaal.EcsMaterials import MaterialInstance, EcsMaterialAdapter
+from graaal.EcsAdapters.MaterialTransform import MaterialTransform
+from graaal.EcsAdapters.EcsMaterials import MaterialInstance, EcsMaterialAdapter
 
 glass = DefaultMaterialShader(
     transparent=True,
@@ -137,7 +137,7 @@ meshes. Bind each persistent owner ID to its own registered mesh and bind-pose
 vertex array containing `position`, `normal`, `uv`, `joints` and `weights` fields:
 
 ```python
-from graaal.MaterialSkinning import MaterialSkinningAdapter
+from graaal.Materials.MaterialSkinning import MaterialSkinningAdapter
 
 skinning = MaterialSkinningAdapter(renderer)
 skinning.bind(entity, mesh, bind_vertices)
@@ -162,7 +162,7 @@ of a skinned mesh needs an allocated palette range covering every joint index,
 including indices whose weight is zero. Multiple owners may share the same mesh:
 
 ```python
-from graaal.SkinMatrixBuffer import SkinMatrixBuffer
+from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 
 palette = SkinMatrixBuffer(capacity=256)
 renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette)
@@ -194,7 +194,7 @@ players sharing one skinned mesh and rendering through the material system.
 complete list returned by `animation.update(dt)`:
 
 ```python
-from graaal.PosePalette import PosePalette
+from graaal.Animation.PosePalette import PosePalette
 
 poses = PosePalette(palette)
 poses.update(animation.update(dt))

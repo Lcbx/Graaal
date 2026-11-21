@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 
-from graaal.SkeletalAnimation import model_matrices
+from graaal.Animation.SkeletalAnimation import model_matrices
 from .animation_preview import animation_bounds
 from .animation_viewport import draw_animation_viewport
 from .animation_asset import clip_resources, load_animations

@@ -20,10 +20,10 @@ from pathlib import Path
 import numpy as np
 
 from graaal.Assets import DEFAULT_BLUE_NOISE_PATH, load_blue_noise
-from graaal.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
+from graaal.RenderPasses.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect, PostprocessingPass
 from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, ShaderPass
-from graaal.HZB import HZB
-from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+from graaal.RenderPasses.HZB import HZB
+from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 from graaal.Math import Camera, Vec3
 from graaal.RenderContext import (
     BufferUsage,
@@ -34,13 +34,13 @@ from graaal.RenderContext import (
     Texture,
     TextureUsage,
 )
-from graaal.TextureProcessing import build_material_texture_array
-from graaal.TransparencyData import load_transparency_scene as load_transparency_data
-from graaal.TransparencyPass import record_transparency
-from graaal.TransparencyPass import GrazingFade, TransparencyPass
+from graaal.RenderPasses.TextureProcessing import build_material_texture_array
+from graaal.RenderPasses.TransparencyData import load_transparency_scene as load_transparency_data
+from graaal.RenderPasses.TransparencyPass import record_transparency
+from graaal.RenderPasses.TransparencyPass import GrazingFade, TransparencyPass
 from scenes.example_overlay import ExampleOverlay
-from graaal.render_resolution import ResolutionPresenter
-from graaal.rendering_settings import FilterSettings, RenderingSettings
+from graaal.RenderPasses.render_resolution import ResolutionPresenter
+from graaal.UI.rendering_settings import FilterSettings, RenderingSettings
 
 
 PATH = Path(__file__).parent / "resources/small_scene.glb"
@@ -259,7 +259,7 @@ def render_frame(*, profiler=None, overlay=None, render_size=None, presenter=Non
 
 def run_scene():
 	global settings, overlay, angle
-	from graaal.ImGui import ImGui
+	from graaal.UI.ImGui import ImGui
 
 	RenderContext.init_window(1200, 900, "Stochastic transparency | M: MSAA | A: SSAO | O: SSAO path | F: settings | P: profiler | D: debug | Space: orbit",
 		required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])

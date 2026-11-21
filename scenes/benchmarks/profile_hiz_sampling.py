@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from graaal.DrawBatches import DrawBatches, FrustumCuller, HiZCuller, INDIRECT_DTYPE
-from graaal.GpuProfiler import GpuProfiler
-from graaal.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+from graaal.Diagnostics import GpuProfiler
+from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
 from graaal.RenderContext import BufferUsage, GpuBuffer, RenderContext, Texture, TextureUsage
 
 

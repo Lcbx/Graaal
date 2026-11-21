@@ -3,9 +3,9 @@
 import numpy as np
 import pytest
 
-from graaal import TransparencyPass as transparency
+from graaal.RenderPasses import TransparencyPass as transparency
 from graaal.RenderContext import RenderContext, Texture, TextureUsage
-from graaal.TransparencyData import Primitive, MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+from graaal.RenderPasses.TransparencyData import Primitive, MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
 from scenes import transparency_example as scene
 
 
