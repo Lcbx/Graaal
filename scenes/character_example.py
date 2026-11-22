@@ -188,7 +188,7 @@ def run_scene(*, offscreen=False, frames=None):
 	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext, Texture, TextureUsage
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
-	from scenes.physics_example import cube_vertices
+	from scenes.physics_geometry import cube_vertices
 	from scenes.ragdoll_example import skinned_boxes
 
 	ecs, owner, environment, physics, schedule, state, asset = create_demo()

@@ -84,8 +84,8 @@ def skinned_boxes(asset, cube):
 	model = model_matrices(rig, rig.translation[None], rig.rotation[None], rig.scale[None])[0]
 	vertices = np.zeros((len(asset.bones), len(cube)), dtype=SKINNED_VERTEX_DTYPE)
 	for i, bone in enumerate(asset.settings.bones):
-		radius, half_length = bone.shape.params[:2]
-		size = np.array([radius * 2, (radius + half_length) * 2, radius * 2])
+		radius, cylinder_length = bone.shape.params[:2]
+		size = np.array([radius * 2, radius * 2 + cylinder_length, radius * 2])
 		shape_rotation = Quaternion(bone.shape_rotation).matrix33
 		position = (cube["position"] * size) @ shape_rotation.T + bone.shape_offset
 		vertices[i]["position"] = position @ model[asset.bones[i], :3, :3].T + model[asset.bones[i], :3, 3]
@@ -115,7 +115,7 @@ def run_scene(*, offscreen=False, frames=None):
 	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext, Texture, TextureUsage
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
-	from scenes.physics_example import cube_vertices
+	from scenes.physics_geometry import cube_vertices
 
 	ecs, owner, floor, physics, schedule, state, asset = create_demo()
 	try:

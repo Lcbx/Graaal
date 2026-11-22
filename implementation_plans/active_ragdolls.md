@@ -61,9 +61,9 @@ import-boundary tests passed; `python -m graaal` passed. The boundary module ran
 outside the sandbox to access pytest's temporary directory. No GPU or additional
 platform validation was performed.
 
-Remaining prerequisites: author the humanoid's feet/ankles, relaxed pose and
-per-joint gains; validate combined passive forces in drops, falls and impacts
-with active control disabled. Full character/ragdoll replay and
+The authored humanoid and bounded contact scenarios below extend these isolated
+mechanism checks. Broader tuning and visual validation remain prerequisites.
+Full character/ragdoll replay and
 selective training resets still need native control-state capture. Body pose and
 velocity writes do not provide that reset contract. Expanded observations and
 training/runtime parity remain future work.
@@ -104,7 +104,61 @@ tests passed; `python -m graaal` passed. The import-boundary module used its
 previously required access outside the sandbox for pytest's temporary directory.
 No GPU or additional platform validation was performed. These tests validate
 the force mechanism and the measured zero-gravity workload; humanoid anatomical
-tuning and full passive drops, stairs and impacts remain unfinished.
+tuning and full passive drops, stairs and impacts were still unfinished in that run.
+
+## Authored passive humanoid and contact scenarios
+
+Added the standalone Python [passive humanoid example](../scenes/passive_ragdoll_example.py),
+with 13 bodies in depth-first order, box feet and authored ankle swing/twist
+limits. Named masses total 70 kg at 1.8 m; shapes and mass determine native
+inertias. Height bakes into translations/shapes, and passive gains scale with
+mass times length squared. A relaxed pose bends elbows and knees, angles the
+upper arms forward and out, and uses weaker neck/ankle gains and stronger
+torso/hip/knee gains. The tuned soft-limit stiffness, damping and torque caps
+are 25% higher than the previous humanoid tuning. Both force paths run in
+Python/NumPy and submit one combined torque batch per tick.
+
+The example uses zero native motor strength/root anchoring, self collision,
+0.05/s linear body damping, 0.3/s angular body damping, zero joint friction,
+floor friction 0.8 and zero restitution. Four caller-stepped 120 Hz scenarios
+cover zero-gravity relaxation, a tilted floor drop, descending stairs with an
+initial lateral velocity, and an off-centre chest impulse. The stair spawn height
+gives the tilted colliders 0.01 m of clearance over the highest step at the
+default scale. The no-passive baseline preserves body damping/native hard
+constraints and disables Python forces. The scene drains event records per
+tick and retains owned copies of the results.
+
+On Windows x64 with CPython 3.14.10, NumPy 2.5.5 and pyjoltphysics 0.1.0a3,
+960-tick checks ran all four scenarios with one and two native threads, plus
+a zero-gravity no-passive baseline at each thread count. Mean relaxed-pose
+error fell from 0.3920 to 0.0886 rad in zero gravity. The baseline stayed at
+0.3920 rad. Each elbow finished about 5.2 cm outboard of its shoulder in the
+pelvis frame, up from 2.7 cm. Contact cases reported foot and floor contacts.
+The stair case started above the highest step and reported step, floor and self contacts
+during the fall. Peak anchor separation was 0.0514 m for the drop,
+0.0533 m for stairs and 0.0162 m for the impact. The chest's immediate linear
+velocity change matched impulse divided by its 22 kg mass. The peak speeds
+include the immediate velocity sample after the off-centre impulse.
+
+Across the contact cases, final linear kinetic energy ranged from roughly
+0.000074 to 0.00241 J. During the final 120 ticks, maximum body speeds stayed
+below 0.068 m/s and 1.53 rad/s. Transient angular speeds reached 47.124 rad/s
+in the drop and stair cases. Jolt reported zero rejected commands and zero
+dropped events. Raw local results are the ignored artifact
+`scenes/benchmarks/results/passive_humanoid_windows.json`.
+
+The replay viewer draws the terrain and either the colliders or a user-supplied
+`dummy_rigged.glb` driven by the same simulated poses. It provides looping
+playback, pause and restart without ECS.
+See the [scene commands](../scenes/README.md#headless-animation-and-physics).
+
+The tuned settings passed 130 focused passive-scene, ragdoll, spring and
+soft-limit tests and the offscreen dummy replay in zero gravity. Earlier
+viewer validation passed for 160 focused tests, eight GPU skinning tests and
+the `python -m graaal` smoke test. With ECS imports blocked, offscreen playback
+passed for all four collider scenarios and for the dummy in zero gravity and on stairs.
+Broader visual review, anatomical and impact tuning, active balancing and
+complete training resets remain pending.
 
 ## Overview
 

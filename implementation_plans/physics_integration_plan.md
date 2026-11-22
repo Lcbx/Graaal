@@ -198,9 +198,12 @@ character and ragdoll capture gaps rather than assuming those resources replay.
 - The [active-ragdoll backend validation](active_ragdolls.md#backend-validation-status)
   now verifies native bulk torques, per-bone strengths and pose/velocity readback,
   and delivers standalone Python/NumPy neutral springs and progressive soft
-  angular limits with a headless control benchmark. Anatomical tuning, expanded
-  observations/actions, training resets and complete passive-motion validation
-  remain pending. Record missing native capabilities without extending bindings.
+  angular limits with a headless control benchmark. An [authored 13-body passive
+  humanoid](active_ragdolls.md#authored-passive-humanoid-and-contact-scenarios)
+  now includes feet/ankles, a relaxed pose, per-joint gains and bounded
+  zero-gravity/drop/stair/impact checks. Broader anatomical tuning, visual motion
+  review, expanded observations/actions, training resets and complete passive-motion
+  validation remain pending. Record missing native capabilities without extending bindings.
   Revisit free-running simulation only with an explicit latency/synchronization
   contract.
 

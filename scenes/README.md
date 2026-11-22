@@ -56,12 +56,60 @@ Run headless examples as `python -m scenes.<name>`:
 | `physics_locomotion_example` | Root-motion acceptance against a native shape sweep; blocking only | `physics` |
 | `physics_queries_example` | Batched collision rays driving foot IK, owner lookup and sweeps | `physics` |
 | `physics_joints_example` | Hinge/slider limits, motor reversal and a breakable attachment | `physics` |
+| `passive_ragdoll_example` | Python-authored 13-body humanoid with feet/ankles, passive neutral/limit forces and bounded zero-gravity/drop/stair/impact checks; no ECS or renderer | `physics` |
 
 Install the native backend with `python -m pip install -e ".[physics]"`.
 `physics_headless_example` defaults to 120 ticks at 120 Hz; use `--ticks`,
 `--tick-hz` and `--threads` to vary the run. The
 [physics guide](../graaal/physics.md) covers units, read-only snapshots,
 UID identity, commands and supported collider combinations.
+
+Run the passive humanoid checks with:
+
+```powershell
+python -m scenes.passive_ragdoll_example --scenario all --frames 960 --threads 1 --output passive_humanoid.json
+python -m scenes.passive_ragdoll_example --scenario zero_gravity --frames 960 --no-passive
+```
+
+`--scenario` also accepts `drop`, `stairs` and `impact`. `--height` and `--mass`
+scale the example asset from 1.8 m/70 kg; its gains scale with mass times length
+squared. All runs use 120 Hz lockstep, zero active motor strength and no root
+anchoring. Body damping, floor friction and self collision remain enabled;
+`--no-passive` disables only Python neutral/soft-limit forces. The stair case
+starts just above the highest step with a 1.2 m/s velocity toward descending steps.
+The impact case queues an off-centre chest impulse at `min(120, frames // 3)`
+and records its immediate linear/angular velocity changes without advancing time.
+The reported impact point offset is relative to the chest joint origin.
+
+The optional JSON report owns final positions/orientations after shutdown and
+includes pose error, anchor separation, contact-record counts, peak velocities,
+late maximum velocities, raw contact depth/impulse peaks and final **linear**
+kinetic energy. Peak velocities include the starting state and the immediate
+impulse response. Late maxima use post-step samples from the last 120 ticks
+(or the whole shorter run). Contact counts include begin, persist and end
+records. These bounded mechanical checks cover the authored scenarios and their
+default parameters.
+
+Open the viewer with `python -m scenes.passive_ragdoll_example --view --scenario stairs`.
+The viewer needs the `physics` and `render` extras and a working WGPU backend.
+Choose any single scenario or omit `--scenario` to view the drop. The viewer
+records the simulated poses, then loops them at 120 simulated ticks per second.
+Press Space to pause or resume and R to restart. Blue marks the left limbs and
+orange marks the right. Capsules, spheres and boxes follow the collider poses.
+To play a scenario with the skinned dummy, install the `assets` extra and get a
+copy of `dummy_rigged.glb` from the scene author. The viewer uses this rig's
+specific joint layout.
+Pass the path explicitly, or place the file at `scenes/resources/dummy_rigged.glb`
+and pass `--model` by itself.
+
+```sh
+python -m scenes.passive_ragdoll_example --view --scenario zero_gravity --model "path/to/dummy_rigged.glb"
+```
+
+Model mode draws the dummy and terrain. The mesh follows the simulated pelvis
+position and joint rotations while keeping the dummy's bone lengths.
+Add `--no-passive` to inspect the same scenario with only native constraints
+and damping, or use `--offscreen` in place of `--view` for a bounded render check.
 
 These physics scenes also support windows through `python main.py scenes/<name>.py`:
 

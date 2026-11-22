@@ -415,7 +415,14 @@ strength. These are Python/NumPy forces applied through the existing binding;
 Jolt continues to solve hard constraints and contacts. A soft band is not a hard
 clamp or a stability guarantee for arbitrary gains, timesteps or inertias.
 Native pressure tests cover twist, swing and bent joints with non-identity rest
-frames; full humanoid anatomical tuning and fall/impact validation remain pending.
+frames. The [passive humanoid example](../scenes/README.md#headless-animation-and-physics)
+adds a Python-authored 13-body asset with feet, ankle constraints, a relaxed pose
+and per-joint gains. Its bounded zero-gravity/drop/stair/impact checks run both
+force paths with active motors disabled, using the native world's existing
+body/impulse APIs. Its depth-first bone order also works with `RagdollAsset` and
+the rendering skeleton. Shapes and masses determine native inertias; the example
+keeps body damping, floor friction and self collision enabled. The example's
+`--view` mode replays the collider poses for visual inspection.
 
 ## Character controllers
 
