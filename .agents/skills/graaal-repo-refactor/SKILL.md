@@ -44,6 +44,12 @@ Read only the guide sections relevant to the task. Paths in this table are relat
 | Timeline, graph editor, shared project files | `tools/` | [Tool guides](../../../tools/README.md#animation-tools) |
 | Runnable examples and benchmarks | `scenes/`, `scenes/benchmarks/` | [Scenes](../../../scenes/README.md), [benchmarks](../../../scenes/benchmarks/README.md) |
 
+## Type annotations
+
+Python modules under `graaal/` must have type annotations verified by mypy. When adding or modifying these modules, annotate function and method parameters and return values, and annotate variables where inference is insufficient.
+
+Run `python -m mypy` from the repository root using the existing `[tool.mypy]` configuration in `pyproject.toml`, which targets `graaal/` and disallows untyped definitions. Resolve typing errors introduced by the change and report any remaining errors or unavailable validation explicitly.
+
 ## Change repository structure
 
 Before a move or interface change, identify the affected files, public exports, downstream imports and tests. For changes crossing packages, briefly state the intended dependency direction and interface changes. Keep the plan proportional to the task.

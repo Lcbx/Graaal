@@ -34,7 +34,7 @@ Keep package imports free of optional backends until an API requiring them is re
 ## Code style
 - Indent Python code with tabs, never spaces. Respect required indentation in other formats.
 - Keep existing comments and variable names unless the task requires changing them.
-- add concise comments when they help readability. do not enumerate steps (ex ```# 1. first step```) 
+- add concise comments when they help readability. do not enumerate steps (ex ```# 1. first step```)
 - Prefer composition over inheritance.
 - Prefer procedural code over OOP.
 - Prefer concise, readable functional expressions such as comprehensions and short lambdas. Use `map` when it improves clarity.
