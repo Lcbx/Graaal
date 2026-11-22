@@ -46,7 +46,8 @@ to inspect the first matching transition and its configured duration. The
 promoting the target state.
 
 Enable **Automatic state playback**, apply parameters and choose **Play** to run
-the compiled clip and 1D/2D blend states. The first matching rule starts a fade using its
+the compiled clip and 1D/2D blend states using one row of the runtime graph
+player. Manual preview uses the same state sampler. The first matching rule starts a fade using its
 configured duration. Its target starts at time zero, or at the corresponding
 marker phase when a sync mapping exists. Both clips advance during the fade;
 completion promotes the target with its current time and speed. Applied parameter

@@ -11,7 +11,7 @@ logs; validation evidence is scoped below.
 | 1: foundation | Immutable skeletons/clips, batched CPU sampling/FK/skin matrices, glTF subset importer, ECS playback, CPU material bridge, shared GPU skinning and palette lifecycle | Broader asset support and measured allocation improvements |
 | 2: transitions/root motion | Crossfades, named events, root extraction, clip-pair samples, separate advancement/finalization, bounded and native collision examples | Movement reconciliation policy remains application-owned |
 | 3: GPU crowd evaluator | Not started; GPU vertex skinning already exists | Baked clip pool, compute evaluator, transition validator and tiering |
-| 4: graphs | PosePlan, masks/additive layers, 1D/2D selectors, ordered AND-condition states, optional ECS clip-state adapter, editable clip/1D/2D blend-state definitions and pose-input plans | General runtime graph controller |
+| 4: graphs | PosePlan, masks/additive layers, 1D/2D selectors, ordered AND-condition states, optional ECS clip-state adapter, editable definitions, pose-input plans and standalone batched clip/1D/2D graph playback with state events | Graph root motion and ECS blend-state integration |
 | 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, pre/post-physics plans, collision queries and ragdoll targets | Foot locking/twist constraints and crowd overrides |
 | 6: advanced | Not started | Warping, skeleton LOD, exact GPU evaluator, GPU IK and debugging |
 | 7: tools | Headless event/graph authoring, Tk timeline, CPU-skinned preview, graph JSON/transition/blend-space forms, sync markers, manual/automatic clip and 1D/2D blend-state playback and explicit JSON project persistence | Remaining forms and material-rendered preview |
@@ -42,11 +42,10 @@ logs; validation evidence is scoped below.
   states may omit sample/weight bindings; the form preserves this choice.
   Synchronized playback
   re-anchors phase each tick to avoid long-fade float32 drift and lost crossings.
-- Automatic graph preview reuses compiled transition rules and sync mappings in
-  a headless single-instance clock for clip and 1D/2D blend states; it stays
-  independent of ECS. Fades promote the target without restarting its clock,
-  preserve pause/resume and do not interrupt on parameter changes. Events and
-  root motion remain outside preview.
+- Automatic graph preview adapts one row of the standalone runtime player to
+  the editor's scalar controls. Manual preview uses the same state sampler.
+  Fades preserve target time and speed at promotion, and parameter changes
+  during a fade affect sampling without interrupting the fade.
 - 1D/2D blend states select from applied parameters at a shared unwrapped seconds
   clock. Unsynchronized clips wrap independently; synchronized spaces map from
   an authored fixed reference, regardless of weights or the selected cell.
@@ -57,6 +56,14 @@ logs; validation evidence is scoped below.
   clocks; ECS graph control and weighted cycle timing remain deferred. 2D states
   blend horizontal pairs before the vertical blend, independent of authored
   layer weights. Clip, 1D and 2D state bindings remain separate.
+- Standalone batched graph playback owns a fixed set of independent state/fade
+  clocks, with scalar or per-row time steps, selected-row resets and nonnegative
+  speeds. It evaluates grouped state poses before application-owned layers and
+  emits independent local TRS arrays. Clock snapshots are read-only; invalid
+  updates preserve all rows. Optional state event tracks report crossings
+  with row, state, tick offset and fade weight. State clocks drive events,
+  including fixed references for synchronized blends. Root motion and ECS
+  identity are application-owned. The authoring preview retains its single-row API.
 
 ## Examples and validation evidence
 
@@ -91,6 +98,26 @@ for stable clocks across parameter changes; weighted cycle timing remains
 deferred. Prior bounded GPU scene results are historical; a separate GPU smoke
 test was not run for this change. Use current tests rather than old test totals
 as the coverage inventory.
+
+Batched runtime graph validation: mixed-state tests assert batch clocks and
+poses directly. Independent playback tests cover clip/1D/2D fades, marker
+synchronization, unequal loops, live parameters and promotion. Focused runtime, graph, sync,
+pose-plan and scene tests passed, including final empty-batch and parameterless
+graph regressions. Selective resets, independent snapshots, per-row time steps
+and speeds, overflow rejection and masked-layer skin matrices are covered.
+The full suite, `python -m graaal` and
+`python -m scenes.animation_graph_batch_example` passed. The batch size is fixed.
+
+Graph event regressions cover independent track snapshots, stationary and
+looping clocks, coincident ordering, tick offsets and fade weights for both
+states, synchronized reference clocks, and crossings at and after promotion.
+The full suite, CPU smoke and a headless event delivery check passed. The final
+focused playback, graph, event, sync and ECS run also covered exact fade-end
+ties with inverse timing rounded in either direction.
+Wrap regressions check that cursor continuity prevents duplicate crossings
+through promotion, and that corresponding sync markers keep the source first
+at equal tick offsets. Adjacent events and reverse interval boundaries retain
+their authored order.
 
 `python -m scenes.benchmarks.benchmark_animation --entities 64 256 1024 --bones 12 60 --repeat 10`
 measures controller, pose and combined CPU cost; see the

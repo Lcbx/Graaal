@@ -119,6 +119,7 @@ module names relative to their respective packages.
 | `ecs_commands`, `ecs_schedule` | Re-exported by `ECS`: `CommandBuffer.flush/clear` apply or discard deferred edits; `DeferredEntities.resolve` retrieves created IDs; `Scheduler.add/compile/run` orders synchronous systems. |
 | `EcsAdapters.EcsAnimation` | `SkeletonRef`, `ClipPlayer`, and `EcsAnimationAdapter` advance ECS playback and return batched poses with generational entity handles. |
 | `AnimationGraph` | `AnimationGraphDefinition.compile` validates editable named states, transitions, layered tasks and clip-pair sync settings into existing state-machine, pose-plan and sync resources. |
+| `AnimationGraphPlayback` | `AnimationGraphPlayback.advance/pose/reset` plays batches of clip/1D/2D graph states with independent clocks, synchronized fades and optional state events. |
 | `SkeletalGltf` | `load_skinned_gltf` imports a supported subset of skinned glTF and resamples joint tracks into CPU animation resources. |
 | `Materials.MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
 | `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |

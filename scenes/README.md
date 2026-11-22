@@ -51,6 +51,7 @@ Run headless examples as `python -m scenes.<name>`:
 | `animation_events_example` | Forward/reverse playback and scheduled footstep-event consumption | Core |
 | `root_motion_example` | Idle/walk/run crossfades with requested and boundary-accepted movement | Core |
 | `animation_graph_example` | Compiled conditional states and a masked upper-body layer for two characters | Core |
+| `animation_graph_batch_example` | Standalone batched graph playback, synchronized 1D states and a masked upper-body layer | Core |
 | `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK and normal alignment | Core |
 | `physics_headless_example` | Standalone native self-test, batched boxes, snapshots and events; no ECS | `physics` |
 | `physics_locomotion_example` | Root-motion acceptance against a native shape sweep; blocking only | `physics` |

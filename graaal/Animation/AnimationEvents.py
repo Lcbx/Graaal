@@ -40,6 +40,10 @@ class EventTrack:
 		Looping accepts unwrapped times and reports every crossing, including
 		multiple loops. Non-looping traversal clamps to the clip interval.
 		"""
+		return [EventOccurrence(self.names[index], time) for time, index in self._between(start, end, loop=loop)]
+
+	def _between(self, start: float, end: float, *, loop: bool=True) -> list[tuple[float, int]]:
+		"""Return crossing times with their original track indices."""
 		if not np.isscalar(start) or not np.isscalar(end) or not np.isfinite(start) or not np.isfinite(end):
 			raise ValueError("event interval endpoints must be finite scalars")
 		start, end = float(start), float(end)
@@ -47,21 +51,22 @@ class EventTrack:
 			start, end = np.clip([start, end], 0, self.duration)
 		if start == end: return []
 		forward = end > start
+		lower, upper = (start, end) if forward else (end, start)
 		found = []
-		for index, (time, name) in enumerate(zip(self.times, self.names)):
+		for index, time in enumerate(self.times):
 			if loop:
-				if forward:
-					first = math.floor((start - time) / self.duration) + 1
-					last = math.floor((end - time) / self.duration)
-				else:
-					first = math.ceil((end - time) / self.duration)
-					last = math.ceil((start - time) / self.duration) - 1
+				# Compare reconstructed times at the boundaries. Subtracting a
+				# marker before dividing can round to the wrong side of a cycle.
+				first = math.floor((lower - time) / self.duration)
+				last = math.ceil((upper - time) / self.duration)
 				for cycle in range(first, last + 1):
-					found.append((float(time + cycle * self.duration), index, name))
+					crossing = float(time + cycle * self.duration)
+					if (start < crossing <= end) if forward else (end <= crossing < start):
+						found.append((crossing, index))
 			elif (start < time <= end) if forward else (end <= time < start):
-				found.append((float(time), index, name))
+				found.append((float(time), index))
 		found.sort(key=lambda item: (item[0] if forward else -item[0], item[1]))
-		return [EventOccurrence(name, time) for time, _, name in found]
+		return found
 
 
 class EventTimeline:

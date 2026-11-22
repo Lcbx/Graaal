@@ -5,11 +5,12 @@ import time
 
 import numpy as np
 
+from graaal.Animation.AnimationGraphPlayback import state_clock_clip
 from graaal.Animation.SkeletalAnimation import model_matrices, sample_clip_pairs
 from .animation_preview import animation_bounds
 from .animation_viewport import draw_animation_viewport
 from .animation_asset import clip_resources, load_animations
-from .animation_graph_playback import GraphPlayback, sample_times, state_clock_clip, transition_pose
+from .animation_graph_playback import GraphPlayback, sample_times, transition_pose
 from .animation_project import compile_graph, read_project, write_project
 
 

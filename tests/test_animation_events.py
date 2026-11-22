@@ -17,6 +17,12 @@ class AnimationEventTests(unittest.TestCase):
 		self.assertEqual([event.name for event in track.between(0.75, -1, loop=False)], ["left", "right", "start"])
 		self.assertEqual(track.between(0.25, 0.25), [])
 
+	def test_decimal_crossing_belongs_to_the_interval_ending_at_it(self):
+		track = EventTrack(1, [0.4, 0.4], ["first", "second"])
+		for start, beyond in ((1.3, 1.5), (1.5, 1.3)):
+			self.assertEqual([(event.time, event.name) for event in track.between(start, 1.4)], [(1.4, "first"), (1.4, "second")])
+			self.assertEqual(track.between(1.4, beyond), [])
+
 	def test_track_validation_and_ownership(self):
 		times = np.array([0.5])
 		track = EventTrack(1, times, ["step"])
