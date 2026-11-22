@@ -5,25 +5,24 @@ Run: python main.py scenes/layered_animation_example.py [--frames 120]
 import numpy as np
 
 from graaal.Animation.SkeletalAnimation import additive_pose, blend_poses, model_matrices, sample_clip, skin_matrices, subtree_mask
+from scenes.animation_dummy import dummy_material_mesh, load_dummy
 from scenes.mixing_animation_example import advance_time
-from scenes.simple_animation_example import load_greenman
 
 
-def greenman_masks(rig):
-	"""Masks for Greenman's body, hand and hip joint subtrees."""
-	upper = np.maximum.reduce([subtree_mask(rig, i) for i in (2, 4, 5)])
-	lower = np.maximum(subtree_mask(rig, 6), subtree_mask(rig, 8))
-	return (np.ones(len(rig.parents), dtype=np.float32), upper, lower, subtree_mask(rig, 4), subtree_mask(rig, 5))
+def dummy_masks(rig):
+	"""Masks rooted at the dummy's first spine joint, thighs and hands."""
+	upper = subtree_mask(rig, 1)
+	lower = np.maximum(subtree_mask(rig, 44), subtree_mask(rig, 48))
+	return (np.ones(len(rig.parents), dtype=np.float32), upper, lower, subtree_mask(rig, 9), subtree_mask(rig, 28))
 
 
 def run_scene():
 	from imgui_bundle import imgui
-	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.ECS import ECS
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 	from graaal.UI.ImGui import ImGui
-	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.Materials.MaterialRenderer import MaterialRenderer
 	from graaal.Math import Camera, Vec3
 	from graaal.RenderContext import RenderContext
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
@@ -31,17 +30,15 @@ def run_scene():
 	from graaal.UI.rendering_settings import RenderingSettings
 	from scenes.example_overlay import ExampleOverlay
 
-	rig, vertices, indices, clips = load_greenman()
-	if not clips: raise ValueError("The layered animation example requires animation clips")
+	rig, primitive, clips = load_dummy()
 	labels = tuple(name for name, _ in clips)
-	masks = greenman_masks(rig)
+	masks = dummy_masks(rig)
 	mask_labels = ("Whole body", "Upper body and hands", "Legs", "Left hand", "Right hand")
 	RenderContext.init_window(1100, 760, "Layered animation | F: rendering | P: profiler | Space: pause", required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
-	shader = DefaultMaterialShader(default_material={"base_color": (0.22, 0.65, 0.25, 1), "roughness": 0.65})
-	mesh = MaterialMesh(vertices, shader, indices=indices, bounds=((0, 1, 0), (4, 4, 4)))
+	mesh, textures = dummy_material_mesh(primitive)
 	palette = SkinMatrixBuffer(2 * len(rig.parents))
-	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette)
-	camera = Camera((0, 2.6, 10), (0, 1, 0), (0, 1, 0), 45, near=0.05, far=100)
+	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
+	camera = Camera((-0.8, 1.5, 5.5), (-0.8, 0.9, 0), (0, 1, 0), 45, near=0.05, far=100)
 	world = ECS()
 	world.register(MaterialInstance, MaterialTransform)
 	entities = world.create(2)
@@ -52,7 +49,7 @@ def run_scene():
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12), camera=camera)
 	overlay = ExampleOverlay(settings, renderer=renderer, profiler_position=(370, 12))
 	presenter = ResolutionPresenter(target_format=renderer.transparency.target_format)
-	base_id, layer_id = min(2, len(clips) - 1), min(3, len(clips) - 1)
+	base_id, layer_id = 1, 2
 	base_time, layer_time, base_speed, layer_speed = 0.0, 0.0, 1.0, 1.0
 	weight, mask_id, mode, playing = 1.0, 1, 0, True
 

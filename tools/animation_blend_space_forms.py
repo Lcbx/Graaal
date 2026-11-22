@@ -1,6 +1,5 @@
 """Structured editing of named blend spaces in an in-memory graph draft."""
 from copy import deepcopy
-import json
 import math
 
 
@@ -160,22 +159,7 @@ class BlendSpaceWindow:
 		self.new_space()
 
 	def apply(self):
-		if self.host.editor.get("1.0", "end-1c") != self.original_text:
-			self.status.set("The JSON draft changed. Reopen this editor to load the latest draft before writing.")
-			return
-		try: self.host.compile_definition(self.data)
-		except (ValueError, TypeError) as exc:
-			self.status.set(f"Cannot write 1D blends: {exc}")
-			return
-		self.original_text = json.dumps(self.data, indent=2)
-		self.host.editor.edit_separator()
-		self.host.editor.configure(autoseparators=False)
-		self.host.editor.delete("1.0", "end")
-		self.host.editor.insert("1.0", self.original_text)
-		self.host.editor.configure(autoseparators=True)
-		self.host.editor.edit_separator()
-		self.status.set("1D blends written to draft. Compile draft to apply the preview.")
-		self.host.status.set(self.status.get())
+		self.original_text = self.host.write_form_draft(self.data, self.original_text, "1D blends", self.status)
 
 	def close(self):
 		self.window.destroy()
@@ -399,22 +383,7 @@ class BlendGridWindow:
 		self.new_grid()
 
 	def apply(self):
-		if self.host.editor.get("1.0", "end-1c") != self.original_text:
-			self.status.set("The JSON draft changed. Reopen this editor to load the latest draft before writing.")
-			return
-		try: self.host.compile_definition(self.data)
-		except (ValueError, TypeError) as exc:
-			self.status.set(f"Cannot write 2D grids: {exc}")
-			return
-		self.original_text = json.dumps(self.data, indent=2)
-		self.host.editor.edit_separator()
-		self.host.editor.configure(autoseparators=False)
-		self.host.editor.delete("1.0", "end")
-		self.host.editor.insert("1.0", self.original_text)
-		self.host.editor.configure(autoseparators=True)
-		self.host.editor.edit_separator()
-		self.status.set("2D grids written to draft. Compile draft to apply the preview.")
-		self.host.status.set(self.status.get())
+		self.original_text = self.host.write_form_draft(self.data, self.original_text, "2D grids", self.status)
 
 	def close(self):
 		self.window.destroy()

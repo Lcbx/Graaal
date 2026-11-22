@@ -146,6 +146,31 @@ class GraphWindow:
 	def compile_definition(self, data):
 		return compile_graph(data, self.animations)
 
+	def write_form_draft(self, data, original_text, name, status):
+		editor = self.editor
+		if editor.get("1.0", "end-1c") != original_text:
+			status.set("The JSON draft changed. Reopen this editor to load the latest draft before writing.")
+			return original_text
+		try:
+			self.compile_definition(data)
+			text = json.dumps(data, indent=2)
+		except (ValueError, TypeError) as exc:
+			status.set(f"Cannot write {name}: {exc}")
+			return original_text
+		auto_separators = editor.cget("autoseparators")
+		editor.edit_separator()
+		editor.configure(autoseparators=False)
+		try:
+			editor.delete("1.0", "end")
+			editor.insert("1.0", text)
+		finally:
+			editor.configure(autoseparators=auto_separators)
+			editor.edit_separator()
+		message = f"{name[0].upper()}{name[1:]} written to draft. Compile draft to apply the preview."
+		status.set(message)
+		self.status.set(message)
+		return text
+
 	def save_project(self, path=None):
 		if path is None:
 			from tkinter import filedialog

@@ -4,7 +4,7 @@ Run: python main.py scenes/mixing_animation_example.py [--frames 120]
 F opens rendering settings, P opens the profiler, and Space pauses playback.
 """
 
-from scenes.simple_animation_example import load_greenman
+from scenes.animation_dummy import dummy_material_mesh, load_dummy
 
 
 def advance_time(time, dt, speed, duration, loop):
@@ -15,13 +15,12 @@ def advance_time(time, dt, speed, duration, loop):
 
 def run_scene():
 	from imgui_bundle import imgui
-	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.ECS import ECS
 	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 	from graaal.UI.ImGui import ImGui
-	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.Materials.MaterialRenderer import MaterialRenderer
 	from graaal.Math import Camera, Vec3
 	from graaal.RenderContext import RenderContext
 	from graaal.Animation.SkeletalAnimation import model_matrices, sample_crossfade, skin_matrices
@@ -30,22 +29,20 @@ def run_scene():
 	from graaal.UI.rendering_settings import RenderingSettings
 	from scenes.example_overlay import ExampleOverlay
 
-	rig, vertices, indices, clips = load_greenman()
-	if not clips: raise ValueError("The mixing example requires animation clips")
+	rig, primitive, clips = load_dummy()
 	labels = tuple(name for name, _ in clips)
 	RenderContext.init_window(1100, 760, "Animation mixing | F: rendering | P: profiler | Space: pause", required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
-	shader = DefaultMaterialShader(default_material={"base_color": (0.22, 0.65, 0.25, 1), "roughness": 0.65})
-	mesh = MaterialMesh(vertices, shader, indices=indices, bounds=((0, 1, 0), (4, 4, 4)))
+	mesh, textures = dummy_material_mesh(primitive)
 	palette = SkinMatrixBuffer(2 * len(rig.parents))
-	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette)
-	camera = Camera((0, 2.6, 10), (0, 1, 0), (0, 1, 0), 45, near=0.05, far=100)
+	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
+	camera = Camera((-0.8, 1.5, 5.5), (-0.8, 0.9, 0), (0, 1, 0), 45, near=0.05, far=100)
 	world = ECS()
 	world.register(SkeletonRef, ClipPlayer, MaterialInstance, MaterialTransform)
 	entities = world.create(2)
 	for i, entity in enumerate(entities):
 		world.add(entity, MaterialInstance(mesh), MaterialTransform(position=Vec3((i * 2 - 1) * 1.7, 0, 0)))
 		palette.acquire(entity, len(rig.parents))
-	source, target = min(1, len(clips) - 1), min(2, len(clips) - 1)
+	source, target = 1, 2
 	world.add(entities[1], SkeletonRef(0), ClipPlayer(source))
 	players = world.get(ClipPlayer)
 	animation = EcsAnimationAdapter(world, {0: rig}, {i: clip for i, (_, clip) in enumerate(clips)})

@@ -689,8 +689,14 @@ def test_2d_grid_form_writes_cells_and_previews_pose(window):
 		form.store_cell()
 	form.store_grid(False)
 	assert form.data["blend_spaces_2d"]["motion"]["clips"][1][0] == "2: upper"
+	before = editor.editor.get("1.0", "end-1c")
 	form.apply()
 	assert editor.graph is graph and "blend_spaces_2d" not in editor.definition.data
+	written = editor.editor.get("1.0", "end-1c")
+	editor.editor.edit_undo()
+	assert editor.editor.get("1.0", "end-1c") == before
+	editor.editor.edit_redo()
+	assert editor.editor.get("1.0", "end-1c") == written
 	editor.compile_draft()
 	editor.bindings["lower"].set("<grid: motion / lower>")
 	editor.change_binding("lower")
@@ -800,9 +806,15 @@ def test_1d_blend_form_writes_valid_draft_and_previews_selected_pair(window):
 		form.store_point(False)
 	form.store_space(False)
 	assert "locomotion" in form.data["blend_spaces"]
+	before = editor.editor.get("1.0", "end-1c")
 	form.apply()
 	assert editor.graph is graph
 	assert "blend_spaces" not in editor.definition.data
+	written = editor.editor.get("1.0", "end-1c")
+	editor.editor.edit_undo()
+	assert editor.editor.get("1.0", "end-1c") == before
+	editor.editor.edit_redo()
+	assert editor.editor.get("1.0", "end-1c") == written
 	editor.compile_draft()
 	assert "locomotion" in editor.graph.blend_spaces
 	editor.bindings["base"].set("<blend: locomotion>")
