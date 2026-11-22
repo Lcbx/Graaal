@@ -70,7 +70,7 @@ class _RowSelection:
 		self._rows = as_rows(rows).copy()
 		self._rows.flags.writeable = False
 		self._layout_version = store.layout_version
-		self._take_rows = None
+		self._take_rows: NDArray[np.intp] | None = None
 
 	def _validate(self, store: ComponentStorage | None = None) -> None:
 		if store is not None and self._store is not store:

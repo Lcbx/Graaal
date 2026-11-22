@@ -1,12 +1,22 @@
 """Optional ECS clip playback adapter for the standalone skeletal evaluator."""
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import cast, Iterable, Mapping, TYPE_CHECKING
 
 import numpy as np
 
-from ..ECS import component
 from ..Animation.AnimationSync import SyncMapping
 from ..Animation.RootMotion import _blend_deltas
 from ..Animation.SkeletalAnimation import model_matrices, sample_clip_pairs, skin_matrices
+from ..ECS import component
+
+
+if TYPE_CHECKING:
+	from ..Animation.AnimationEvents import EventTrack
+	from ..Animation.RootMotion import RootMotion
+	from ..Animation.SkeletalAnimation import Skeleton, Clip
+	from ..ECS import ECS, CommandBuffer
 
 
 @component
@@ -17,17 +27,17 @@ class SkeletonRef:
 @component
 class ClipPlayer:
 	clip_id: np.uint32
-	time: np.float32 = 0.0
-	speed: np.float32 = 1.0
+	time: np.float32 = cast(np.float32, 0.0)
+	speed: np.float32 = cast(np.float32, 1.0)
 	loop: bool = True
 	playing: bool = True
 	transitioning: bool = False
-	target_clip_id: np.uint32 = 0
-	target_time: np.float32 = 0.0
-	target_speed: np.float32 = 1.0
+	target_clip_id: np.uint32 = cast(np.uint32, 0)
+	target_time: np.float32 = cast(np.float32, 0.0)
+	target_speed: np.float32 = cast(np.float32, 1.0)
 	target_loop: bool = True
-	transition_time: np.float32 = 0.0
-	transition_duration: np.float32 = 1.0
+	transition_time: np.float32 = cast(np.float32, 0.0)
+	transition_duration: np.float32 = cast(np.float32, 1.0)
 	extract_root_motion: bool = False
 
 
@@ -78,23 +88,27 @@ class EcsAnimationAdapter:
 	The caller owns render mapping and consumes the returned batches before the
 	next update or structural change.
 	"""
-	def __init__(self, world, skeletons, clips, event_tracks=None, root_motions=None, sync_mappings=None):
+	def __init__(self, world: ECS, skeletons: Mapping[int, Skeleton], clips: Mapping[int, Clip], event_tracks: Mapping[int, EventTrack] | None=None, root_motions: Mapping[tuple[int, int], RootMotion] | None=None, sync_mappings: Mapping[tuple[int, int], SyncMapping] | None=None) -> None:
 		self.world, self.skeletons, self.clips = world, skeletons, clips
 		self.event_tracks = {} if event_tracks is None else event_tracks
 		self.root_motions = {} if root_motions is None else root_motions
 		self.sync_mappings = {} if sync_mappings is None else sync_mappings
 		self.query = world.query(SkeletonRef, ClipPlayer)
+		self.batches: list[PoseBatch]
 		self.batches = []
+		self.sample_batches: list[AnimationSampleBatch]
 		self.sample_batches = []
-		self.events = []
+		self.events: list[AnimationEvent] = []
+		self.root_motion_batches: list[RootMotionBatch]
 		self.root_motion_batches = []
+		self._pose_buffers: dict[tuple[int, int], tuple[np.ndarray, ...]]
 		self._pose_buffers = {}
 
-	def clear_pose_buffers(self):
+	def clear_pose_buffers(self) -> None:
 		"""Release cached pose storage; subsequent updates allocate it again."""
 		self._pose_buffers.clear()
 
-	def _pose_workspace(self, key, count, bones):
+	def _pose_workspace(self, key: tuple[int, int], count: int, bones: int) -> tuple[np.ndarray, ...]:
 		buffers = self._pose_buffers.get(key)
 		if buffers is None or buffers[0].shape[0] < count or buffers[0].shape[1] != bones:
 			capacity = max(count, 1 if buffers is None else len(buffers[0]) * 2)
@@ -102,25 +116,25 @@ class EcsAnimationAdapter:
 			self._pose_buffers[key] = buffers
 		return tuple(value[:count] for value in buffers)
 
-	def _events(self, clip_id, clip, entities, times, ends, loops, role):
+	def _events(self, clip_id: int, clip: Clip, entities: np.ndarray, times: np.ndarray, ends: np.ndarray, loops: np.ndarray, role: str) -> list[AnimationEvent]:
 		track = self.event_tracks.get(clip_id)
 		if track is None: return []
 		if track.duration != clip.duration: raise ValueError("Event track duration must match its clip")
-		events = []
+		events: list[AnimationEvent] = []
 		for entity, time, end, loop in zip(entities, times, ends, loops):
 			start = float(time) % clip.duration if loop else float(time)
 			for occurrence in track.between(start, start + (float(end) - float(time)), loop=bool(loop)):
 				events.append(AnimationEvent(int(entity), clip_id, occurrence.name, role, occurrence.time))
 		return events
 
-	def _motion_requests(self, motion, start, end, loops):
+	def _motion_requests(self, motion: RootMotion, start: np.ndarray, end: np.ndarray, loops: np.ndarray) -> np.ndarray:
 		result = np.empty((len(start), 4, 4), dtype=np.float64)
 		for repeats in (False, True):
 			selected = loops == repeats
 			if np.any(selected): result[selected] = motion.character_delta(start[selected], end[selected], loop=repeats)
 		return result
 
-	def in_place_motion(self, samples):
+	def in_place_motion(self, samples: AnimationSampleBatch) -> tuple[RootMotion | None, np.ndarray]:
 		"""Return a validated (motion, mask) slot for a sample batch's pose plan."""
 		entities = np.asarray(samples.entities)
 		ids, mask = np.asarray(samples.clip_ids), np.asarray(samples.in_place)
@@ -140,7 +154,7 @@ class EcsAnimationAdapter:
 				raise ValueError(f"Missing or incompatible root motion for skeleton {skeleton_id}, target clip {target_id}")
 		return motion, mask.copy()
 
-	def evaluate_samples(self, sample_batches=None):
+	def evaluate_samples(self, sample_batches: Iterable[AnimationSampleBatch] | None=None) -> list[PoseBatch]:
 		"""Evaluate controller sample batches without advancing ECS state."""
 		if sample_batches is None: sample_batches = self.sample_batches
 		batches, keys = [], set()
@@ -164,13 +178,14 @@ class EcsAnimationAdapter:
 			pose = sample_clip_pairs(skeleton, self.clips, clip_ids, samples.times, samples.weights, out=(translation, rotation, scale))
 			if np.any(in_place):
 				motion, _ = self.in_place_motion(samples)
+				assert motion is not None
 				local = motion.in_place(*(value[in_place] for value in pose))
 				for output, values in zip(pose, local): output[in_place] = values
 			matrices = skin_matrices(skeleton, model_matrices(skeleton, *pose, out=model), out=skin)
 			batches.append(PoseBatch(skeleton_id, clip_id, entities.copy(), matrices))
 		return batches
 
-	def update(self, dt, *, evaluate_poses=True):
+	def update(self, dt: float, *, evaluate_poses: bool=True) -> list[PoseBatch]:
 		"""Advance players; optionally skip pose evaluation and return an empty list."""
 		if not np.isscalar(dt) or not np.isfinite(dt) or dt < 0:
 			raise ValueError("dt must be a finite nonnegative scalar")
@@ -198,7 +213,7 @@ class EcsAnimationAdapter:
 		next_target_times, next_elapsed, next_target_speeds = target_times.copy(), elapsed.copy(), target_speeds.copy()
 		next_transitioning = transitioning.copy()
 		sample_batches = []
-		events = []
+		events: list[AnimationEvent] = []
 		root_batches = []
 		pairs = np.unique(np.stack((skeleton_ids, clip_ids), axis=1), axis=0)
 		for skeleton_id, clip_id in pairs:
@@ -278,6 +293,7 @@ class EcsAnimationAdapter:
 				sample_weights[local_rows, 0] = 1 - sample_weights[local_rows, 1]
 				motion_selected = selected[root_motion[selected]]
 				if len(motion_selected):
+					assert motion is not None
 					target_motion = self.root_motions.get((skeleton_id, target_id))
 					if target_motion is None or target_motion.skeleton is not skeleton or target_motion.clip is not target or target_motion.root != motion.root:
 						raise ValueError(f"Missing or incompatible root motion for skeleton {skeleton_id}, target clip {target_id}")
@@ -307,18 +323,18 @@ class EcsAnimationAdapter:
 		self.root_motion_batches = root_batches
 		return batches
 
-	def evaluate(self, world, commands, dt):
+	def evaluate(self, world: ECS, commands: CommandBuffer, dt: float) -> None:
 		"""Scheduler callback; the most recent result is available as `batches`."""
 		if world is not self.world: raise ValueError("Animation adapter belongs to a different world")
 		self.batches = self.update(dt)
 
-	def advance(self, world, commands, dt):
+	def advance(self, world: ECS, commands: CommandBuffer, dt: float) -> None:
 		"""Scheduler callback that advances controls without evaluating poses."""
 		if world is not self.world: raise ValueError("Animation adapter belongs to a different world")
 		self.update(dt, evaluate_poses=False)
 		self.batches = []
 
-	def finalize(self, world, commands, dt):
+	def finalize(self, world: ECS, commands: CommandBuffer, dt: float) -> None:
 		"""Scheduler callback that evaluates the latest samples into `batches`."""
 		if world is not self.world: raise ValueError("Animation adapter belongs to a different world")
 		self.batches = self.evaluate_samples()

@@ -1,9 +1,11 @@
 """Marker-based phase mapping for looping animation clips."""
+from __future__ import annotations
 
 from collections.abc import Mapping
 from operator import index
 from types import MappingProxyType
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 from .AnimationEvents import EventTrack
@@ -15,7 +17,7 @@ class BlendSpaceSync:
 	Tracks map nonnegative integer clip IDs to compatible EventTracks. This
 	resource does not advance clocks, select weights, emit events or extract motion.
 	"""
-	def __init__(self, reference, tracks):
+	def __init__(self, reference: int, tracks: Mapping[int, EventTrack]) -> None:
 		if not isinstance(tracks, Mapping) or not tracks: raise ValueError("sync tracks must be a nonempty clip-ID mapping")
 		for clip in (reference, *tracks):
 			if isinstance(clip, (bool, np.bool_)): raise ValueError("sync clip IDs must be nonnegative integers")
@@ -33,7 +35,7 @@ class BlendSpaceSync:
 			except ValueError as exc: raise ValueError(f"clip {clip}: {exc}") from exc
 		self.mappings = MappingProxyType(mappings)
 
-	def map(self, clip_ids, times, *, reverse=False):
+	def map(self, clip_ids: ArrayLike, times: ArrayLike, *, reverse: bool=False) -> tuple[np.ndarray, np.ndarray]:
 		"""Return sample times and rates for (instances, ...) selected clip IDs.
 
 		Times are finite reference seconds shaped (instances,), including negative
@@ -60,7 +62,7 @@ class SyncMapping:
 	least two markers and no coincident times. Tracks may start at different
 	markers and use different interval lengths.
 	"""
-	def __init__(self, source, target):
+	def __init__(self, source: EventTrack, target: EventTrack) -> None:
 		if not isinstance(source, EventTrack) or not isinstance(target, EventTrack): raise ValueError("sync tracks must be event tracks")
 		if len(source.names) < 2 or len(source.names) != len(target.names): raise ValueError("sync tracks require the same number of at least two markers")
 		if len(set(source.names)) != len(source.names) or len(set(target.names)) != len(target.names): raise ValueError("sync marker names must be unique")
@@ -78,7 +80,7 @@ class SyncMapping:
 		if not np.isfinite(self._rates).all() or np.any(self._rates <= 0): raise ValueError("sync intervals must have finite positive rate ratios")
 		self._target_offsets = np.mod(self._target_times - self._target_times[0], target.duration)
 
-	def map(self, times, *, reverse=False):
+	def map(self, times: ArrayLike, *, reverse: bool=False) -> tuple[np.ndarray, np.ndarray]:
 		"""Return wrapped target times and local time-rate ratios for source times.
 
 		Input is a finite 1D array of source times, including negative or unwrapped
@@ -103,7 +105,7 @@ class SyncMapping:
 		target = np.mod(target, self.target.duration)
 		return target, self._rates[segment].copy()
 
-	def advance(self, start, end, target_start):
+	def advance(self, start: ArrayLike, end: ArrayLike, target_start: ArrayLike) -> np.ndarray:
 		"""Return unwrapped target end times for aligned source intervals.
 
 		The three inputs are equal-length finite 1D arrays. Target starts must

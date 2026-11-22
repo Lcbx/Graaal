@@ -1,11 +1,19 @@
 """Optional ECS extraction for material rendering; ECS owns entity state."""
+from __future__ import annotations
+
 from dataclasses import field
+from typing import cast, Any, Callable, TYPE_CHECKING
+
 import numpy as np
 
-from ..ECS.ecs_types import component
-from .MaterialTransform import MaterialTransform
-from ..Materials import MaterialBinding
 from ..DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
+from ..ECS.ecs_types import component
+from ..Materials import MaterialBinding
+from .MaterialTransform import MaterialTransform
+
+if TYPE_CHECKING:
+	from ..ECS import ECS
+	from ..Materials.MaterialRenderer import MaterialRenderer
 
 
 @component(multiples=True)
@@ -14,7 +22,7 @@ class MaterialInstance:
 	material: object = None
 	overrides: object = field(default_factory=dict)
 	shader: object = None
-	surface_id: np.uint32 = 0
+	surface_id: np.uint32 = cast(np.uint32, 0)
 
 
 class EcsMaterialAdapter:
@@ -24,20 +32,24 @@ class EcsMaterialAdapter:
 	material component accessor. Transform field writes use normal ECS versions.
 	Empty selections and multiple material instances per entity are supported.
 	"""
-	def __init__(self, renderer, world, *, material_type=MaterialInstance, transform_type=MaterialTransform, transform_source=None):
+	def __init__(self, renderer: MaterialRenderer, world: ECS, *, material_type: type[Any]=MaterialInstance, transform_type: type[Any]=MaterialTransform, transform_source: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]] | None=None) -> None:
 		self.renderer = renderer
 		self.materials, self.transforms = world.get(material_type), world.get(transform_type)
 		self.query = world.query(material_type, transform_type)
 		self.material_type = material_type
 		self.transform_source = transform_source
+		self._source_token: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]] | None
 		self._source_token = None
+		self._material_token: tuple[Any, ...] | None
+		self._transform_token: tuple[Any, ...] | None
 		self._material_token = self._transform_token = None
 		self._revision = 0
+		self._dirty_materials: list[dict[str, Any]]
 		self._dirty_materials = []
 		self._next_surface = 1
 		self._owners = np.empty(0, dtype=np.uint64)
 
-	def touch_materials(self, *materials):
+	def touch_materials(self, *materials: dict[str, Any]) -> None:
 		"""Notify edited dictionaries; no arguments invalidates all resolved records."""
 		self._revision += 1
 		if materials:
@@ -46,11 +58,11 @@ class EcsMaterialAdapter:
 			self._material_token = None  # Force a full refresh even if targeted edits follow.
 			self._dirty_materials = []
 
-	def _tokens(self):
+	def _tokens(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
 		return ((self.materials.layout_version, self.materials.version(), self._revision),
 			(self.transforms.layout_version, self.transforms.version()))
 
-	def _transforms(self, owners):
+	def _transforms(self, owners: np.ndarray) -> np.ndarray:
 		if self.transform_source is None:
 			selection = self.transforms[owners]
 			position, rotation, scale = selection.position, selection.rotation, selection.scale
@@ -64,7 +76,7 @@ class EcsMaterialAdapter:
 		values["iScale"] = pack_scale(scale)
 		return values
 
-	def sync(self):
+	def sync(self) -> bool:
 		material_token, transform_token = self._tokens()
 		# Membership in either component changes the renderable selection.
 		membership = (self.materials.membership_version, self.transforms.membership_version)

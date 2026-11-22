@@ -1,13 +1,21 @@
 """Batched rigid root-motion extraction, independent of ECS and physics."""
-from operator import index
+from __future__ import annotations
 
+from operator import index
+from typing import SupportsIndex, TYPE_CHECKING
+
+from numpy.typing import ArrayLike
 import numpy as np
 
 from ..Math import Quaternion
 from .SkeletalAnimation import sample_clip
 
 
-def _inverse(matrix):
+if TYPE_CHECKING:
+	from .SkeletalAnimation import Skeleton, Clip
+
+
+def _inverse(matrix: np.ndarray) -> np.ndarray:
 	result = np.zeros_like(matrix)
 	result[..., :3, :3] = matrix[..., :3, :3].swapaxes(-1, -2)
 	result[..., :3, 3] = -(result[..., :3, :3] @ matrix[..., :3, 3, None])[..., 0]
@@ -15,7 +23,7 @@ def _inverse(matrix):
 	return result
 
 
-def _transform(translation, rotation):
+def _transform(translation: np.ndarray, rotation: np.ndarray) -> np.ndarray:
 	rotation = np.asarray(rotation, dtype=np.float64)
 	rotation = rotation / np.linalg.norm(rotation, axis=-1, keepdims=True)
 	result = np.zeros(rotation.shape[:-1] + (4, 4), dtype=np.float64)
@@ -25,7 +33,7 @@ def _transform(translation, rotation):
 	return result
 
 
-def _powers(matrix, exponents):
+def _powers(matrix: np.ndarray, exponents: np.ndarray) -> np.ndarray:
 	result = np.broadcast_to(np.eye(4), (len(exponents), 4, 4)).copy()
 	base = np.broadcast_to(matrix, result.shape).copy()
 	base[exponents < 0] = _inverse(matrix)
@@ -38,7 +46,7 @@ def _powers(matrix, exponents):
 	return result
 
 
-def _blend_deltas(source, target, weight):
+def _blend_deltas(source: np.ndarray, target: np.ndarray, weight: ArrayLike) -> np.ndarray:
 	"""Blend same-frame rigid requests using linear translation and quaternion nlerp."""
 	weight = np.asarray(weight, dtype=np.float64)[:, None]
 	q0, q1 = Quaternion.from_matrices_batch(source), Quaternion.from_matrices_batch(target)
@@ -48,7 +56,7 @@ def _blend_deltas(source, target, weight):
 
 class RootMotion:
 	"""Extract a root clip's rigid movement without changing its pose or ECS state."""
-	def __init__(self, skeleton, clip, root=0):
+	def __init__(self, skeleton: Skeleton, clip: Clip, root: SupportsIndex=0) -> None:
 		if isinstance(root, (bool, np.bool_)): raise ValueError("root must be a bone index")
 		try: root = index(root)
 		except TypeError as exc: raise ValueError("root must be a bone index") from exc
@@ -62,11 +70,11 @@ class RootMotion:
 		self._start = endpoints[0]
 		self._cycle = _inverse(endpoints[0]) @ endpoints[1]
 
-	def _sample(self, times):
+	def _sample(self, times: ArrayLike) -> np.ndarray:
 		translation, rotation, _ = sample_clip(self.clip, times, loop=False)
 		return _transform(translation[:, self.root], rotation[:, self.root])
 
-	def _unwrapped(self, times, loop):
+	def _unwrapped(self, times: np.ndarray, loop: bool) -> np.ndarray:
 		if not loop or not self.clip.duration: return self._sample(times)
 		cycles = np.floor(times / self.clip.duration)
 		if not np.isfinite(cycles).all() or np.any(np.abs(cycles) >= 2**52):
@@ -74,24 +82,24 @@ class RootMotion:
 		local = np.mod(times, self.clip.duration)
 		return self._start @ _powers(self._cycle, cycles.astype(np.int64)) @ _inverse(self._start) @ self._sample(local)
 
-	def delta(self, start, end, *, loop=True):
+	def delta(self, start: ArrayLike, end: ArrayLike, *, loop: bool=True) -> np.ndarray:
 		"""Return (N, 4, 4) transforms from start root frames to end root frames."""
 		start, end = np.asarray(start, dtype=np.float64), np.asarray(end, dtype=np.float64)
 		if start.ndim != 1 or end.shape != start.shape or not np.isfinite(start).all() or not np.isfinite(end).all():
 			raise ValueError("root motion times must be finite 1D arrays of equal length")
 		return _inverse(self._unwrapped(start, loop)) @ self._unwrapped(end, loop)
 
-	def _reference(self):
+	def _reference(self) -> np.ndarray:
 		if not np.allclose(self.skeleton.scale[self.root], 1, rtol=0, atol=1e-6):
 			raise ValueError("in-place root motion requires unit reference root scale")
 		return _transform(self.skeleton.translation[self.root], self.skeleton.rotation[self.root])
 
-	def character_delta(self, start, end, *, loop=True):
+	def character_delta(self, start: ArrayLike, end: ArrayLike, *, loop: bool=True) -> np.ndarray:
 		"""Return deltas in character coordinates for poses anchored to the reference root."""
 		reference = self._reference()
 		return reference @ self.delta(start, end, loop=loop) @ _inverse(reference)
 
-	def in_place(self, translation, rotation, scale):
+	def in_place(self, translation: np.ndarray, rotation: np.ndarray, scale: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Return copied local pose arrays with the root fixed to its reference pose."""
 		self._reference()
 		translation = np.array(translation, dtype=np.float32, copy=True)

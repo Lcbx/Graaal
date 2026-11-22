@@ -1,7 +1,9 @@
 """Installed-package examples: python -m graaal [--offscreen | --window]."""
+from __future__ import annotations
 
-import argparse
 from pathlib import Path
+from typing import cast
+import argparse
 
 import numpy as np
 
@@ -13,7 +15,7 @@ class Position:
 	value: np.ndarray = array_field(np.float32, shape=(3,))
 
 
-def simulate(steps=60):
+def simulate(steps: int=60) -> np.ndarray:
 	world = ECS()
 	positions, = world.register(Position)
 	entities = world.create(2)
@@ -25,7 +27,7 @@ def simulate(steps=60):
 	return positions[entities].value
 
 
-def render_example(*, window=False, frames=1):
+def render_example(*, window: bool=False, frames: int=1) -> None:
 	from .RenderContext import Mesh, RenderContext, RenderPipeline, Shader, Texture, TextureUsage
 	from .DrawBatches import DrawBatches, RenderShader, ShaderPass
 	from .DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
@@ -53,13 +55,13 @@ def render_example(*, window=False, frames=1):
 				iRotation=pack_quaternion([0, 0, 0, 1]), iScale=pack_scale([1, 1, 1]))
 			visibility.all_visible()
 			commands = RenderContext.commands("example")
-			target = RenderContext.screen(clear=(0, 0, 0, 1)) if window else output.color_attachment(clear=(0, 0, 0, 1))
+			target = RenderContext.screen(clear=(0, 0, 0, 1)) if window else cast(Texture, output).color_attachment(clear=(0, 0, 0, 1))
 			with commands.render_pass(color=target) as render:
 				draws.draw(render, visibility, "color")
 			RenderContext.submit(commands.finish())
 		if window: RenderContext.present()
 		else:
-			pixels = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": 256}, (64, 64, 1))
+			pixels = RenderContext.device.queue.read_texture({"texture": cast(Texture, output).handle}, {"bytes_per_row": 256}, (64, 64, 1))
 			if not np.any(np.frombuffer(pixels, dtype=np.uint8).reshape(64, 64, 4)[:, :, 0]):
 				raise RuntimeError("Example produced no colored pixels")
 			print("Offscreen example rendered two procedural instances")
@@ -67,7 +69,7 @@ def render_example(*, window=False, frames=1):
 		RenderContext.cleanup()
 
 
-def main():
+def main() -> None:
 	parser = argparse.ArgumentParser(__doc__)
 	mode = parser.add_mutually_exclusive_group()
 	mode.add_argument("--offscreen", action="store_true")

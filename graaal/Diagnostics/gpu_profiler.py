@@ -1,10 +1,19 @@
 """Opt-in pass-boundary GPU timestamps; one submitted/read frame at a time."""
-from ..RenderContext import BufferUsage, GpuBuffer, RenderContext
+from __future__ import annotations
+
+from typing import Any, TYPE_CHECKING
+
 import numpy as np
+
+from ..RenderContext import BufferUsage, GpuBuffer, RenderContext
+
+
+if TYPE_CHECKING:
+	from ..RenderContext import CommandContext, RenderPass, ComputePass, wgpu
 
 
 class GpuProfiler:
-	def __init__(self, max_passes=64):
+	def __init__(self, max_passes: int=64) -> None:
 		if type(max_passes) is not int or max_passes < 1:
 			raise ValueError("max_passes must be a positive integer")
 		if "timestamp-query" not in RenderContext.device.features:
@@ -15,16 +24,18 @@ class GpuProfiler:
 		self.queries = self.device.create_query_set(type="timestamp", count=2*max_passes)
 		self.results = GpuBuffer(None, BufferUsage.QUERY_RESOLVE | BufferUsage.COPY_SRC,
 			dtype=np.uint64, count=2*max_passes)
+		self.labels: list[str]
 		self.labels = []
 		self.recording = self.pending = self.closed = False
-		self.last_frame_ms = None
+		self.last_frame_ms: float | None = None
+		self.last_samples: list[float]
 		self.last_samples = []
 
-	def _check(self):
+	def _check(self) -> None:
 		if self.closed or self.device is not RenderContext.device or self.generation != RenderContext.device_generation:
 			raise RuntimeError("GPU profiler is closed or belongs to an expired device")
 
-	def wrap(self, commands):
+	def wrap(self, commands: CommandContext) -> _ProfiledCommands:
 		self._check()
 		if isinstance(commands, _ProfiledCommands): raise ValueError("Commands already have a GPU profiler")
 		commands._check_device()
@@ -34,7 +45,7 @@ class GpuProfiler:
 		self.recording = True
 		return _ProfiledCommands(commands, self)
 
-	def _timestamps(self, label):
+	def _timestamps(self, label: str | None) -> dict[str, Any]:
 		self._check()
 		if not self.recording: raise RuntimeError("Profiled commands have already finished")
 		index = len(self.labels)
@@ -43,11 +54,11 @@ class GpuProfiler:
 		return dict(query_set=self.queries, beginning_of_pass_write_index=2*index,
 			end_of_pass_write_index=2*index+1)
 
-	def read(self):
+	def read(self) -> dict[str, float]:
 		"""Synchronize/read the submitted frame. Values are milliseconds per label."""
 		self._check()
 		if not self.pending: raise RuntimeError("Finish and submit a profiled frame before reading")
-		result = {}
+		result: dict[str, float] = {}
 		self.last_frame_ms = 0.0
 		self.last_samples = []
 		if self.labels:
@@ -60,7 +71,7 @@ class GpuProfiler:
 		self.pending = False
 		return result
 
-	def close(self):
+	def close(self) -> None:
 		if self.closed: return
 		self.queries.destroy()
 		self.results.close()
@@ -68,19 +79,19 @@ class GpuProfiler:
 
 
 class _ProfiledCommands:
-	def __init__(self, commands, profiler):
+	def __init__(self, commands: CommandContext, profiler: GpuProfiler) -> None:
 		self.commands, self.profiler = commands, profiler
 
-	def __getattr__(self, name):
+	def __getattr__(self, name: str) -> Any:
 		return getattr(self.commands, name)
 
-	def render_pass(self, **kwargs):
+	def render_pass(self, **kwargs: Any) -> _ProfiledPass:
 		return _ProfiledPass(self.commands.render_pass(**kwargs), self.profiler)
 
-	def compute_pass(self, **kwargs):
+	def compute_pass(self, **kwargs: Any) -> _ProfiledPass:
 		return _ProfiledPass(self.commands.compute_pass(**kwargs), self.profiler)
 
-	def finish(self, label=None):
+	def finish(self, label: str | None=None) -> wgpu.GPUCommandBuffer:
 		self.profiler._check()
 		if not self.profiler.recording: raise RuntimeError("Profiled commands already finished")
 		count = len(self.profiler.labels)*2
@@ -92,19 +103,19 @@ class _ProfiledCommands:
 
 
 class _ProfiledPass:
-	def __init__(self, scope, profiler):
+	def __init__(self, scope: RenderPass | ComputePass, profiler: GpuProfiler) -> None:
 		self.scope, self.profiler = scope, profiler
 
-	def __getattr__(self, name):
+	def __getattr__(self, name: str) -> Any:
 		return getattr(self.scope, name)
 
-	def __enter__(self):
+	def __enter__(self) -> RenderPass | ComputePass:
 		if self.scope.timestamp_writes is not None: raise ValueError("Pass already has timestamp writes")
 		# Allocate on entry, not construction: callers may prepare scopes, enter
 		# them in another order, or never enter an optional scope at all.
 		self.scope.timestamp_writes = self.profiler._timestamps(self.scope.label)
 		return self.scope.__enter__()
 
-	def __exit__(self, *args):
+	def __exit__(self, *args: Any) -> None:
 		try: return self.scope.__exit__(*args)
 		finally: self.scope.timestamp_writes = None

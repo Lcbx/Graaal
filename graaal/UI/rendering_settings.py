@@ -5,13 +5,22 @@ handle_key with the key event, and call draw inside the ImGui frame. Optional
 callbacks connect the MSAA and SSAO toggles to scene-specific rendering paths.
 F toggles visibility; visible=False starts with the settings hidden.
 """
+from __future__ import annotations
+
 from dataclasses import replace
+from typing import Any, Callable, TYPE_CHECKING, cast
 
 import glfw
 import numpy as np
 
+if TYPE_CHECKING:
+	from ..Math import Camera
+	from ..RenderPasses.PostprocessingPass import AmbientOcclusionEffect, AntialiasingEffect
+
+
 try:
-	from imgui_bundle import imgui
+	from imgui_bundle import imgui as _imgui
+	imgui: Any = _imgui
 except ModuleNotFoundError as error:
 	if error.name != "imgui_bundle": raise
 	imgui = None
@@ -30,7 +39,7 @@ DEBUG_VIEW_HELP = {
 }
 
 
-def _item_tooltip(text):
+def _item_tooltip(text: str) -> None:
 	if imgui.is_item_hovered():
 		imgui.begin_tooltip()
 		imgui.push_text_wrap_pos(imgui.get_font_size()*30)
@@ -44,8 +53,8 @@ def _item_tooltip(text):
 class RenderingSettings:
 	"""Live rendering controls for a TransparencyPass or MaterialRenderer."""
 
-	def __init__(self, renderer, *, visible=True, position=(12, 12), on_msaa_changed=None,
-		on_ssao_changed=None, ssao_enabled=False, ao_pass=None, aa_pass=None, camera=None):
+	def __init__(self, renderer: Any, *, visible: bool=True, position: tuple[float, float]=(12, 12), on_msaa_changed: Callable[[bool], None] | None=None,
+		on_ssao_changed: Callable[[bool], None] | None=None, ssao_enabled: bool=False, ao_pass: AmbientOcclusionEffect | None=None, aa_pass: AntialiasingEffect | None=None, camera: Camera | None=None) -> None:
 		self.controls = renderer
 		self.renderer = getattr(renderer, "transparency", renderer)
 		self.camera = camera
@@ -63,20 +72,20 @@ class RenderingSettings:
 		elif hasattr(self.renderer, "set_ambient_occlusion"):
 			self.renderer.set_ambient_occlusion(ssao_enabled)
 
-	def set_msaa_enabled(self, enabled):
+	def set_msaa_enabled(self, enabled: bool) -> None:
 		if type(enabled) is not bool: raise ValueError("MSAA enabled must be boolean")
 		self.set_aa_mode("msaa" if enabled else "off")
 
-	def set_resolution_percent(self, percent):
+	def set_resolution_percent(self, percent: int) -> None:
 		"""Set the scene render size as a percentage of the window framebuffer."""
 		if type(percent) is not int or not 25 <= percent <= 100:
 			raise ValueError("Rendering resolution must be an integer percentage from 25 to 100")
 		self.resolution_percent = percent
 
-	def render_size(self, window_size):
-		return tuple(max(1, (size*self.resolution_percent+50)//100) for size in window_size)
+	def render_size(self, window_size: tuple[int, int]) -> tuple[int, int]:
+		return cast(tuple[int, int], tuple(max(1, (size*self.resolution_percent+50)//100) for size in window_size))
 
-	def set_aa_mode(self, mode):
+	def set_aa_mode(self, mode: str) -> None:
 		if mode not in ("off", "msaa", "lxaa", "faaa", "ddaa2"): raise ValueError("Unknown antialiasing mode")
 		if mode in ("lxaa", "faaa", "ddaa2") and self.aa_pass is None: raise ValueError("Postprocess AA requires an antialiasing pass or effect")
 		sample_count = 4 if mode == "msaa" else 1
@@ -88,7 +97,7 @@ class RenderingSettings:
 		self.aa_mode = mode
 		if self.aa_pass is not None: self.aa_pass.mode = mode
 
-	def set_ssao_enabled(self, enabled):
+	def set_ssao_enabled(self, enabled: bool) -> None:
 		if type(enabled) is not bool: raise ValueError("SSAO enabled must be boolean")
 		self.ssao_enabled = enabled
 		if self.on_ssao_changed is not None:
@@ -98,13 +107,13 @@ class RenderingSettings:
 
 
 	@staticmethod
-	def available_debug_views(renderer):
+	def available_debug_views(renderer: Any) -> tuple[str, ...]:
 		"""Diagnostic views supported by banded transparency."""
 		return DEBUG_VIEWS
 
 
 	@classmethod
-	def sync_debug_view(cls, renderer):
+	def sync_debug_view(cls, renderer: Any) -> tuple[str, ...]:
 		views = cls.available_debug_views(renderer)
 		if renderer.debug_view not in views:
 			renderer.set_debug_view("final")
@@ -112,16 +121,16 @@ class RenderingSettings:
 
 
 	@staticmethod
-	def debug_view_label(renderer, view):
+	def debug_view_label(renderer: Any, view: str) -> str:
 		return "signed residual" if view == "winner" and renderer.banded_proxy else view
 
-	def adjust(self, direction):
+	def adjust(self, direction: int) -> None:
 		self.renderer.set_kawase_passes(max(0, min(8, self.renderer.kawase_passes+direction)))
 
-	def reset(self):
+	def reset(self) -> None:
 		self.renderer.set_kawase_passes(1)
 
-	def handle_key(self, key, scancode, action, mods):
+	def handle_key(self, key: int, scancode: int, action: int, mods: int) -> bool:
 		if action not in (glfw.PRESS, glfw.REPEAT):
 			return False
 		if key == glfw.KEY_F:
@@ -138,7 +147,7 @@ class RenderingSettings:
 			return False
 		return True
 
-	def set_grazing_angle(self, name, value):
+	def set_grazing_angle(self, name: str, value: float) -> None:
 		"""Keep the editable fade interval ordered, including typed input."""
 		if name not in ("start_angle", "end_angle"):
 			raise ValueError("Expected start_angle or end_angle")
@@ -151,7 +160,7 @@ class RenderingSettings:
 			value = min(90, max(value, options.start_angle+0.01))
 		self.renderer.set_grazing_fade(replace(options, **{name: value}))
 
-	def draw_grazing(self):
+	def draw_grazing(self) -> None:
 		if imgui is None:
 			raise ModuleNotFoundError('Install UI with: python -m pip install -e ".[ui]"', name="imgui_bundle")
 		imgui.separator_text("Grazing fade")
@@ -164,7 +173,7 @@ class RenderingSettings:
 				changed, value = imgui.drag_float(label, getattr(self.renderer.grazing_fade, name), 0.5, 0.0, 90.0, "%.2f")
 				if changed: self.set_grazing_angle(name, value)
 
-	def draw_general_rendering_options(self, imgui):
+	def draw_general_rendering_options(self, imgui: Any) -> None:
 		changed, value = imgui.slider_int("Rendering resolution (%)", self.resolution_percent, 25, 100)
 		_item_tooltip("Render the scene at a percentage of the window framebuffer, then sample it into the unchanged window size. The interface stays sharp.")
 		if changed: self.set_resolution_percent(value)
@@ -209,7 +218,7 @@ class RenderingSettings:
 		_item_tooltip("Screen-space ambient occlusion from the main depth buffer. A toggles SSAO; O selects the compose or separate-pass implementation.")
 		if changed: self.set_ssao_enabled(enabled)
 
-	def draw_ambient_occlusion_options(self, imgui):
+	def draw_ambient_occlusion_options(self, imgui: Any) -> None:
 		if not self.ssao_enabled or not hasattr(self.renderer, "ambient_occlusion_settings"): return
 		imgui.separator_text("Ambient occlusion")
 		options = self.renderer.ambient_occlusion_settings
@@ -225,7 +234,7 @@ class RenderingSettings:
 			self.controls.set_ambient_occlusion_settings(options)
 			if self.ao_pass is not None: self.ao_pass.set_settings(options)
 
-	def draw_transparency_options(self, imgui):
+	def draw_transparency_options(self, imgui: Any) -> None:
 		views = self.sync_debug_view(self.renderer)
 		labels = tuple(self.debug_view_label(self.renderer, view) for view in views)
 		changed, index = imgui.combo("Diagnostic view", views.index(self.renderer.debug_view), labels)
@@ -235,7 +244,7 @@ class RenderingSettings:
 		_item_tooltip(help_text)
 		if changed: self.renderer.set_debug_view(views[index])
 
-	def draw_banded_tail_options(self, imgui):
+	def draw_banded_tail_options(self, imgui: Any) -> None:
 		imgui.separator_text("Tail estimation")
 		changed, enabled = imgui.checkbox("Proxy residual", self.renderer.banded_proxy)
 		_item_tooltip("Accumulate opacity-weighted texture albedo at full resolution and blur only the signed shading residual. The proxy is restored locally; thick-tail mixing remains approximate.")
@@ -254,7 +263,7 @@ class RenderingSettings:
 
 		if imgui.button("Reset blur (Home)"): self.reset()
 
-	def draw(self):
+	def draw(self) -> None:
 		if imgui is None:
 			raise ModuleNotFoundError('Install UI with: python -m pip install -e ".[ui]"', name="imgui_bundle")
 
@@ -274,7 +283,8 @@ class RenderingSettings:
 		if not self.visible: return
 		imgui.set_next_window_pos(self.position, imgui.Cond_.first_use_ever)
 		imgui.set_next_window_size((460, 560), imgui.Cond_.first_use_ever)
-		expanded, self.visible = imgui.begin("Rendering settings", self.visible)
+		expanded, visible = imgui.begin("Rendering settings", self.visible)
+		self.visible = bool(visible)
 		try:
 			if not expanded: return
 			imgui.text_disabled("Hover a setting or diagnostic view for an explanation.")

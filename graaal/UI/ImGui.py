@@ -3,18 +3,24 @@
 Uses WGPU's ImguiWgpuBackend for draw lists, textures, clipping and blending.
 Create after init_window(), render after the scene, and close before cleanup().
 """
+from __future__ import annotations
 
 from contextlib import contextmanager
 from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Iterator, Self, TYPE_CHECKING
 import json
 
 import glfw
-from pathlib import Path
 
 from ..RenderContext import RenderContext
 
+if TYPE_CHECKING:
+	from ..RenderContext.core import _RenderContext, Color
+
+
 class ImGui:
-	def __init__(self, context=RenderContext):
+	def __init__(self, context: _RenderContext=RenderContext) -> None:
 		if context.window is None or context.canvas is None:
 			raise RuntimeError("Initialize a RenderContext window before creating ImGui")
 		from imgui_bundle import imgui, hello_imgui
@@ -23,10 +29,10 @@ class ImGui:
 		self.imgui = imgui
 		self._hello_imgui = hello_imgui
 		self.context = context
-		self._handlers = {}
-		self._backend = None
+		self._handlers: dict[str, Callable[..., Any]] = {}
+		self._backend: ImguiWgpuBackend | None = None
 		previous = imgui.get_current_context()
-		self._imgui_context = imgui.create_context()
+		self._imgui_context: Any = imgui.create_context()
 		self.font = None
 		self._show_theme_editor = False
 		self._style_path = "imgui_style.json"
@@ -57,26 +63,26 @@ class ImGui:
 			if previous is not None:
 				imgui.set_current_context(previous)
 
-	def set_theme(self, name: str):
+	def set_theme(self, name: str) -> None:
 		with self._activate():
 			self._tweaked_theme = self._hello_imgui.ImGuiTweakedTheme()
 			self._tweaked_theme.theme = self._hello_imgui.ImGuiTheme_[name]
 			self._apply_theme()
 
-	def _apply_theme(self):
+	def _apply_theme(self) -> None:
 		self._hello_imgui.apply_tweaked_theme(self._tweaked_theme)
 
-	def save_style(self, path: Path):
+	def save_style(self, path: Path) -> None:
 		"""Save the active ImGuiStyle, including manual color edits, as JSON."""
 		with self._activate():
 			style = self.imgui.get_style()
-			fields = {}
+			fields: dict[str, Any] = {}
 			for name in dir(style):
 				if name.startswith("_"):
 					continue
 				value = getattr(style, name)
 				if isinstance(value, Enum):
-					fields[name] = int(value)
+					fields[name] = int(value.value)
 				elif isinstance(value, (bool, int, float)):
 					fields[name] = value
 				elif isinstance(value, self.imgui.ImVec2):
@@ -87,7 +93,7 @@ class ImGui:
 				colors[str(idx)] = [color.x, color.y, color.z, color.w]
 		Path(path).write_text(json.dumps({"fields": fields, "colors": colors}, indent=2) + "\n", encoding="utf-8")
 
-	def load_style(self, path: Path):
+	def load_style(self, path: Path) -> None:
 		"""Restore an exported ImGuiStyle to this ImGui context."""
 		data = json.loads(Path(path).read_text(encoding="utf-8"))
 		with self._activate():
@@ -102,10 +108,11 @@ class ImGui:
 			for idx, color in data["colors"].items():
 				style.set_color_(int(idx), color)
 
-	def _draw_theme_editor(self):
+	def _draw_theme_editor(self) -> None:
 		if not self._show_theme_editor:
 			return
-		visible, self._show_theme_editor = self.imgui.begin("Theme Editor", self._show_theme_editor)
+		visible, show_theme_editor = self.imgui.begin("Theme Editor", self._show_theme_editor)
+		self._show_theme_editor = bool(show_theme_editor)
 		try:
 			if visible:
 				if self._hello_imgui.show_theme_tweak_gui(self._tweaked_theme):
@@ -129,7 +136,7 @@ class ImGui:
 		finally:
 			self.imgui.end()
 
-	def set_font(self,font_path:Path):
+	def set_font(self,font_path:Path) -> None:
 		if font_path.exists():
 			try:
 				self.io.fonts.clear()
@@ -140,10 +147,11 @@ class ImGui:
 			print(f"font not found : {font_path}")
 
 	@property
-	def io(self):
+	def io(self) -> Any:
+		assert self._backend is not None
 		return self._backend.io
 
-	def _key_map(self):
+	def _key_map(self) -> dict[int, Any]:
 		key = self.imgui.Key
 		names = {
 			"TAB": "tab", "LEFT": "left_arrow", "RIGHT": "right_arrow",
@@ -173,7 +181,7 @@ class ImGui:
 		return {getattr(glfw, f"KEY_{name}"): getattr(key, target) for name, target in names.items()}
 
 	@contextmanager
-	def _activate(self):
+	def _activate(self) -> Iterator[None]:
 		if self._imgui_context is None:
 			raise RuntimeError("ImGui is closed")
 		previous = self.imgui.get_current_context()
@@ -184,7 +192,7 @@ class ImGui:
 			if previous is not None:
 				self.imgui.set_current_context(previous)
 
-	def _update_display(self):
+	def _update_display(self) -> bool:
 		width, height = glfw.get_window_size(self.context.window)
 		pixels_w, pixels_h = glfw.get_framebuffer_size(self.context.window)
 		self.io.display_size = (width, height)
@@ -192,7 +200,7 @@ class ImGui:
 		self.io.delta_time = max(self.context.frame_time, 1e-6)
 		return width > 0 and height > 0 and pixels_w > 0 and pixels_h > 0
 
-	def render(self, draw, *, clear=None):
+	def render(self, draw: Callable[[], None], *, clear: Color | None=None) -> None:
 		"""Build widgets with draw() and overlay them on this frame's screen view.
 
 		Pass a clear color for UI-only scenes. Presentation remains owned by the
@@ -215,10 +223,11 @@ class ImGui:
 				self.imgui.render()
 			commands = self.context.commands("imgui")
 			with commands.render_pass(color=color, label="imgui") as render:
+				assert self._backend is not None
 				self._backend.render(self.imgui.get_draw_data(), render.handle)
 			self.context.submit(commands.finish())
 
-	def _on_key(self, key, scancode, action, mods):
+	def _on_key(self, key: int, scancode: int, action: int, mods: int) -> bool:
 		with self._activate():
 			if key == glfw.KEY_F10:
 				if action == glfw.PRESS:
@@ -239,38 +248,38 @@ class ImGui:
 				self.io.add_key_event(self._keys[key], action == glfw.PRESS)
 			return self.io.want_capture_keyboard
 
-	def _on_char(self, codepoint):
+	def _on_char(self, codepoint: int) -> bool:
 		with self._activate():
 			self.io.add_input_character(codepoint)
 			return self.io.want_capture_keyboard or self.io.want_text_input
 
-	def _on_mouse_move(self, x, y):
+	def _on_mouse_move(self, x: float, y: float) -> bool:
 		with self._activate():
 			self.io.add_mouse_pos_event(x, y)
 			return self.io.want_capture_mouse
 
-	def _on_mouse_button(self, button, action, mods):
+	def _on_mouse_button(self, button: int, action: int, mods: int) -> bool:
 		with self._activate():
 			self.io.add_mouse_pos_event(*glfw.get_cursor_pos(self.context.window))
 			if 0 <= button < 5:
 				self.io.add_mouse_button_event(button, action == glfw.PRESS)
 			return self.io.want_capture_mouse
 
-	def _on_scroll(self, x, y):
+	def _on_scroll(self, x: float, y: float) -> bool:
 		with self._activate():
 			self.io.add_mouse_wheel_event(x, y)
 			return self.io.want_capture_mouse
 
-	def _on_mouse_enter(self, entered):
+	def _on_mouse_enter(self, entered: bool) -> bool:
 		with self._activate():
 			self.io.add_mouse_pos_event(*(glfw.get_cursor_pos(self.context.window) if entered else (-3.4e38, -3.4e38)))
 			return self.io.want_capture_mouse
 
-	def _on_focus(self, focused):
+	def _on_focus(self, focused: bool) -> None:
 		with self._activate():
 			self.io.add_focus_event(bool(focused))
 
-	def close(self):
+	def close(self) -> None:
 		"""Detach only this plugin's handlers and release its context/resources."""
 		if self._imgui_context is None:
 			return
@@ -287,8 +296,8 @@ class ImGui:
 		self._backend = None
 		self._handlers.clear()
 
-	def __enter__(self):
+	def __enter__(self) -> Self:
 		return self
 
-	def __exit__(self, *exc):
+	def __exit__(self, *exc: Any) -> None:
 		self.close()

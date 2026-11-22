@@ -1,24 +1,32 @@
 """Optional ECS adapter connecting conditional states to clip playback."""
+from __future__ import annotations
 
 from operator import index
+from typing import cast, Mapping, TYPE_CHECKING
 
+from numpy.typing import ArrayLike
 import numpy as np
 
+from ..Animation.AnimationSync import SyncMapping
 from ..ECS import component
 from .EcsAnimation import ClipPlayer
-from ..Animation.AnimationSync import SyncMapping
+
+
+if TYPE_CHECKING:
+	from ..Animation.AnimationStateMachine import AnimationStateMachine
+	from ..ECS import ECS
 
 
 @component
 class AnimationState:
 	state: np.uint32
-	target_state: np.uint32 = 0
+	target_state: np.uint32 = cast(np.uint32, 0)
 	pending: bool = False
 
 
 class EcsAnimationStateAdapter:
 	"""Start player crossfades and promote states after playback completes."""
-	def __init__(self, world, machine, state_clips, sync_mappings=None):
+	def __init__(self, world: ECS, machine: AnimationStateMachine, state_clips: Mapping[int, int], sync_mappings: Mapping[tuple[int, int], SyncMapping] | None=None) -> None:
 		self.world, self.machine = world, machine
 		self.sync_mappings = {} if sync_mappings is None else sync_mappings
 		self.state_clips = {}
@@ -31,7 +39,7 @@ class EcsAnimationStateAdapter:
 			self.state_clips[state] = clip
 		self.query = world.query(AnimationState, ClipPlayer)
 
-	def update(self, parameters):
+	def update(self, parameters: ArrayLike) -> np.ndarray:
 		"""Apply decisions for parameter rows in the current query entity order.
 
 		Call before the playback adapter each tick. A completed fade is promoted

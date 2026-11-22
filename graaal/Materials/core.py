@@ -3,13 +3,16 @@
 CPU preparation is independent of ECS and GPU setup. MaterialLibrary packs
 headers and parameter buffers; rendering templates generate WGSL dispatch.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast, Any, Iterable, Mapping, Sequence
 import re
 
-import numpy as np
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+import numpy as np
 
 from ..RenderContext.ShaderShorthand import ShaderShorthand, MISSING
 
@@ -24,12 +27,12 @@ class Parameter:
 	default: object
 	scope: str = "material"
 
-	def __post_init__(self):
+	def __post_init__(self) -> None:
 		if self.kind not in KINDS or self.scope not in ("material", "instance"):
 			raise ValueError("Expected a supported parameter type and material/instance scope")
 		self.pack(self.default)
 
-	def pack(self, value):
+	def pack(self, value: Any) -> np.ndarray:
 		words = np.zeros(4, dtype=np.uint32)
 		if self.kind == "bool":
 			if not isinstance(value, (bool, np.bool_)): raise ValueError("Expected boolean parameter")
@@ -49,8 +52,9 @@ class Parameter:
 
 class ParameterLayout:
 	"""Pack fields into vec4u lanes; CPU packing and WGSL use the same offsets."""
-	def __init__(self, parameters, scope):
+	def __init__(self, parameters: Mapping[str, Parameter], scope: str) -> None:
 		fields = [(name, p) for name, p in parameters.items() if p.scope == scope]
+		lanes: list[int]
 		lanes, offsets = [], {}
 		for name, p in sorted(fields, key=lambda item: -KINDS[item[1].kind]):
 			width = KINDS[p.kind]
@@ -62,7 +66,7 @@ class ParameterLayout:
 		self.slot_count = len(lanes)
 		self.fields = tuple(fields)
 
-	def pack(self, values):
+	def pack(self, values: Mapping[str, Any]) -> np.ndarray:
 		data = np.zeros((self.slot_count, 4), dtype=np.uint32)
 		for name, p in self.fields:
 			slot, lane = self.offsets[name]
@@ -77,31 +81,33 @@ class MaterialShader:
 	transparent: bool = False
 	source: str | None = field(default=None, kw_only=True)
 	filepath: str | Path | None = field(default=None, kw_only=True)
-	_parameters: dict = field(init=False, repr=False)
+	_parameters: Mapping[str, Parameter] = field(init=False, repr=False)
 
 	@property
-	def parameters(self):
+	def parameters(self) -> Mapping[str, Parameter]:
 		return self._parameters
 
-	def __post_init__(self):
+	def __post_init__(self) -> None:
 		if type(self.transparent) is not bool: raise ValueError("transparent must be boolean")
 		if sum(value is not None for value in (self.template, self.source, self.filepath)) != 1:
 			raise ValueError("Supply exactly one of template, source or filepath")
-		path = None if self.source is not None else Path(self.template or self.filepath).resolve()
+		path = None if self.source is not None else Path(cast(str | Path, self.template or self.filepath)).resolve()
 		env = Environment(loader=FileSystemLoader(([str(path.parent)] if path else [])+[str(SHADERS)]),
 			undefined=StrictUndefined, autoescape=False, line_statement_prefix="#", extensions=[ShaderShorthand])
-		self._template = env.from_string(self.source) if self.source is not None else env.get_template(path.name)
+		self._template = env.from_string(self.source) if self.source is not None else env.get_template(cast(Path, path).name)
+		self._render_cache: dict[tuple[int, bool, str], tuple[str, dict[str, Parameter]]]
 		self._render_cache = {}
+		declarations: dict[str, Parameter]
 		_, declarations = self._render(0)
 		self._parameters = MappingProxyType(declarations)
 		self.validate(self.default_material)
 
-	def _render(self, prefix, stage="geometry"):
+	def _render(self, prefix: int, stage: str="geometry") -> tuple[str, dict[str, Parameter]]:
 		if stage not in ("geometry", "shading"): raise ValueError(f"Unknown material stage: {stage}")
 		key = (prefix, self.transparent, stage)
 		if key in self._render_cache: return self._render_cache[key]
-		declarations = {}
-		def parameter(name, kind, default, scope="material"):
+		declarations: dict[str, Parameter] = {}
+		def parameter(name: str, kind: str, default: object, scope: str="material") -> str:
 			if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name):
 				raise ValueError("Parameters require WGSL-compatible names")
 			value = Parameter(kind, default, scope)
@@ -109,7 +115,7 @@ class MaterialShader:
 				raise ValueError(f"Inherited parameter {name} requires {declarations[name].kind}")
 			declarations[name] = value
 			return ""
-		def field(struct, name, kind, *, default=MISSING, **attributes):
+		def field(struct: str, name: str, kind: str, *, default: object=MISSING, **attributes: Any) -> str:
 			scopes = {"MaterialParameters": "material", "InstanceParameters": "instance"}
 			if struct not in scopes or attributes: raise ValueError(f"Invalid material field declaration: {struct}.{name}")
 			if default is MISSING: raise ValueError(f"Material parameter {name} requires a default")
@@ -118,13 +124,13 @@ class MaterialShader:
 		self._render_cache[key] = code, declarations
 		return code, declarations
 
-	def render(self, prefix, stage="geometry"):
+	def render(self, prefix: int, stage: str="geometry") -> str:
 		code, declarations = self._render(prefix, stage)
 		if declarations != self.parameters:
 			raise ValueError("Shader declarations changed; create a new MaterialShader")
 		return code
 
-	def validate(self, values, *, overrides=False):
+	def validate(self, values: Mapping[str, Any], *, overrides: bool=False) -> None:
 		for name, value in values.items():
 			if name not in self.parameters: raise ValueError(f"Unknown material parameter: {name}")
 			parameter = self.parameters[name]
@@ -134,10 +140,10 @@ class MaterialShader:
 			except (ValueError, TypeError) as error:
 				raise ValueError(f"Invalid material parameter {name}: {error}") from error
 
-	def validate_resolved(self, values):
+	def validate_resolved(self, values: Mapping[str, Any]) -> None:
 		"""Optional shader-specific semantic validation after dictionary resolution."""
 
-	def is_blended(self, material=None, overrides=None):
+	def is_blended(self, material: Mapping[str, Any] | None=None, overrides: Mapping[str, Any] | None=None) -> bool:
 		"""Choose blended rendering for a binding; custom shaders use their route flag."""
 		return self.transparent
 
@@ -157,27 +163,31 @@ class MaterialLibrary:
 	are interpreted here. Shader layouts are fixed; dictionary values remain live.
 	"""
 	kind_widths = MappingProxyType(KINDS)
-	def __init__(self, shaders):
+	def __init__(self, shaders: Iterable[MaterialShader]) -> None:
 		self.shaders = tuple(dict.fromkeys(shaders))
 		if not self.shaders: raise ValueError("Supply at least one material shader")
 		self.shader_ids = {shader: index for index, shader in enumerate(self.shaders)}
 		self.parameter_layouts = {shader: {scope: ParameterLayout(shader.parameters, scope)
 			for scope in ("material", "instance")} for shader in self.shaders}
+		self._records: dict[tuple[MaterialShader, int], tuple[dict[str, Any], dict[str, Any], dict[str, Any], np.ndarray]]
 		self._records = {}
 		self._layouts = self._layout_keys()
 
-	def _layout_keys(self):
+	def _layout_keys(self) -> tuple[Any, ...]:
 		return tuple((s.transparent, str(s.template), s.source, str(s.filepath), tuple((name, p.kind, p.scope)
 			for name, p in s.parameters.items())) for s in self.shaders)
 
-	def material_values(self, binding):
+	def material_values(self, binding: MaterialBinding) -> Mapping[str, Any]:
 		"""Read-only shared values from the last pack, including retained cached data."""
 		base = binding.shader.default_material if binding.material is None else binding.material
 		return MappingProxyType(self._records[(binding.shader, id(base))][2])
 
-	def pack(self, bindings, *, dirty_materials=None):
+	def pack(self, bindings: Iterable[MaterialBinding], *, dirty_materials: Iterable[dict[str, Any]] | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 		if self._layouts != self._layout_keys():
 			raise ValueError("Shader layout, source or routing changed; create a new MaterialLibrary")
+		headers: list[tuple[int, int, int, int]]
+		shared: list[np.ndarray]
+		instances: list[np.ndarray]
 		headers, shared, instances, ids, offsets, seen = [], [], [], [], [], {}
 		defaults, records = {}, {}
 		dirty = None if dirty_materials is None else {id(value) for value in dirty_materials}
@@ -209,7 +219,7 @@ class MaterialLibrary:
 			ids.append(material_id)
 			offsets.append(len(instances))
 			instances.extend(self.parameter_layouts[shader]["instance"].pack(resolved))
-		def slots(rows):
+		def slots(rows: Sequence[Any]) -> np.ndarray:
 			return np.array(rows or [(0, 0, 0, 0)], dtype=np.uint32).reshape(-1, 4)
 		self._records = records
 		return slots(headers), slots(shared), slots(instances), np.array(ids, dtype=np.uint32), np.array(offsets, dtype=np.uint32)

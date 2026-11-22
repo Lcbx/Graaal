@@ -3,18 +3,23 @@
 The caller supplies registries and instance counts; no buffers or GPU commands
 are created here. Retained registries and uploads live in draw_resources.
 """
+from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping, Sequence, TYPE_CHECKING
 
+from numpy.typing import ArrayLike
 import numpy as np
 
-from .draw_layout import (
-    BATCH_DTYPE,
-    INDIRECT_DTYPE,
-    MESH_METADATA_DTYPE,
-    WORKGROUP_DTYPE,
-    DrawBatch,
-)
+from .draw_layout import BATCH_DTYPE, INDIRECT_DTYPE, MESH_METADATA_DTYPE, WORKGROUP_DTYPE, DrawBatch
+
+if TYPE_CHECKING:
+	from .draw_resources import MeshInfo
+
+
+if TYPE_CHECKING:
+	from .draw_layout import LodGroup
+	from .DrawList import SourceBatch
 
 
 @dataclass
@@ -28,7 +33,7 @@ class CompiledLayout:
 	prepass_count: int
 
 
-def group_bounds(group, meshes):
+def group_bounds(group: LodGroup, meshes: Mapping[int, MeshInfo]) -> tuple[np.ndarray, np.ndarray]:
 	"""Conservative local bounds enclosing every nonempty LoD in a group."""
 	infos = [meshes[mesh_id] for mesh_id in group.lod_ids if mesh_id is not None]
 	box_min = np.min([info.box_center - info.box_extents for info in infos], axis=0)
@@ -36,7 +41,7 @@ def group_bounds(group, meshes):
 	return (box_min + box_max) * 0.5, (box_max - box_min) * 0.5
 
 
-def compile_destinations(instance_count, batches, lod_groups, meshes, shader_prepass):
+def compile_destinations(instance_count: int, batches: Sequence[SourceBatch], lod_groups: Mapping[int, LodGroup], meshes: Mapping[int, MeshInfo], shader_prepass: Mapping[int, bool]) -> CompiledLayout:
 	"""Build destination arrays without mutating input registries or GPU state."""
 	used_groups = sorted({batch.lod_group_id for batch in batches})
 	group_rows = {group_id: i for i, group_id in enumerate(used_groups)}
@@ -95,7 +100,7 @@ def compile_destinations(instance_count, batches, lod_groups, meshes, shader_pre
 	)
 
 
-def compile_workgroups(counts):
+def compile_workgroups(counts: ArrayLike) -> np.ndarray:
 	"""Build the flattened culling work table from per-source dispatch counts."""
 	group_counts = np.asarray(counts, dtype=np.int64)
 	workgroups = np.zeros(int(group_counts.sum()), dtype=WORKGROUP_DTYPE)

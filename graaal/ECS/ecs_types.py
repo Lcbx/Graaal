@@ -23,21 +23,13 @@ from typing import (
     cast,
     get_origin,
     get_type_hints,
+	dataclass_transform,
 )
 
 import numpy as np
 from numpy.typing import NDArray
 
 from ..utils import higher_pow2
-
-
-def component(cls: type | None = None, *, multiples: bool = False) -> Any | Callable:
-	def decorator(target: Any) -> Any:
-		setattr(target, "_multicomponent", multiples)
-		return dataclass(target)
-	if cls is None:
-		return decorator
-	return decorator(cls)
 
 
 def array_field(dtype: Any, *, shape: Sequence[int] = ()) -> Any:
@@ -47,6 +39,16 @@ def array_field(dtype: Any, *, shape: Sequence[int] = ()) -> Any:
 	base = np.dtype(dtype)
 	if base.hasobject and shape: raise TypeError("Shaped object fields are not supported")
 	return dataclass_field(metadata={"graaal.dtype": np.dtype((base, shape)) if shape else base})
+
+
+@dataclass_transform(field_specifiers=(array_field, dataclass_field))
+def component(cls: type | None = None, *, multiples: bool = False) -> Any | Callable:
+	def decorator(target: Any) -> Any:
+		setattr(target, "_multicomponent", multiples)
+		return dataclass(target)
+	if cls is None:
+		return decorator
+	return decorator(cls)
 
 
 Entity                  = np.uint64

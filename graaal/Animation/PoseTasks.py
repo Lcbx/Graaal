@@ -1,16 +1,23 @@
 """Compiled, batched local-pose tasks built on the standalone animation API."""
+from __future__ import annotations
 
 from enum import StrEnum
 from operator import index
+from typing import cast, Any, Mapping, Sequence, SupportsIndex, TYPE_CHECKING
 
+from numpy.typing import ArrayLike
 import numpy as np
 
-from .SkeletalAnimation import _array, _rotations, additive_pose, blend_poses, sample_clip_pairs
-from .RootMotion import RootMotion
 from .InverseKinematics import _validate_axis, _validate_chain, align_bone_axis, two_bone_pose
+from .RootMotion import RootMotion
+from .SkeletalAnimation import _array, _rotations, additive_pose, blend_poses, sample_clip_pairs
 
 
-def _index(value, name):
+if TYPE_CHECKING:
+	from .SkeletalAnimation import Skeleton, Clip
+
+
+def _index(value: SupportsIndex, name: str) -> int:
 	if isinstance(value, (bool, np.bool_)): raise ValueError(f"{name} must be a nonnegative integer")
 	try: result = index(value)
 	except TypeError as exc: raise ValueError(f"{name} must be a nonnegative integer") from exc
@@ -39,9 +46,9 @@ class PosePlan:
 	("blend" | "additive", base_task, overlay_task, weight_slot, mask).
 	Task references must point backward. The last task is the output.
 	"""
-	def __init__(self, skeleton, tasks):
+	def __init__(self, skeleton: Skeleton, tasks: Sequence[Sequence[Any]]) -> None:
 		self.skeleton = skeleton
-		compiled = []
+		compiled: list[tuple[Any, ...]] = []
 		for task in tasks:
 			if not isinstance(task, (tuple, list)) or not task: raise ValueError("invalid pose task")
 			try: op = PoseOp(task[0])
@@ -78,7 +85,9 @@ class PosePlan:
 			if task[0] not in (PoseOp.SAMPLE, PoseOp.INPUT):
 				for source in task[1:3] if task[0] in (PoseOp.BLEND, PoseOp.ADDITIVE) else task[1:2]: last_use[source] = task_id
 		last_use[-1] = len(compiled)
-		free, slots, allocated = [], [], 0
+		free: list[int] = []
+		slots: list[int] = []
+		allocated = 0
 		for task_id, task in enumerate(compiled):
 			if free: slot = free.pop()
 			else:
@@ -92,9 +101,9 @@ class PosePlan:
 		self._tasks = tuple(compiled)
 		self._slots = tuple(slots)
 		self._buffer_count = allocated
-		self._buffers = None
+		self._buffers: tuple[tuple[np.ndarray, ...], ...] | None = None
 
-	def evaluate(self, clips, samples, weights, *, root_motions=(), poses=(), goals=()):
+	def evaluate(self, clips: Mapping[int, Clip], samples: Sequence[Sequence[ArrayLike]], weights: ArrayLike, *, root_motions: Sequence[tuple[RootMotion | None, ArrayLike]]=(), poses: Sequence[Sequence[ArrayLike]]=(), goals: Sequence[Sequence[ArrayLike]]=()) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Evaluate with sample triples and a (instances, weight slots) array.
 
 		The returned local TRS arrays are reused by the next evaluation, including
@@ -160,4 +169,4 @@ class PosePlan:
 				operation = blend_poses if task[0] is PoseOp.BLEND else additive_pose
 				pose = operation(self.skeleton, buffers[self._slots[task[1]]], buffers[self._slots[task[2]]], weights[:, task[3]], mask=task[4])
 				for output, values in zip(buffers[slot], pose): output[:] = values
-		return buffers[self._slots[-1]]
+		return cast(tuple[np.ndarray, np.ndarray, np.ndarray], buffers[self._slots[-1]])

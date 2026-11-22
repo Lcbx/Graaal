@@ -1,6 +1,9 @@
 """Small WGSL declaration and texture shorthand expanded before Jinja2 parses templates."""
+from __future__ import annotations
+
 import re
 
+from jinja2 import Environment
 from jinja2.ext import Extension
 
 
@@ -26,9 +29,10 @@ _SAMPLE_LOAD = re.compile(_PROTECTED.pattern+r"|\bsample_texture_load\s*\(", re.
 _TEMPLATE_START = re.compile(r"\b(?:array|atomic|ptr|vec[234]|mat[234]x[234]|bitcast|texture_\w+)\s*<")
 
 
-def _template_argument(environment, argument):
+def _template_argument(environment: Environment, argument: str) -> str:
 	# Preserve embedded {{ expressions }} while passing WGSL text as a Jinja string.
-	parts, expression = [], []
+	parts: list[str] = []
+	expression: list[str] = []
 	for _, kind, value in environment.lex(argument):
 		if kind == "data": parts.append(repr(value))
 		elif kind == "variable_begin": expression = []
@@ -37,7 +41,7 @@ def _template_argument(environment, argument):
 	return "("+" ~ ".join(parts)+")"
 
 
-def _sample_texture_loads(source, environment):
+def _sample_texture_loads(source: str, environment: Environment) -> tuple[str, bool]:
 	result, start, position = [], 0, 0
 	while match := _SAMPLE_LOAD.search(source, position):
 		position = match.end()
@@ -83,7 +87,7 @@ def _sample_texture_loads(source, environment):
 
 
 class ShaderShorthand(Extension):
-	def preprocess(self, source, name, filename=None):
+	def preprocess(self, source: str, name: str | None, filename: str | None=None) -> str:
 		# Rewrite calls first; declaration lines are then handled one at a time.
 		source, sample_textures = _sample_texture_loads(source, self.environment)
 		result = []

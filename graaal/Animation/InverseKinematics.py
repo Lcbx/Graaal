@@ -1,14 +1,21 @@
 """Standalone batched inverse-kinematics geometry."""
+from __future__ import annotations
 
 from operator import index
+from typing import Sequence, SupportsIndex, TYPE_CHECKING
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 from ..Math import Quaternion
 from .SkeletalAnimation import model_matrices
 
 
-def solve_two_bone(root, joint, end, target, pole):
+if TYPE_CHECKING:
+	from .SkeletalAnimation import Skeleton
+
+
+def solve_two_bone(root: ArrayLike, joint: ArrayLike, end: ArrayLike, target: ArrayLike, pole: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
 	"""Solve joint and end positions for two-bone chains in a common space.
 
 	Inputs are finite (instances, 3) arrays. The pole is a point indicating the
@@ -58,7 +65,7 @@ def solve_two_bone(root, joint, end, target, pole):
 	return solved_joint, solved_end
 
 
-def _between_vectors(source, target):
+def _between_vectors(source: np.ndarray, target: np.ndarray) -> np.ndarray:
 	"""Return shortest-arc rotations for nonzero vectors."""
 	a = source / np.linalg.norm(source, axis=1, keepdims=True)
 	b = target / np.linalg.norm(target, axis=1, keepdims=True)
@@ -72,7 +79,7 @@ def _between_vectors(source, target):
 	return rotation / np.linalg.norm(rotation, axis=1, keepdims=True)
 
 
-def _validate_chain(skeleton, chain):
+def _validate_chain(skeleton: Skeleton, chain: Sequence[int]) -> tuple[int, int, int]:
 	if not isinstance(chain, (tuple, list)) or len(chain) != 3: raise ValueError("chain must contain root, joint and end bone indices")
 	try:
 		if any(isinstance(value, (bool, np.bool_)) for value in chain): raise ValueError
@@ -83,7 +90,7 @@ def _validate_chain(skeleton, chain):
 	return root, joint, end
 
 
-def two_bone_pose(skeleton, pose, chain, targets, poles, *, weight=1.0):
+def two_bone_pose(skeleton: Skeleton, pose: Sequence[ArrayLike], chain: Sequence[int], targets: ArrayLike, poles: ArrayLike, *, weight: ArrayLike=1.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Return a local pose with a direct two-bone chain aimed at model-space goals.
 
 	The three chain indices are root, joint and end. Ancestors and the root and
@@ -130,7 +137,7 @@ def two_bone_pose(skeleton, pose, chain, targets, poles, *, weight=1.0):
 	return translation.copy(), result_rotation, scale.copy()
 
 
-def _validate_axis(axis):
+def _validate_axis(axis: ArrayLike) -> np.ndarray:
 	axis = np.asarray(axis, dtype=np.float64)
 	if axis.shape != (3,) or not np.isfinite(axis).all(): raise ValueError("axis must be a finite nonzero 3D vector")
 	length = np.linalg.norm(axis)
@@ -138,7 +145,7 @@ def _validate_axis(axis):
 	return axis / length
 
 
-def align_bone_axis(skeleton, pose, bone, axis, directions, *, weight=1.0):
+def align_bone_axis(skeleton: Skeleton, pose: Sequence[ArrayLike], bone: SupportsIndex, axis: ArrayLike, directions: ArrayLike, *, weight: ArrayLike=1.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Align a bone's local axis to model-space directions using local rotation.
 
 	The bone and its ancestors require positive uniform scale. Weights blend the

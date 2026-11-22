@@ -1,12 +1,19 @@
 """Map independently skinned poses to material meshes without depending on ECS."""
-from operator import index
+from __future__ import annotations
 
+from operator import index
+from typing import SupportsIndex, TYPE_CHECKING
+
+from numpy.typing import ArrayLike
 import numpy as np
 
 from ..Animation.SkeletalAnimation import skin_vertices
 
+if TYPE_CHECKING:
+	from .MaterialRenderer import MaterialMesh, MaterialRenderer
 
-def _owner(value):
+
+def _owner(value: SupportsIndex) -> int:
 	if isinstance(value, (bool, np.bool_)):
 		raise ValueError("owner must be a uint64-compatible integer")
 	try: value = index(value)
@@ -23,11 +30,11 @@ class MaterialSkinningAdapter:
 	lifetimes and removes bindings when renderables are removed. Source vertices
 	are copied so repeated updates always start from the bind pose.
 	"""
-	def __init__(self, renderer):
+	def __init__(self, renderer: MaterialRenderer) -> None:
 		self.renderer = renderer
-		self._bindings = {}
+		self._bindings: dict[int, tuple[MaterialMesh, np.ndarray]] = {}
 
-	def bind(self, owner, mesh, vertices):
+	def bind(self, owner: SupportsIndex, mesh: MaterialMesh, vertices: np.ndarray) -> None:
 		"""Bind an owner to a registered mesh and its unskinned vertex data."""
 		owner = _owner(owner)
 		if mesh not in self.renderer.mesh_ids: raise ValueError("Mesh is not registered")
@@ -42,11 +49,11 @@ class MaterialSkinningAdapter:
 			raise ValueError("Vertex UVs must be finite vec2 values")
 		self._bindings[owner] = mesh, vertices.copy()
 
-	def unbind(self, owner):
+	def unbind(self, owner: SupportsIndex) -> None:
 		"""Remove a binding; the last uploaded mesh geometry is left unchanged."""
 		del self._bindings[_owner(owner)]
 
-	def update(self, owners, matrices):
+	def update(self, owners: ArrayLike, matrices: ArrayLike) -> None:
 		"""Skin a batch aligned with owner IDs and upload it before frame recording."""
 		owners = np.asarray(owners)
 		matrices = np.asarray(matrices, dtype=np.float32)

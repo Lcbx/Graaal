@@ -1,30 +1,41 @@
 """Internal per-view GPU culling bindings, camera state, and command recording."""
+from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Mapping, Any, Sequence, TYPE_CHECKING
 
+from numpy.typing import ArrayLike, NDArray
 import numpy as np
-from numpy.typing import NDArray
 
 from ..Math import extract_frustum_planes
 from ..RenderContext import ComputePipeline, Shader
 
 
-def default_cull_shader():
+if TYPE_CHECKING:
+	from ..RenderContext import BindGroup, GpuBuffer, CommandContext
+	from .draw_layout import DrawBatch
+	from .DrawList import SourceBatch
+
+
+def default_cull_shader() -> Shader:
 	return Shader(filepath=str(Path(__file__).resolve().parents[1] / "shaders" / "cull.shader"), label="cull")
 
 
 class _CullingState:
 	"""One view's GPU culling state; no registry, grouping cache, or ECS selection."""
-	def __init__(self, shader, buffers):
+	def __init__(self, shader: Shader, buffers: Mapping[str, GpuBuffer]) -> None:
 		self._cull_shader = shader
+		self._cull_pipelines: dict[str, ComputePipeline]
 		self._cull_pipelines = {}
 		self.buffers = dict(buffers)
+		self.bindings: dict[str, BindGroup]
 		self.bindings = {}
 		self.camera_params_buffer = shader.uniform_buffer("camera_params")
 		self._camera_params_dirty = True
 		self._camera_initialized = False
+		self.source_batches: list[SourceBatch]
 		self.source_batches = []
+		self.draw_batches: list[DrawBatch]
 		self.draw_batches = []
 		self.workgroup_count = 0
 
@@ -51,7 +62,7 @@ class _CullingState:
 			self.bindings["hiz"] = cull_shader.bind_group(1, camera_params=self.camera_params_buffer, hzb_texture=hzb_view, main_draw_cmd=buffers["main_draw_cmd"], main_visible_instances=buffers["main_visible_instances"])
 
 
-	def _dispatch(self, commands, pipeline_name, groups, *bindings):
+	def _dispatch(self, commands: CommandContext, pipeline_name: str, groups: int, *bindings: str) -> None:
 		if not groups: return
 		x = min(groups, 65535)
 		y = (groups + x - 1) // x
@@ -63,14 +74,14 @@ class _CullingState:
 			for name in bindings: compute.set_bind_group(self.bindings[name])
 			compute.dispatch(x, y)
 
-	def reset_draw_counts(self, commands, pipeline_name="reset_draw_counts"):
+	def reset_draw_counts(self, commands: CommandContext, pipeline_name: str="reset_draw_counts") -> None:
 		count = max(len(self.draw_batches), len(self.source_batches))
 		self._dispatch(commands, pipeline_name, (count + 63) // 64, "reset_prepass", "reset_main")
 
-	def cull_instances(self, commands, stage="frustum"):
+	def cull_instances(self, commands: CommandContext, stage: str="frustum") -> None:
 		self._dispatch(commands, f"cull_{stage}", self.workgroup_count, f"cull_{stage}", stage)
 
-	def update_cull_camera(self, camera_position: Sequence[float],
+	def update_cull_camera(self, camera_position: ArrayLike,
 		view_projection: Sequence[Sequence[float]] | NDArray[Any], fovy_deg: float = 90.0) -> None:
 		"""Update when the camera changes; upload before the next reset/culling operation."""
 		vp = np.asarray(view_projection, dtype=np.float32)

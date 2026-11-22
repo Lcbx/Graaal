@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, Self, ClassVar
 
+from numpy.typing import ArrayLike, DTypeLike
 import numpy as np
 
 from .utils import cache_last
@@ -9,7 +10,7 @@ from .utils import cache_last
 
 class Quaternion(np.ndarray):
 	"""An xyzw quaternion, with single-value and vectorized operations."""
-	def __new__(cls, value=None, dtype=None):
+	def __new__(cls, value: ArrayLike | None=None, dtype: DTypeLike | None=None) -> Self:
 		if value is None: value = [0.0, 0.0, 0.0, 1.0]
 		array = np.asarray(value, dtype=dtype)
 		if array.shape in ((3, 3), (4, 4)):
@@ -31,7 +32,7 @@ class Quaternion(np.ndarray):
 	xzw = property(lambda self: self[[0, 2, 3]], lambda self, value: self.__setitem__([0, 2, 3], value))
 
 	@classmethod
-	def from_axis_rotation(cls, axis, theta, dtype=None):
+	def from_axis_rotation(cls, axis: ArrayLike, theta: float, dtype: DTypeLike | None=None) -> Self:
 		axis = np.asarray(axis, dtype=dtype or np.float64)
 		if axis.shape != (3,) or not np.isfinite(axis).all() or not np.isfinite(theta): raise ValueError("axis and angle must be finite")
 		length = np.linalg.norm(axis)
@@ -39,104 +40,106 @@ class Quaternion(np.ndarray):
 		return cls(np.append(axis / length * np.sin(theta / 2), np.cos(theta / 2)), dtype=dtype)
 
 	@classmethod
-	def from_axis(cls, axis, dtype=None):
+	def from_axis(cls, axis: ArrayLike, dtype: DTypeLike | None=None) -> Self:
 		axis = np.asarray(axis, dtype=dtype or np.float64)
 		length = np.linalg.norm(axis)
 		return cls(dtype=dtype) if length == 0 else cls.from_axis_rotation(axis, length, dtype=dtype)
 
 	@classmethod
-	def from_x_rotation(cls, theta, dtype=None): return cls.from_axis_rotation((1, 0, 0), theta, dtype=dtype)
+	def from_x_rotation(cls, theta: float, dtype: DTypeLike | None=None) -> Self: return cls.from_axis_rotation((1, 0, 0), theta, dtype=dtype)
 	@classmethod
-	def from_y_rotation(cls, theta, dtype=None): return cls.from_axis_rotation((0, 1, 0), theta, dtype=dtype)
+	def from_y_rotation(cls, theta: float, dtype: DTypeLike | None=None) -> Self: return cls.from_axis_rotation((0, 1, 0), theta, dtype=dtype)
 	@classmethod
-	def from_z_rotation(cls, theta, dtype=None): return cls.from_axis_rotation((0, 0, 1), theta, dtype=dtype)
+	def from_z_rotation(cls, theta: float, dtype: DTypeLike | None=None) -> Self: return cls.from_axis_rotation((0, 0, 1), theta, dtype=dtype)
 	@classmethod
-	def from_matrix(cls, matrix, dtype=None): return cls(cls.from_matrices_batch(np.asarray(matrix)[None])[0], dtype=dtype)
+	def from_matrix(cls, matrix: ArrayLike, dtype: DTypeLike | None=None) -> Self: return cls(cls.from_matrices_batch(np.asarray(matrix)[None])[0], dtype=dtype)
 
 	@classmethod
-	def from_eulers(cls, eulers, dtype=None):
+	def from_eulers(cls, eulers: ArrayLike, dtype: DTypeLike | None=None) -> Self:
 		roll, pitch, yaw = np.asarray(eulers, dtype=np.float64) / 2
 		sr, sp, sy = np.sin([roll, pitch, yaw])
 		cr, cp, cy = np.cos([roll, pitch, yaw])
 		return cls([sr*cp*cy + cr*sp*sy, cr*sp*cy - sr*cp*sy, cr*cp*sy + sr*sp*cy, cr*cp*cy - sr*sp*sy], dtype=dtype)
 
 	@classmethod
-	def from_inverse_of_eulers(cls, eulers, dtype=None):
+	def from_inverse_of_eulers(cls, eulers: ArrayLike, dtype: DTypeLike | None=None) -> Self:
 		roll, pitch, yaw = np.asarray(eulers, dtype=np.float64) / 2
 		sr, sp, sy = np.sin([roll, pitch, yaw])
 		cr, cp, cy = np.cos([roll, pitch, yaw])
 		return cls([cy*sp*cr + sy*cp*sr, -cy*sp*sr + sy*cp*cr, -sy*sp*cr + cy*cp*sr, cy*cp*cr + sy*sp*sr], dtype=dtype)
 
 	@property
-	def length(self): return np.linalg.norm(np.asarray(self))
-	def normalize(self): self[:] = self.normalized
-	def normalise(self): self.normalize()
+	def length(self) -> float: return np.linalg.norm(np.asarray(self))
+	def normalize(self) -> None: self[:] = self.normalized
+	def normalise(self) -> None: self.normalize()
 	@property
-	def normalized(self):
+	def normalized(self) -> Quaternion:
 		if self.length == 0: raise ValueError("cannot normalize a zero quaternion")
 		return Quaternion(np.asarray(self) / self.length)
 	@property
-	def normalised(self): return self.normalized
+	def normalised(self) -> Quaternion: return self.normalized
 	@property
-	def conjugate(self): return Quaternion(np.asarray(self) * [-1, -1, -1, 1])
+	# Quaternions expose conjugation as a value rather than ndarray's method.
+	def conjugate(self) -> Quaternion: return Quaternion(np.asarray(self) * [-1, -1, -1, 1])  # type: ignore[override]
 	@property
-	def inverse(self):
+	def inverse(self) -> Quaternion:
 		length = self.length
 		if length == 0: raise ValueError("cannot invert a zero quaternion")
 		return Quaternion(np.asarray(self.conjugate) / (length * length))
 	@property
-	def negative(self): return Quaternion(-np.asarray(self))
+	def negative(self) -> Quaternion: return Quaternion(-np.asarray(self))
 	@property
-	def angle(self): return float(2 * np.arccos(np.clip(self[3], -1, 1)))
+	def angle(self) -> float: return float(2 * np.arccos(np.clip(self[3], -1, 1)))
 	@property
-	def axis(self):
+	def axis(self) -> np.ndarray:
 		denominator = np.sqrt(max(0.0, 1 - float(self[3]) ** 2))
 		return np.asarray(self[:3]) / denominator if denominator else np.array([0, 0, -1], dtype=self.dtype)
 	@property
-	def is_identity(self): return bool(np.allclose(np.asarray(self), [0, 0, 0, 1]))
+	def is_identity(self) -> bool: return bool(np.allclose(np.asarray(self), [0, 0, 0, 1]))
 	@property
-	def matrix33(self): return self.matrix_batch(np.asarray(self.normalized))
+	def matrix33(self) -> np.ndarray: return self.matrix_batch(np.asarray(self.normalized))
 	@property
-	def matrix44(self):
+	def matrix44(self) -> np.ndarray:
 		result = np.eye(4, dtype=self.dtype)
 		result[:3, :3] = self.matrix33
 		return result
-	def cross(self, other): return Quaternion(self.multiply_batch(np.asarray(self), np.asarray(other)))
-	def dot(self, other): return np.dot(np.asarray(self), np.asarray(other))
-	def lerp(self, other, t):
+	def cross(self, other: Any) -> Quaternion: return Quaternion(self.multiply_batch(np.asarray(self), np.asarray(other)))
+	# This quaternion operation has no ndarray output-buffer argument.
+	def dot(self, other: Any) -> Any: return np.dot(np.asarray(self), np.asarray(other))  # type: ignore[override]
+	def lerp(self, other: Any, t: float) -> Quaternion:
 		t = np.clip(t, 0, 1)
 		return Quaternion(np.asarray(self) * (1 - t) + np.asarray(other) * t).normalized
-	def slerp(self, other, t): return Quaternion(self.slerp_batch(np.asarray(self), np.asarray(other), np.clip(t, 0, 1)))
-	def __mul__(self, other):
+	def slerp(self, other: Any, t: float) -> Quaternion: return Quaternion(self.slerp_batch(np.asarray(self), np.asarray(other), np.clip(t, 0, 1)))
+	def __mul__(self, other: Any) -> Any:
 		value = np.asarray(other)
 		if value.shape == (4,): return self.cross(value)
 		if value.shape == (3,):
 			rotated = self.matrix33 @ value
 			return Vec3(rotated) if isinstance(other, Vec3) else rotated
 		return NotImplemented
-	def __or__(self, other): return self.dot(other)
-	def __invert__(self): return self.conjugate
-	def __eq__(self, other):
+	def __or__(self, other: Any) -> Any: return self.dot(other)
+	def __invert__(self) -> Quaternion: return self.conjugate
+	def __eq__(self, other: Any) -> Any:
 		other = np.asarray(other)
 		if self.shape != (4,) or other.shape != (4,): return np.asarray(self) == other
 		if np.array_equal(np.asarray(self), other): return True
 		return bool(other.dtype.kind in "iufc" and np.array_equal(np.asarray(self), -other))
-	def __ne__(self, other):
+	def __ne__(self, other: Any) -> Any:
 		result = self.__eq__(other)
 		return not result if isinstance(result, (bool, np.bool_)) else np.logical_not(result)
-	def exp(self):
+	def exp(self) -> Quaternion:
 		vector = np.asarray(self[:3])
 		length = np.linalg.norm(vector)
 		factor = np.sin(length) / length if length else 1.0
 		return Quaternion(np.exp(self[3]) * np.append(vector * factor, np.cos(length)))
-	def power(self, exponent):
+	def power(self, exponent: float) -> Quaternion:
 		unit = self.normalized
 		angle = np.arccos(np.clip(unit[3], -1, 1))
 		sine = np.sin(angle)
 		if abs(sine) < 1e-12: return Quaternion()
 		return Quaternion(np.append(np.asarray(unit[:3]) * np.sin(angle * exponent) / sine, np.cos(angle * exponent)))
 	@staticmethod
-	def multiply_batch(a, b):
+	def multiply_batch(a: ArrayLike, b: ArrayLike) -> np.ndarray:
 		"""Multiply broadcastable arrays of xyzw quaternions."""
 		a, b = np.asarray(a), np.asarray(b)
 		if a.ndim == 0 or b.ndim == 0 or a.shape[-1] != 4 or b.shape[-1] != 4: raise ValueError("quaternions must have four components")
@@ -145,7 +148,7 @@ class Quaternion(np.ndarray):
 		return np.concatenate((vector, scalar), axis=-1)
 
 	@staticmethod
-	def nlerp_batch(a, b, weight, *, out=None):
+	def nlerp_batch(a: ArrayLike, b: ArrayLike, weight: ArrayLike, *, out: np.ndarray | None=None) -> np.ndarray:
 		"""Shortest-path normalized interpolation of batched unit quaternions."""
 		a, b = np.asarray(a), np.asarray(b)
 		if a.ndim == 0 or b.ndim == 0 or a.shape[-1] != 4 or b.shape[-1] != 4: raise ValueError("quaternions must have four components")
@@ -159,7 +162,7 @@ class Quaternion(np.ndarray):
 		return out
 
 	@staticmethod
-	def slerp_batch(a, b, weight):
+	def slerp_batch(a: ArrayLike, b: ArrayLike, weight: ArrayLike) -> np.ndarray:
 		"""Shortest-path spherical interpolation of batched unit quaternions."""
 		a, b = np.asarray(a), np.asarray(b)
 		if a.ndim == 0 or b.ndim == 0 or a.shape[-1] != 4 or b.shape[-1] != 4: raise ValueError("quaternions must have four components")
@@ -173,7 +176,7 @@ class Quaternion(np.ndarray):
 		return result / np.linalg.norm(result, axis=-1, keepdims=True)
 
 	@staticmethod
-	def matrix_batch(rotation):
+	def matrix_batch(rotation: ArrayLike) -> np.ndarray:
 		"""Convert batched unit xyzw quaternions to column-vector 3x3 matrices."""
 		rotation = np.asarray(rotation)
 		if rotation.ndim == 0 or rotation.shape[-1] != 4: raise ValueError("quaternions must have four components")
@@ -192,7 +195,7 @@ class Quaternion(np.ndarray):
 		return result
 
 	@staticmethod
-	def from_matrices_batch(matrices):
+	def from_matrices_batch(matrices: ArrayLike) -> np.ndarray:
 		"""Convert a batch of column-vector rotation matrices to xyzw arrays."""
 		matrices = np.asarray(matrices, dtype=np.float64)
 		if matrices.ndim != 3 or matrices.shape[1:] not in ((3, 3), (4, 4)):
@@ -228,7 +231,7 @@ class _baseVector(np.ndarray):
 	_count: ClassVar[int]
 	_base_dtype: ClassVar[np.dtype] = np.dtype(np.float32)
 
-	def __new__(cls, *args):
+	def __new__(cls, *args: Any) -> Self:
 		values = args[0] if len(args) == 1 and not np.isscalar(args[0]) else args
 		if len(values) != cls._count:
 			raise ValueError(f'got passed {len(values)} when {cls._count} were expected')
@@ -261,7 +264,7 @@ class Vec4(_baseVector):
 
 
 class Camera:
-	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True):
+	def __init__(self, position: tuple, target: tuple, up: tuple, fovy_deg:float, near:float=0.1, far:float=1000.0, perspective:bool=True) -> None:
 		self.position = Vec3(position)
 		self.target = Vec3(target)
 		self.up = Vec3(up)
@@ -275,7 +278,7 @@ class Camera:
 		return Camera.calc_view(self.position, self.target, self.up)
 	
 	@staticmethod
-	def calc_view(position, target:Vec3, up:Vec3) -> np.ndarray:
+	def calc_view(position: ArrayLike, target: ArrayLike, up: ArrayLike) -> np.ndarray:
 		position, target, up = (np.asarray(value, dtype=np.float64) for value in (position, target, up))
 		forward = target - position
 		if not np.all(np.isfinite([position, target, up])) or np.linalg.norm(forward) == 0:
@@ -302,7 +305,7 @@ class Camera:
 		return Camera.orthogonal_projection(left, right, bottom, top, self.near, self.far)
 
 	@cache_last(lambda self: (tuple(self.position), tuple(self.target)) )
-	def direction(self):
+	def direction(self) -> np.ndarray:
 		l = self.position - self.target
 		return l / np.linalg.norm(l)
 	
@@ -341,7 +344,7 @@ class Camera:
 		return mat
 
 
-def extract_frustum_planes(view_projection):
+def extract_frustum_planes(view_projection: ArrayLike) -> np.ndarray:
 	vp = np.asarray(view_projection)
 	planes = np.zeros((6, 4), dtype=np.float32)
 	planes[0], planes[1] = vp[:, 3] + vp[:, 0], vp[:, 3] - vp[:, 0]

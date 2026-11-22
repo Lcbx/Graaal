@@ -1,7 +1,9 @@
 """Pure NumPy grouping, independent of ECS and GPU modules."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 
@@ -19,7 +21,7 @@ class DrawList:
     batches: tuple[SourceBatch, ...]
 
     @classmethod
-    def build(cls, lod_ids, shader_ids):
+    def build(cls, lod_ids: ArrayLike, shader_ids: ArrayLike) -> DrawList:
         lod_ids, shader_ids = np.asarray(lod_ids), np.asarray(shader_ids)
         if lod_ids.ndim != 1 or shader_ids.ndim != 1 or len(lod_ids) != len(shader_ids):
             raise ValueError("Expected equally sized 1D LoD and shader IDs")

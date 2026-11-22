@@ -1,4 +1,6 @@
 """CPU import of a supported subset of skinned glTF, independent of rendering."""
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,7 +32,7 @@ class SkinnedAsset:
 	joint_nodes: tuple[int, ...]
 
 
-def _sample_track(times, values, target, rotation):
+def _sample_track(times: np.ndarray, values: np.ndarray, target: np.ndarray, rotation: bool) -> np.ndarray:
 	if len(times) == 1: return np.broadcast_to(values[0], (len(target), values.shape[1])).copy()
 	right = np.clip(np.searchsorted(times, target, side="right"), 1, len(times) - 1)
 	left = right - 1
@@ -40,7 +42,7 @@ def _sample_track(times, values, target, rotation):
 	return Quaternion.slerp_batch(a, b, fraction)
 
 
-def load_skinned_gltf(path, *, node=None, fps=30):
+def load_skinned_gltf(path: str | Path, *, node: int | None=None, fps: float=30) -> SkinnedAsset:
 	"""Load a skinned mesh node, depth-first skeleton and uniform-rate clips.
 
 	Supports triangle lists, four influences and LINEAR joint TRS tracks. Mesh
@@ -94,7 +96,7 @@ def load_skinned_gltf(path, *, node=None, fps=30):
 	if any(not np.allclose(gltf_node_matrix(nodes[i]), np.eye(4), atol=1e-6) for i in protected):
 		raise ValueError("Mesh and non-joint ancestor transforms must be identity")
 	order = []
-	def visit(joint):
+	def visit(joint: int) -> None:
 		order.append(joint)
 		for child in nodes[joint].children or ():
 			if child in joint_set: visit(child)

@@ -1,17 +1,25 @@
 """Rendering diagnostics; importing this module requires the rendering extra."""
+from __future__ import annotations
 
+from ctypes import wintypes
+from time import perf_counter as get_time
+from typing import Any, Self, Sequence, TYPE_CHECKING
 import ctypes
 import json
 import logging
 import os
 import tracemalloc
-from ctypes import wintypes
-from time import perf_counter as get_time
 
 from ..DrawBatches import DrawBatches
 from ..Materials.MaterialRenderer import MaterialRenderer
-from .gpu_profiler import GpuProfiler
 from ..RenderContext import GpuBuffer, RenderContext, Texture, TextureView
+from .gpu_profiler import GpuProfiler
+
+
+if TYPE_CHECKING:
+	from ..RenderContext import CommandContext, wgpu
+	from .gpu_profiler import _ProfiledCommands
+
 
 try:
 	import psutil  # type: ignore[import-untyped]
@@ -20,7 +28,7 @@ except ModuleNotFoundError as error:
 	psutil = None
 
 
-def get_draw_counts(renderer, passes=None) -> tuple[int, int]:
+def get_draw_counts(renderer: DrawBatches | MaterialRenderer | None, passes: str | Sequence[str] | None=None) -> tuple[int, int]:
 	"""Return (drawable batches, submitted draw calls) without GPU visibility readback.
 
 	DrawBatches defaults to the "main" pass; pass ("prepass", "main") to count
@@ -45,7 +53,7 @@ def get_draw_counts(renderer, passes=None) -> tuple[int, int]:
 	return len(batches), draw_calls
 
 
-def get_shader_sources(renderer) -> list[str]:
+def get_shader_sources(renderer: DrawBatches | MaterialRenderer | None) -> list[str]:
 	"""Return unique expanded WGSL sources of this renderer's registered shaders.
 
 	Includes its culling shader and, for MaterialRenderer, shading/composition
@@ -63,7 +71,7 @@ def get_shader_sources(renderer) -> list[str]:
 	if isinstance(renderer, MaterialRenderer):
 		oit = renderer.transparency
 		shaders.extend((oit.shading_shader, oit.nearest_shading_shader, oit.compose_shader))
-		shaders.extend(getattr(oit, name, None) for name in ("band_clear_shader", "kawase_shader"))
+		shaders.extend(extra for name in ("band_clear_shader", "kawase_shader") if (extra := getattr(oit, name, None)) is not None)
 	return list(dict.fromkeys(shader.info.source for shader in shaders if shader is not None))
 
 
@@ -115,7 +123,7 @@ def inspect_render_memory() -> dict:
 				cpu_rss = info.working_set
 		elif os.path.exists("/proc/self/statm"):
 			with open("/proc/self/statm", encoding="ascii") as statm:
-				cpu_rss = int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+				cpu_rss = int(statm.read().split()[1]) * getattr(os, "sysconf")("SC_PAGE_SIZE")
 	return dict(cpu_rss_bytes=cpu_rss,
 		python_traced_bytes=tracemalloc.get_traced_memory()[0] if tracemalloc.is_tracing() else None,
 		cpu_buffer_mirrors_bytes=sum(item["cpu_mirror_bytes"] for item in resources),
@@ -130,19 +138,21 @@ class RenderMonitor:
 	pass times require a device created with the timestamp-query feature; without
 	it, GPU times are None. CPU timings measure Python recording and queue submit.
 	"""
-	def __init__(self, renderer=None, *, log=False, max_passes=64):
+	def __init__(self, renderer: DrawBatches | MaterialRenderer | None=None, *, log: bool=False, max_passes: int=64) -> None:
 		self.renderer = renderer
 		self.log = log
 		self.max_passes = max_passes
+		self._finished: list[tuple[wgpu.GPUCommandBuffer, dict[str, Any]]]
 		self._finished = []
+		self.last_report: dict[str, Any] | None
 		self.last_report = None
 
-	def commands(self, label=None):
+	def commands(self, label: str | None=None) -> _MonitoredCommands:
 		commands = RenderContext.commands(label)
 		profiler = GpuProfiler(self.max_passes) if "timestamp-query" in RenderContext.device.features else None
 		return _MonitoredCommands(self, profiler.wrap(commands) if profiler else commands, profiler, label)
 
-	def submit(self, *command_buffers):
+	def submit(self, *command_buffers: wgpu.GPUCommandBuffer) -> dict[str, Any]:
 		if len(command_buffers) != len(self._finished) or any(buffer is not entry[0] for buffer, entry in zip(command_buffers, self._finished)):
 			raise ValueError("Submit each monitored command buffer once, in finished order")
 		start = get_time()
@@ -175,7 +185,7 @@ class RenderMonitor:
 		return self.last_report
 
 
-def _resource_name(resource):
+def _resource_name(resource: Any) -> str | None:
 	if isinstance(resource, TextureView): resource = resource.texture
 	if isinstance(resource, GpuBuffer): return f"{resource.label or 'buffer'}@{id(resource):x}"
 	if isinstance(resource, Texture): return f"{resource.label or 'texture'}@{id(resource):x}"
@@ -183,33 +193,33 @@ def _resource_name(resource):
 
 
 class _MonitoredCommands:
-	def __init__(self, monitor, commands, profiler, label):
+	def __init__(self, monitor: RenderMonitor, commands: CommandContext | _ProfiledCommands, profiler: GpuProfiler | None, label: str | None) -> None:
 		self.monitor, self.commands, self.profiler = monitor, commands, profiler
-		self.entry = dict(label=label, encode_ms=None, gpu_span_ms=None, passes=[], calls=[])
+		self.entry: dict[str, Any] = dict(label=label, encode_ms=None, gpu_span_ms=None, passes=[], calls=[])
 		self.start = get_time()
 
-	def __getattr__(self, name):
+	def __getattr__(self, name: str) -> Any:
 		return getattr(self.commands, name)
 
-	def render_pass(self, **kwargs):
+	def render_pass(self, **kwargs: Any) -> _MonitoredPass:
 		return _MonitoredPass(self, self.commands.render_pass(**kwargs), "render", kwargs.get("label"))
 
-	def compute_pass(self, **kwargs):
+	def compute_pass(self, **kwargs: Any) -> _MonitoredPass:
 		return _MonitoredPass(self, self.commands.compute_pass(**kwargs), "compute", kwargs.get("label"))
 
-	def clear_buffer(self, buffer, **kwargs):
+	def clear_buffer(self, buffer: GpuBuffer, **kwargs: Any) -> None:
 		start = get_time()
 		self.commands.clear_buffer(buffer, **kwargs)
 		self.entry["calls"].append(dict(operation="clear_buffer", buffer=_resource_name(buffer),
 			cpu_encode_ms=(get_time() - start) * 1000, gpu_ms=None, **kwargs))
 
-	def copy_buffer(self, source, destination, **kwargs):
+	def copy_buffer(self, source: GpuBuffer, destination: GpuBuffer, **kwargs: Any) -> None:
 		start = get_time()
 		self.commands.copy_buffer(source, destination, **kwargs)
 		self.entry["calls"].append(dict(operation="copy_buffer", source=_resource_name(source), destination=_resource_name(destination),
 			cpu_encode_ms=(get_time() - start) * 1000, gpu_ms=None, **kwargs))
 
-	def finish(self, label=None):
+	def finish(self, label: str | None=None) -> wgpu.GPUCommandBuffer:
 		result = self.commands.finish(label=label)
 		self.entry["encode_ms"] = (get_time() - self.start) * 1000
 		self.entry["_profiler"] = self.profiler
@@ -220,13 +230,13 @@ class _MonitoredCommands:
 class _MonitoredPass:
 	_CALLS = {"draw", "draw_indexed", "draw_indexed_indirect", "draw_mesh", "dispatch", "dispatch_indirect"}
 
-	def __init__(self, commands, scope, kind, label):
+	def __init__(self, commands: _MonitoredCommands, scope: Any, kind: str, label: str | None) -> None:
 		self.commands, self.scope, self.kind, self.label = commands, scope, kind, label
 
-	def __enter__(self):
+	def __enter__(self) -> Self:
 		self.start = get_time()
 		self.scope.__enter__()
-		self.entry = dict(kind=self.kind, label=self.label, cpu_encode_ms=None, gpu_ms=None,
+		self.entry: dict[str, Any] = dict(kind=self.kind, label=self.label, cpu_encode_ms=None, gpu_ms=None,
 			calls=[], resources=[])
 		self.commands.entry["passes"].append(self.entry)
 		for attachment in getattr(self.scope, "color", ()):
@@ -235,7 +245,7 @@ class _MonitoredPass:
 		if depth := getattr(self.scope, "depth", None): self._add_view(depth.view)
 		return self
 
-	def _add_view(self, view):
+	def _add_view(self, view: Any) -> None:
 		texture_handle = getattr(view, "texture", None)
 		for resource in tuple(RenderContext._tracked_resources):
 			if isinstance(resource, Texture) and (resource.handle is texture_handle or
@@ -243,15 +253,15 @@ class _MonitoredPass:
 				self._add_resource(resource)
 				break
 
-	def _add_resource(self, resource):
+	def _add_resource(self, resource: Any) -> None:
 		name = _resource_name(resource)
 		if name is not None and name not in self.entry["resources"]: self.entry["resources"].append(name)
 
-	def __getattr__(self, name):
+	def __getattr__(self, name: str) -> Any:
 		attribute = getattr(self.scope, name)
 		if name not in self._CALLS and name not in ("set_pipeline", "set_bind_group", "set_bind_groups", "set_vertex_buffer", "set_index_buffer"):
 			return attribute
-		def record(*args, **kwargs):
+		def record(*args: Any, **kwargs: Any) -> Any:
 			start = get_time()
 			result = attribute(*args, **kwargs)
 			if name in self._CALLS:
@@ -276,7 +286,7 @@ class _MonitoredPass:
 			return result
 		return record
 
-	def __exit__(self, *args):
+	def __exit__(self, *args: Any) -> None:
 		try:
 			return self.scope.__exit__(*args)
 		finally:

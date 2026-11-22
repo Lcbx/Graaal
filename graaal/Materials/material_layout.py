@@ -1,17 +1,24 @@
 """Explicit layouts derived from the material shaders' reflected resource ABI."""
+from __future__ import annotations
+
+from typing import cast, Any, Sequence, TYPE_CHECKING
 import re
 
 from ..RenderContext import BindGroupLayout, PipelineLayout, wgpu
 
 
-def _key(value):
+if TYPE_CHECKING:
+	from ..RenderContext import Shader, BindingInfo
+
+
+def _key(value: Any) -> Any:
 	if isinstance(value, dict): return tuple((name, _key(item)) for name, item in sorted(value.items()))
 	if isinstance(value, (tuple, list)): return tuple(map(_key, value))
 	return value
 
 
-def _entry(shader, info, visibility):
-	entry = dict(binding=info.binding, visibility=visibility)
+def _entry(shader: Shader, info: BindingInfo, visibility: int) -> dict[str, Any]:
+	entry: dict[str, Any] = dict(binding=info.binding, visibility=visibility)
 	if info.storage == "uniform":
 		entry["buffer"] = dict(type="uniform", min_binding_size=shader.info.uniforms[info.name].dtype.itemsize)
 	elif info.storage == "storage":
@@ -36,7 +43,7 @@ def _entry(shader, info, visibility):
 	return entry
 
 
-def material_pipeline_layout(shader, entries, cache):
+def material_pipeline_layout(shader: Shader, entries: Sequence[str | None], cache: dict[Any, BindGroupLayout]) -> PipelineLayout:
 	"""Share stable groups; limit pass texture bindings to the chosen entry points."""
 	active = shader.info.used_bindings(entries)
 	stable = shader.info.used_bindings(tuple(shader.info.entry_points))
@@ -45,7 +52,7 @@ def material_pipeline_layout(shader, entries, cache):
 	stages = wgpu.ShaderStage
 	visibility = stages.COMPUTE if any(shader.info.entry_points[name].stage == "compute" for name in entries if name) else stages.VERTEX | stages.FRAGMENT
 	groups = []
-	def resource_visibility(info):
+	def resource_visibility(info: BindingInfo) -> int:
 		if info.group == 0: return stages.VERTEX | stages.FRAGMENT | stages.COMPUTE
 		if info.group < 3: return visibility
 		# Per-pass resources need only the stages that actually reference them.
@@ -53,7 +60,7 @@ def material_pipeline_layout(shader, entries, cache):
 		result = 0
 		for name in entries:
 			if name and info.name in shader.info.used_bindings((name,)):
-				result |= {"vertex": stages.VERTEX, "fragment": stages.FRAGMENT, "compute": stages.COMPUTE}[shader.info.entry_points[name].stage]
+				result |= {"vertex": stages.VERTEX, "fragment": stages.FRAGMENT, "compute": stages.COMPUTE}[cast(str, shader.info.entry_points[name].stage)]
 		return result
 	for group in range(max((info.group for info in bindings.values()), default=-1)+1):
 		descriptors = [_entry(shader, info, resource_visibility(info))

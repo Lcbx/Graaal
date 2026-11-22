@@ -1,15 +1,27 @@
 """DrawBatches integration for dictionary materials and inherited shading code."""
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from itertools import count
+from typing import Sequence, Any, Iterable, Mapping, TYPE_CHECKING
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 from ..DrawBatches import DrawBatches, FrustumCuller, RenderShader
 from ..DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_scale
-from .core import MaterialBinding, MaterialLibrary, MaterialShader
 from ..RenderContext import BufferUsage, GpuBuffer, Mesh, RenderContext, Texture, TextureUsage
 from ..RenderPasses.TransparencyData import VERTEX_DTYPE, SHADING_VERTEX_DTYPE, SKINNED_VERTEX_DTYPE, SKINNED_SHADING_VERTEX_DTYPE, MATERIAL_DTYPE
 from ..RenderPasses.TransparencyPass import TransparencyPass, record_transparency
+from .core import MaterialBinding, MaterialLibrary, MaterialShader
+
+
+if TYPE_CHECKING:
+	from ..Math import Camera
+	from ..RenderContext import ColorAttachment, CommandContext, RenderPass, TextureView
+	from ..RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+	from ..RenderPasses.pass_settings import AmbientOcclusionSettings
+
 
 _DRAW_IDS = count(1)
 
@@ -45,7 +57,7 @@ class MaterialRenderer:
 	culling and caller-owned commands/output; presentation/submission remain external.
 	"""
 
-	def __init__(self, instances=None, *, meshes=None, shaders=(), blue_noise=None, base_textures=None, frame_fields=None, skin_palette=None, **transparency_options):
+	def __init__(self, instances: Iterable[DrawInstance] | None=None, *, meshes: Iterable[MaterialMesh] | None=None, shaders: Iterable[MaterialShader]=(), blue_noise: Texture | None=None, base_textures: Texture | TextureView | None=None, frame_fields: Mapping[str, tuple[str, Any]] | None=None, skin_palette: SkinMatrixBuffer | None=None, **transparency_options: Any) -> None:
 		self.instances = None if instances is None else list(instances)
 		self.meshes = list(dict.fromkeys(meshes if meshes is not None else (i.mesh for i in self.instances or ())))
 		if not self.meshes: raise ValueError("Register at least one mesh")
@@ -54,6 +66,7 @@ class MaterialRenderer:
 		self._skin_owners = np.empty(0, dtype=np.uint64)
 		self._skin_meshes = np.empty(0, dtype=np.uint32)
 		self._skin_codes = np.empty(0, dtype=np.uint32)
+		self._mesh_max_joint: list[int | None]
 		self._mesh_max_joint = []
 		self._raster_dtype = SKINNED_VERTEX_DTYPE if skin_palette is not None else VERTEX_DTYPE
 		self._shading_dtype = SKINNED_SHADING_VERTEX_DTYPE if skin_palette is not None else SHADING_VERTEX_DTYPE
@@ -61,7 +74,11 @@ class MaterialRenderer:
 			+ [i.shader for i in self.instances or () if i.shader is not None])
 		self.draws = DrawBatches(MESH_INSTANCE_DTYPE)
 		self.culler = FrustumCuller()
+		vertices: list[np.ndarray]
 		vertices, self.offsets, self._mesh_gpu = [], [], []
+		self._mesh_indices: list[np.ndarray | None]
+		self._mesh_vertex_counts: list[int]
+		self._mesh_has_bounds: list[bool]
 		self._mesh_indices, self._mesh_vertex_counts, self._mesh_has_bounds = [], [], []
 		for index, mesh in enumerate(self.meshes):
 			indices = None if mesh.indices is None else np.asarray(mesh.indices).copy()
@@ -119,11 +136,11 @@ class MaterialRenderer:
 		self.visibility = self.draws.create_visibility()
 		if self.instances is not None: self.sync()
 
-	def _bindings(self, instances):
+	def _bindings(self, instances: Iterable[DrawInstance]) -> list[MaterialBinding]:
 		return [MaterialBinding(i.shader or i.mesh.shader,
 			i.material if i.material is not None else i.mesh.material, i.overrides) for i in instances]
 
-	def _register_passes(self):
+	def _register_passes(self) -> None:
 		opaque, transparent = self.geometry
 		self.draws.register_shader(0, RenderShader({"opaque": opaque.render_shader["main"]}))
 		passes = dict(transparent.render_shader.passes)
@@ -132,10 +149,10 @@ class MaterialRenderer:
 
 
 	@staticmethod
-	def _write(buffer, content):
+	def _write(buffer: GpuBuffer, content: np.ndarray) -> None:
 		buffer.write_changed(content)
 
-	def sync(self):
+	def sync(self) -> None:
 		"""Convenience for direct DrawInstance lists; ECS extraction calls update()."""
 		if self.instances is None: return
 		mesh_ids = np.array([self.mesh_ids[i.mesh] for i in self.instances], dtype=np.uint32)
@@ -147,7 +164,7 @@ class MaterialRenderer:
 		ids = np.array([i.surface_id for i in self.instances], dtype=np.uint64)
 		self.update(mesh_ids, self._bindings(self.instances), transforms, owners=ids, surface_ids=ids)
 
-	def update(self, mesh_ids, bindings, transforms, *, owners, surface_ids, dirty_materials=None):
+	def update(self, mesh_ids: ArrayLike, bindings: Sequence[MaterialBinding], transforms: np.ndarray, *, owners: ArrayLike, surface_ids: ArrayLike, dirty_materials: Iterable[dict[str, Any]] | None=None) -> None:
 		"""Upload explicit columns. IDs are persistent renderable identities, not rows."""
 		mesh_ids, owners, surface_ids = np.asarray(mesh_ids), np.asarray(owners), np.asarray(surface_ids)
 		n = len(bindings)
@@ -175,16 +192,18 @@ class MaterialRenderer:
 		self._write(self.metadata, metadata)
 		self.update_transforms(transforms)
 
-	def update_transforms(self, transforms):
+	def update_transforms(self, transforms: np.ndarray) -> None:
 		"""Transform-only ECS edits do not repack or validate material dictionaries."""
 		ordered = transforms[self.draws.instance_order]
 		if self.skin_palette is not None:
 			ordered = ordered.copy()
 			ordered["iTint"][:, 0] = self._skin_codes
+		assert self.draws.buffers["instances"].content is not None
 		if not np.array_equal(self.draws.buffers["instances"].content[:len(ordered)], ordered):
 			self.draws.write_instances(ordered)
 
-	def _skin_codes_for(self, owners, mesh_ids):
+	def _skin_codes_for(self, owners: np.ndarray, mesh_ids: np.ndarray) -> np.ndarray:
+		assert self.skin_palette is not None
 		codes = np.zeros(len(owners), dtype=np.uint32)
 		for row, (owner, mesh_id) in enumerate(zip(owners, mesh_ids)):
 			maximum = self._mesh_max_joint[int(mesh_id)]
@@ -195,17 +214,18 @@ class MaterialRenderer:
 			codes[row] = base + 1
 		return codes
 
-	def sync_skinning(self):
+	def sync_skinning(self) -> None:
 		"""Refresh palette offsets after owner ranges change, before recording."""
 		if self.skin_palette is None: return
 		codes = self._skin_codes_for(self._skin_owners, self._skin_meshes)
 		if np.array_equal(codes, self._skin_codes): return
 		self._skin_codes = codes
+		assert self.draws.buffers["instances"].content is not None
 		values = self.draws.buffers["instances"].content[:len(codes)].copy()
 		values["iTint"][:, 0] = codes
 		self.draws.write_instances(values)
 
-	def update_mesh_vertices(self, mesh, vertices):
+	def update_mesh_vertices(self, mesh: MaterialMesh, vertices: np.ndarray) -> None:
 		"""Upload same-topology mesh vertices for both raster and deferred shading.
 
 		The registered bounds must enclose all updated positions. All instances of
@@ -225,6 +245,7 @@ class MaterialRenderer:
 			raise ValueError("Vertex fields must be finite and preserve mesh topology")
 		raster = gpu_mesh.vertices.copy()
 		offset = self.offsets[self.mesh_ids[mesh]] * 3
+		assert self.transparency.vertices.content is not None
 		stored = self.transparency.vertices.content[offset:offset + len(source)].copy()
 		for name, width in (("position", 3), ("normal", 3), ("uv", 2)):
 			raster[name] = source[name]
@@ -233,22 +254,22 @@ class MaterialRenderer:
 		gpu_mesh.vertex_buffer.write_range(raster, offset=start * raster.dtype.itemsize)
 		self.transparency.vertices.write_range(stored, offset=offset * stored.dtype.itemsize)
 
-	def set_sample_count(self, count):
+	def set_sample_count(self, count: int) -> None:
 		if self.transparency.set_sample_count(count):
 			self._register_passes()
 
-	def set_ambient_occlusion_settings(self, settings):
+	def set_ambient_occlusion_settings(self, settings: AmbientOcclusionSettings) -> None:
 		if self.transparency.set_ambient_occlusion_settings(settings): self._register_passes()
 
-	def set_banded_options(self, **options):
+	def set_banded_options(self, **options: bool | None) -> None:
 		if self.transparency.set_banded_options(**options): self._register_passes()
 
-	def record(self, commands, size, camera, output, *, frame=None, lighting=None):
+	def record(self, commands: CommandContext, size: tuple[int, int], camera: Camera, output: ColorAttachment, *, frame: Mapping[str, Any] | None=None, lighting: Mapping[str, Any] | None=None) -> None:
 		"""Record the default frame sequence; callers may record the stages themselves."""
 		record_material_frame(self, commands, size, camera, output, frame=frame, lighting=lighting)
 
 
-def record_material_frame(renderer, commands, size, camera, output, *, frame=None, lighting=None, culler=None):
+def record_material_frame(renderer: MaterialRenderer, commands: CommandContext, size: tuple[int, int], camera: Camera, output: ColorAttachment, *, frame: Mapping[str, Any] | None=None, lighting: Mapping[str, Any] | None=None, culler: FrustumCuller | None=None) -> None:
 	"""Record the default material frame; culler may override the renderer's culler."""
 	renderer.sync()
 	if getattr(renderer, "skin_palette", None) is not None: renderer.sync_skinning()
@@ -262,7 +283,7 @@ def record_material_frame(renderer, commands, size, camera, output, *, frame=Non
 	if not external or any(batch.shader_id == 0 and batch.mesh_id is not None for batch in renderer.draws.draw_batches):
 		with oit.opaque_pass(commands, load=external) as render:
 			renderer.draws.draw(render, renderer.visibility, "opaque")
-	def draw_transparent(render, name):
+	def draw_transparent(render: RenderPass, name: str) -> None:
 		renderer.draws.draw(render, renderer.visibility, name)
 	record_transparency(commands, oit, renderer.geometry[1], draw_transparent)
 	oit.compose(commands, output)

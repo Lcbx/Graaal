@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import Any, TYPE_CHECKING, cast
 
 from .ecs_types import EntityArray, EntityLike, as_entities, _quantity
 
@@ -67,6 +67,7 @@ class CommandBuffer:
 		return len(self._commands)
 
 	def _enqueue(self, operation: str, entities: EntityLike | DeferredEntities, args: tuple[object, ...]) -> None:
+		target: EntityArray | DeferredEntities
 		if isinstance(entities, DeferredEntities):
 			if entities._buffer is not self:
 				raise ValueError("deferred entities belong to another command buffer; resolve them explicitly")

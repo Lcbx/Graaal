@@ -1,6 +1,13 @@
 """Manage skin palette ranges from complete batches of animation poses."""
+from __future__ import annotations
+
+from typing import Iterable, TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+	from ..RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+	from ..EcsAdapters.EcsAnimation import PoseBatch
 
 
 class PosePalette:
@@ -9,11 +16,11 @@ class PosePalette:
 	The caller synchronizes draw membership and GPU work around updates. No other
 	code may acquire or release the ranges owned by this adapter.
 	"""
-	def __init__(self, palette):
+	def __init__(self, palette: SkinMatrixBuffer) -> None:
 		self.palette = palette
-		self._owners = {}
+		self._owners: dict[int, tuple[int, int]] = {}
 
-	def update(self, batches):
+	def update(self, batches: Iterable[PoseBatch]) -> None:
 		"""Reconcile a complete pose snapshot and upload all supplied matrices."""
 		prepared, desired = [], {}
 		for batch in batches:

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from ..Assets import interleave_mesh_position_normal_uv
 from ..Math import Vec3
 
+if TYPE_CHECKING:
+	from .core import Mesh
 
-def make_cube_mesh():
+
+def make_cube_mesh() -> Mesh:
 	from .core import Mesh
 	return Mesh(interleave_mesh_position_normal_uv(
 		positions = np.array((

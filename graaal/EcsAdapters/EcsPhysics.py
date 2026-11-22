@@ -1,41 +1,51 @@
 """Optional ECS body, character and ragdoll ownership over standalone Jolt."""
+from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, fields
-from types import MappingProxyType
-from typing import get_type_hints
+from dataclasses import field, dataclass, fields
+from types import TracebackType, MappingProxyType
+from typing import cast, Any, Callable, Mapping, Self, Sequence, TYPE_CHECKING, get_type_hints
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 from ..ECS.ecs_types import as_entities, component, _synchronous_callable
 from ..Math import Vec3, Vec4, Quaternion
 from ..PhysicsRagdoll import RagdollAsset
 
+if TYPE_CHECKING:
+	import pyjoltphysics as pj
+
+
+if TYPE_CHECKING:
+	from ..ECS import ECS, CommandBuffer
+	from ..ECS.ecs_types import EntityLike
+
 
 @component
 class RigidBody:
 	"""Declarative settings; motion codes are static=0, kinematic=1, dynamic=2."""
-	motion: np.uint8 = 2
-	mass: np.float32 = 1.0
-	friction: np.float32 = 0.5
-	restitution: np.float32 = 0.0
-	linear_damping: np.float32 = 0.0
-	angular_damping: np.float32 = 0.0
-	gravity_factor: np.float32 = 1.0
-	group: np.uint32 = 1
-	mask: np.uint32 = 0xffffffff
-	flags: np.uint32 = 0
-	material: np.uint16 = 0
-	filter: np.uint16 = 0
+	motion: np.uint8 = cast(np.uint8, 2)
+	mass: np.float32 = cast(np.float32, 1.0)
+	friction: np.float32 = cast(np.float32, 0.5)
+	restitution: np.float32 = cast(np.float32, 0.0)
+	linear_damping: np.float32 = cast(np.float32, 0.0)
+	angular_damping: np.float32 = cast(np.float32, 0.0)
+	gravity_factor: np.float32 = cast(np.float32, 1.0)
+	group: np.uint32 = cast(np.uint32, 1)
+	mask: np.uint32 = cast(np.uint32, 0xffffffff)
+	flags: np.uint32 = cast(np.uint32, 0)
+	material: np.uint16 = cast(np.uint16, 0)
+	filter: np.uint16 = cast(np.uint16, 0)
 
 
 @component(multiples=True)
 class Collider:
 	"""Registry shape key and local pose; geometry is separate from render meshes."""
 	shape: np.uint32
-	position: Vec3 = (0, 0, 0)
-	rotation: Vec4 = (0, 0, 0, 1)
-	scale: Vec3 = (1, 1, 1)
+	position: Vec3 = cast(Vec3, (0, 0, 0))
+	rotation: Vec4 = cast(Vec4, (0, 0, 0, 1))
+	scale: Vec3 = cast(Vec3, (1, 1, 1))
 	sensor: bool = False
 
 
@@ -45,11 +55,11 @@ WORLD_ENTITY = np.uint64(0xffffffffffffffff)
 @component
 class PhysicsCharacter:
 	"""Capability asset and native controller settings; ECS position is at the feet."""
-	capabilities: np.uint32 = 0
-	gravity: np.float64 = np.nan
-	pass_group: np.uint32 = 0
-	group: np.uint32 = 1
-	mask: np.uint32 = 0xffffffff
+	capabilities: np.uint32 = cast(np.uint32, 0)
+	gravity: np.float64 = cast(np.float64, np.nan)
+	pass_group: np.uint32 = cast(np.uint32, 0)
+	group: np.uint32 = cast(np.uint32, 1)
+	mask: np.uint32 = cast(np.uint32, 0xffffffff)
 	proxy: bool = True
 	enabled: bool = True
 
@@ -57,12 +67,12 @@ class PhysicsCharacter:
 @component
 class CharacterState:
 	"""Physics output only; ground is a full entity handle or WORLD_ENTITY."""
-	velocity: Vec3 = (0, 0, 0)
+	velocity: Vec3 = cast(Vec3, (0, 0, 0))
 	grounded: bool = False
-	ground: np.uint64 = WORLD_ENTITY
-	ground_normal: Vec3 = (0, 0, 0)
-	state: np.uint8 = 3
-	height: np.float32 = 0
+	ground: np.uint64 = cast(np.uint64, WORLD_ENTITY)
+	ground_normal: Vec3 = cast(Vec3, (0, 0, 0))
+	state: np.uint8 = cast(np.uint8, 3)
+	height: np.float32 = cast(np.float32, 0)
 	stuck: bool = False
 
 
@@ -73,9 +83,9 @@ _CHARACTER_FIELDS = ("capabilities", "gravity", "pass_group", "group", "mask", "
 class PhysicsRagdoll:
 	"""Native ragdoll asset and mode (kinematic=0, powered=1, limp=2)."""
 	asset: np.uint32
-	mode: np.uint8 = 0
-	blend: np.float32 = 0
-	strength: np.float32 = 1
+	mode: np.uint8 = cast(np.uint8, 0)
+	blend: np.float32 = cast(np.float32, 0)
+	strength: np.float32 = cast(np.float32, 1)
 
 
 @component(multiples=True)
@@ -85,24 +95,24 @@ class PhysicsJoint:
 	Anchors and axes are world-space at creation. Kind codes match native
 	fixed=0, ball=1, hinge=2, slider=3, distance=4, six-DoF=5.
 	"""
-	key: np.uint32 = 0
-	target: np.uint64 = WORLD_ENTITY
-	kind: np.uint8 = 0
-	anchor: Vec3 = (0, 0, 0)
-	to_anchor: Vec3 = (0, 0, 0)
-	axis: Vec3 = (1, 0, 0)
-	axis2: Vec3 = (0, 1, 0)
-	lower: np.dtype((np.float64, 6)) = (-np.inf,) * 6
-	upper: np.dtype((np.float64, 6)) = (np.inf,) * 6
-	limit_spring: np.dtype((np.float32, 2)) = (0, 0)
-	friction: np.float32 = 0
-	motor_mode: np.dtype((np.uint8, 6)) = (0,) * 6
-	motor_target: np.dtype((np.float64, 6)) = (0,) * 6
-	motor_max: np.dtype((np.float64, 6)) = (np.inf,) * 6
-	motor_frequency: np.float32 = 2
-	motor_damping: np.float32 = 1
-	break_force: np.float32 = 0
-	break_torque: np.float32 = 0
+	key: np.uint32 = cast(np.uint32, 0)
+	target: np.uint64 = cast(np.uint64, WORLD_ENTITY)
+	kind: np.uint8 = cast(np.uint8, 0)
+	anchor: Vec3 = cast(Vec3, (0, 0, 0))
+	to_anchor: Vec3 = cast(Vec3, (0, 0, 0))
+	axis: Vec3 = cast(Vec3, (1, 0, 0))
+	axis2: Vec3 = cast(Vec3, (0, 1, 0))
+	lower: tuple[float, ...] = field(default=(-np.inf,) * 6, metadata={"graaal.dtype": np.dtype((np.float64, 6))})
+	upper: tuple[float, ...] = field(default=(np.inf,) * 6, metadata={"graaal.dtype": np.dtype((np.float64, 6))})
+	limit_spring: tuple[float, ...] = field(default=(0, 0), metadata={"graaal.dtype": np.dtype((np.float32, 2))})
+	friction: np.float32 = cast(np.float32, 0)
+	motor_mode: tuple[int, ...] = field(default=(0,) * 6, metadata={"graaal.dtype": np.dtype((np.uint8, 6))})
+	motor_target: tuple[float, ...] = field(default=(0,) * 6, metadata={"graaal.dtype": np.dtype((np.float64, 6))})
+	motor_max: tuple[float, ...] = field(default=(np.inf,) * 6, metadata={"graaal.dtype": np.dtype((np.float64, 6))})
+	motor_frequency: np.float32 = cast(np.float32, 2)
+	motor_damping: np.float32 = cast(np.float32, 1)
+	break_force: np.float32 = cast(np.float32, 0)
+	break_torque: np.float32 = cast(np.float32, 0)
 	collide: bool = False
 	enabled: bool = True
 
@@ -112,17 +122,17 @@ _JOINT_WRITABLE = ("motor_mode", "motor_target", "motor_max", "enabled")
 
 
 _BODY_FIELDS = tuple(field.name for field in fields(RigidBody))
-_BODY_DTYPE = np.dtype([(field.name, field.type) for field in fields(RigidBody)])
+_BODY_DTYPE = np.dtype(list(get_type_hints(RigidBody).items()))
 
 
-def _vectors(value, count, width, name):
+def _vectors(value: ArrayLike, count: int, width: int, name: str) -> np.ndarray:
 	array = np.asarray(value, dtype=np.float64)
 	if array.shape not in ((width,), (count, width)) or not np.all(np.isfinite(array)):
 		raise ValueError(f"{name} must be finite ({width},) or ({count}, {width}) values")
 	return np.broadcast_to(array, (count, width)).copy()
 
 
-def _rotations(value):
+def _rotations(value: np.ndarray) -> None:
 	if not np.allclose(np.linalg.norm(value, axis=-1), 1, atol=1e-5):
 		raise ValueError("rotation must be a unit xyzw quaternion")
 
@@ -152,7 +162,7 @@ class EcsPhysicsAdapter:
 	objects. Call reconcile, prepare_inputs, step, pull in each fixed tick.
 	The caller owns fixed time; dynamic ECS poses never become implicit inputs.
 	"""
-	def __init__(self, ecs, shapes, *, transform_type=None, settings=None, interpolate=False, joint_type=None, ragdolls=None, characters=None):
+	def __init__(self, ecs: ECS, shapes: Mapping[int, pj.Shape], *, transform_type: type[Any] | None=None, settings: pj.WorldSettings | None=None, interpolate: bool=False, joint_type: type[Any] | None=None, ragdolls: Mapping[int, RagdollAsset] | None=None, characters: Mapping[int, pj.CharacterCapabilities] | None=None) -> None:
 		import pyjoltphysics as pj
 		if transform_type is None:
 			from .MaterialTransform import MaterialTransform
@@ -165,14 +175,23 @@ class EcsPhysicsAdapter:
 		self.joints = None if joint_type is None else ecs.get(joint_type)
 		self._joint_type = joint_type
 		self._joint_query = None if joint_type is None else ecs.query(joint_type)
+		self._joint_records: dict[tuple[int, int], tuple[int, Any, dict[str, Any]]]
 		self._joint_records = {}
+		self._joint_token: tuple[Any, ...] | None
 		self._joint_token = None
 		self._ragdoll_assets = {} if ragdolls is None else dict(ragdolls)
 		if any(not isinstance(asset, RagdollAsset) for asset in self._ragdoll_assets.values()): raise TypeError("ragdoll registry values must be RagdollAsset objects")
 		self._ragdoll_query = None if ragdolls is None else ecs.query(PhysicsRagdoll, transform_type)
+		self._ragdolls: dict[int, tuple[int, pj.Ragdoll, int, float, float]]
+		self._ragdoll_poses: dict[int, tuple[np.ndarray, ...]]
 		self._ragdolls, self._ragdoll_poses = {}, {}
+		self._ragdoll_targets: dict[int, tuple[np.ndarray, np.ndarray]]
 		self._ragdoll_targets = {}
+		self._ragdoll_history: dict[int, tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
 		self._ragdoll_history = {}
+		self._ragdoll_owners: dict[int, int]
+		self._bone_by_uid: dict[int, int]
+		self._retired_bones: dict[int, int]
 		self._ragdoll_owners, self._bone_by_uid, self._retired_bones = {}, {}, {}
 		self._character_assets = {} if characters is None else dict(characters)
 		for caps in self._character_assets.values():
@@ -181,9 +200,18 @@ class EcsPhysicsAdapter:
 				raise ValueError("character capsule heights must be finite and at least twice the positive radius")
 		self._character_query = None if characters is None else ecs.query(PhysicsCharacter, transform_type)
 		self._character_states = None if characters is None else ecs.get(CharacterState)
+		self._characters: dict[int, tuple[tuple[Any, ...], pj.Character]]
+		self._character_owners: dict[int, int]
+		self._retired_characters: dict[int, int]
 		self._characters, self._character_owners, self._retired_characters = {}, {}, {}
+		self._character_pending: list[tuple[Any, ...]]
+		self._character_history: Any
+		self._character_snap: set[int]
 		self._character_pending, self._character_history, self._character_snap = [], None, set()
+		self._retired_bodies: dict[int, int]
+		self._retired_joints: dict[int, tuple[tuple[int, int], int]]
 		self._retired_bodies, self._retired_joints = {}, {}
+		self._subscriptions: dict[int, tuple[Callable[[ECS, CommandBuffer, np.ndarray], None], int | None, int | None]]
 		self._subscriptions = {}
 		self._next_subscription = 1
 		self._events_tick = -1
@@ -192,13 +220,19 @@ class EcsPhysicsAdapter:
 		if any(not isinstance(shape, pj.Shape) for shape in self._shapes.values()):
 			raise TypeError("shape registry values must be pyjoltphysics.Shape objects")
 		self.world = pj.World(settings if settings is not None else pj.WorldSettings(tick_hz=120))
+		self._shape_cache: dict[Any, tuple[int, bool]]
 		self._shape_cache = {}
 		self._entities = np.empty(0, dtype=np.uint64)
 		self._uids = np.empty(0, dtype=np.uint32)
 		self._values = np.empty(0, dtype=_BODY_DTYPE)
+		self._geometry: list[Any]
 		self._geometry = []
+		self._owner_by_uid: dict[int, int]
+		self._uid_by_owner: dict[int, int]
 		self._owner_by_uid, self._uid_by_owner = {}, {}
+		self._pending: list[tuple[str, np.ndarray, dict[str, np.ndarray | None]]]
 		self._pending = []
+		self._token: tuple[Any, ...] | None
 		self._token = None
 		self.last_seq = 0
 		self._checkpoint_revision = 0
@@ -210,35 +244,35 @@ class EcsPhysicsAdapter:
 		self._entity_order = np.empty(0, dtype=np.intp)
 		self._teleported = np.empty(0, dtype=np.uint32)
 
-	def __enter__(self):
+	def __enter__(self) -> Self:
 		return self
 
-	def __exit__(self, kind, value, traceback):
+	def __exit__(self, kind: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None) -> None:
 		self.close()
 
 	@property
-	def body_uids(self):
+	def body_uids(self) -> Mapping[int, int]:
 		"""Read-only full entity handle -> UID map, including pending creations."""
 		return MappingProxyType(self._uid_by_owner)
 
 	@property
-	def body_owners(self):
+	def body_owners(self) -> Mapping[int, int]:
 		return MappingProxyType(self._owner_by_uid)
 
-	def _check(self, ecs=None, dt=None):
+	def _check(self, ecs: ECS | None=None, dt: float | None=None) -> None:
 		if self._closed: raise RuntimeError("physics adapter is closed")
 		if ecs is not None and ecs is not self.ecs: raise ValueError("physics adapter belongs to a different ECS")
 		if dt is not None and (not np.isfinite(dt) or not np.isclose(dt, 1 / self.world.settings.tick_hz, rtol=1e-7, atol=0)):
 			raise ValueError("fixed dt must equal 1 / physics tick_hz")
 
-	def _seq(self, seq):
+	def _seq(self, seq: int) -> int:
 		self.last_seq = max(self.last_seq, seq)
 		return seq
 
-	def _tokens(self):
+	def _tokens(self) -> tuple[Any, ...]:
 		return (self.colliders.version(), self.bodies.version(), self.transforms.version("scale") if self._has_scale else (self.transforms.membership_version,))
 
-	def _shape(self, key):
+	def _shape(self, key: Any) -> tuple[int, bool]:
 		parts, scale = key
 		cached = self._shape_cache.get(parts)
 		if cached is not None: return cached
@@ -257,7 +291,7 @@ class EcsPhysicsAdapter:
 		self._shape_cache[parts] = (shape_id, self.world.shape_info(shape_id).dynamic)
 		return self._shape_cache[parts]
 
-	def reconcile(self, ecs=None, commands=None, dt=None):
+	def reconcile(self, ecs: ECS | None=None, commands: CommandBuffer | None=None, dt: float | None=None) -> bool:
 		"""Validate shared capacity, release outgoing resources, then create replacements."""
 		self._check(ecs, dt)
 		characters = self._plan_characters()
@@ -284,11 +318,11 @@ class EcsPhysicsAdapter:
 		return self._reconcile_joints(changed) or changed or ragdolls_changed or characters_changed
 
 	@property
-	def characters(self):
+	def characters(self) -> Mapping[int, pj.Character]:
 		"""Read-only full owner -> native Character handles, including pending creations."""
 		return MappingProxyType({owner: record[1] for owner, record in self._characters.items()})
 
-	def _plan_characters(self):
+	def _plan_characters(self) -> tuple[list[int], int, Callable[[], bool]] | None:
 		"""Validate controllers and return removed IDs, reservation count and commit."""
 		if self._character_query is None: return None
 		result = self._character_query.fetch()
@@ -305,7 +339,7 @@ class EcsPhysicsAdapter:
 		gravity = values.gravity[active]
 		if np.any(np.isinf(gravity)) or np.any(gravity < 0): raise ValueError("character gravity must be nonnegative or NaN for world gravity")
 		columns = [getattr(values, name)[active] for name in _CHARACTER_FIELDS]
-		desired = {}
+		desired: dict[int, tuple[tuple[Any, ...], int]] = {}
 		for row, owner in enumerate(map(int, owners)):
 			key = int(columns[0][row])
 			if key not in self._character_assets: raise ValueError(f"unknown character capabilities {key}")
@@ -319,11 +353,11 @@ class EcsPhysicsAdapter:
 			rows = snapshot.characters
 			for owner in added:
 				if owner not in self._characters: continue
-				row = rows.rows.get(self._characters[owner][1].id)
+				row = cast(Any, rows.rows.get(self._characters[owner][1].id))
 				if row is not None:
 					positions[desired[owner][1]] = rows.position[row] - [0, rows.height[row] * 0.5, 0]
 					velocities[owner] = rows.velocity[row].copy()
-		def apply():
+		def apply() -> bool:
 			if removed and self._character_history is not None:
 				tick, old_owners, old_ids, previous, current = self._character_history
 				keep = ~np.isin(old_ids, [self._characters[owner][1].id for owner in removed])
@@ -333,7 +367,7 @@ class EcsPhysicsAdapter:
 				self._retired_characters[handle.id] = owner
 				self._retired_bodies[handle.id] = owner
 				if self.ecs.is_alive([owner])[0] and self.ecs.has([owner], CharacterState)[0]:
-					self._character_states[[owner]].assign(velocity=(0, 0, 0), grounded=False, ground=WORLD_ENTITY, ground_normal=(0, 0, 0), state=3, height=0, stuck=False)
+					cast(Any, self._character_states)[[owner]].assign(velocity=(0, 0, 0), grounded=False, ground=WORLD_ENTITY, ground_normal=(0, 0, 0), state=3, height=0, stuck=False)
 			for owner in added:
 				signature, row = desired[owner]
 				key, gravity, pass_group, group, mask, proxy, caps = signature
@@ -346,11 +380,11 @@ class EcsPhysicsAdapter:
 		return [self._characters[owner][1].id for owner in removed], len(added), apply
 
 	@property
-	def ragdolls(self):
+	def ragdolls(self) -> Mapping[int, pj.Ragdoll]:
 		"""Read-only full owner -> native Ragdoll handles; use commands, never remove bones."""
 		return MappingProxyType({owner: record[1] for owner, record in self._ragdolls.items()})
 
-	def _plan_ragdolls(self):
+	def _plan_ragdolls(self) -> tuple[list[pj.Ragdoll], int, Callable[[], bool]] | None:
 		"""Validate ragdolls and return removed handles, addition count and commit."""
 		if self._ragdoll_query is None: return None
 		result = self._ragdoll_query.fetch()
@@ -371,7 +405,7 @@ class EcsPhysicsAdapter:
 		removed = [owner for owner, record in self._ragdolls.items() if owner not in declarations or record[0] != declarations[owner][0]]
 		added = [owner for owner in declarations if owner not in self._ragdolls or owner in removed]
 		needed = sum(len(self._ragdoll_assets[declarations[owner][0]].bones) for owner in added)
-		def apply():
+		def apply() -> bool:
 			for owner in removed:
 				_, handle, *_ = self._ragdolls.pop(owner)
 				self._retired_bodies.update((int(uid), owner) for uid in handle.bones)
@@ -397,13 +431,14 @@ class EcsPhysicsAdapter:
 			return bool(removed or added)
 		return [self._ragdolls[owner][1] for owner in removed], needed, apply
 
-	def set_ragdoll_pose(self, entities, pose):
+	def set_ragdoll_pose(self, entities: EntityLike, pose: Sequence[np.ndarray]) -> None:
 		"""Copy render-local animation targets in owner order, before prepare_inputs."""
 		self._check()
 		owners = as_entities(entities)
 		if any(int(owner) not in self._ragdolls for owner in owners): raise ValueError("reconcile ragdolls before setting poses")
 		copies = tuple(np.array(value, dtype=np.float32, copy=True) for value in pose)
 		if any(value.ndim == 0 or len(value) != len(owners) for value in copies): raise ValueError("pose rows must match owners")
+		groups: dict[int, list[int]]
 		groups, targets = {}, {}
 		for row, owner in enumerate(map(int, owners)):
 			groups.setdefault(self._ragdolls[owner][0], []).append(row)
@@ -416,7 +451,7 @@ class EcsPhysicsAdapter:
 			self._ragdoll_poses[owner] = tuple(value[row:row + 1].copy() for value in copies)
 			self._ragdoll_targets[owner] = targets[owner]
 
-	def ragdoll_skin(self, entities, *, weight=1, alpha=None):
+	def ragdoll_skin(self, entities: EntityLike, *, weight: ArrayLike=1, alpha: float | None=None) -> np.ndarray:
 		"""Read one snapshot and return a skin palette for owners sharing one asset."""
 		self._check()
 		owners = as_entities(entities)
@@ -445,7 +480,7 @@ class EcsPhysicsAdapter:
 		frame = self.transforms[owners]
 		return asset.skin(positions, orientations, base, position=frame.position, rotation=frame.rotation, weight=weight)
 
-	def _plan_bodies(self):
+	def _plan_bodies(self) -> tuple[np.ndarray, int, Callable[[], bool]] | None:
 		"""Validate bodies and return removed UIDs, addition count and commit.
 
 		Static poses change only through teleport. Shape/scale/motion/filter-bit
@@ -464,7 +499,7 @@ class EcsPhysicsAdapter:
 		scale = pose.scale if self._has_scale else np.ones((count, 3))
 		if not np.all(np.isfinite(scale)) or np.any(scale <= 0): raise ValueError("physics scale must be finite and positive")
 		values = np.empty(count, dtype=_BODY_DTYPE)
-		defaults = RigidBody(motion=0)
+		defaults = RigidBody(motion=cast(np.uint8, 0))
 		body_term = result[RigidBody]
 		for name in _BODY_FIELDS:
 			values[name] = getattr(defaults, name)
@@ -524,13 +559,13 @@ class EcsPhysicsAdapter:
 				shape_scale[row] *= local_scale
 				shape_offset[row], shape_rotation[row] = np.asarray(offset) * scale[target], orient
 		batch = self.pj.BodyBatch.of_shape(
-			position[spawn], np.asarray(shape_ids, dtype=np.uint32)[spawn], **kwargs,
+			position[spawn], cast(Sequence[int], np.asarray(shape_ids, dtype=np.uint32)[spawn]), **kwargs,
 			orientations=rotation[spawn], scale=shape_scale, shape_offset=shape_offset,
 			shape_rotation=shape_rotation, linear_velocity=linear[spawn], angular_velocity=angular[spawn],
 		)
 		# Validate creation arrays before submitting any destructive changes.
 		if len(spawn): batch.arrays(shape_id=self.world.add_shape)
-		def apply():
+		def apply() -> bool:
 			self._retired_bodies.update((int(uid), self._owner_by_uid[int(uid)]) for uid in removed)
 			if len(spawn):
 				created, seq = self.world.add_bodies(batch)
@@ -555,14 +590,15 @@ class EcsPhysicsAdapter:
 		return removed, len(spawn), apply
 
 	@property
-	def joint_ids(self):
+	def joint_ids(self) -> Mapping[tuple[int, int], int]:
 		"""(full owner handle, stable component key) -> native joint ID."""
 		return MappingProxyType({key: record[0] for key, record in self._joint_records.items()})
 
-	def _reconcile_joints(self, bodies_changed):
+	def _reconcile_joints(self, bodies_changed: bool) -> bool:
 		if self.joints is None: return False
 		token = self.joints.version()
 		if not bodies_changed and token == self._joint_token: return False
+		assert self._joint_query is not None and self._joint_type is not None and self._joint_type is not None and self._joint_type is not None and self._joint_type is not None
 		result = self._joint_query.fetch()
 		selection = result[self._joint_type].selection
 		owners = self.joints.owner_ids(selection)
@@ -590,7 +626,7 @@ class EcsPhysicsAdapter:
 			to = 0 if target == WORLD_ENTITY else self._uid_by_owner.get(target)
 			if body is None or to is None: continue
 			if body == to: raise ValueError("joint cannot connect a body to itself")
-			row = {name: tuple(value[i]) if value.ndim > 1 else value[i].item() for name, value in values.items()}
+			row: dict[str, Any] = {name: tuple(value[i]) if value.ndim > 1 else value[i].item() for name, value in values.items()}
 			signature = (body, to, *(row[name] for name in _JOINT_FIELDS if name not in _JOINT_WRITABLE))
 			desired[key] = (signature, row)
 		removed = [key for key, (_, signature, _) in self._joint_records.items() if key not in desired or signature != desired[key][0]]
@@ -606,9 +642,11 @@ class EcsPhysicsAdapter:
 			self._seq(self.world.remove_joints([self._joint_records[key][0] for key in removed]))
 			for key in removed: del self._joint_records[key]
 		if created:
+			ids: Any
 			ids, seq = self.world.add_joints(descriptors)
 			self._seq(seq)
 			self._joint_records.update((key, (int(uid), *desired[key])) for key, uid in zip(created, ids))
+		motor_updates: dict[int, list[tuple[int, int, Any, Any]]]
 		motor_updates = {mode: [] for mode in range(3)}
 		enabled_ids, enabled = [], []
 		for key, (signature, row) in desired.items():
@@ -629,7 +667,7 @@ class EcsPhysicsAdapter:
 		self._joint_token = token
 		return True
 
-	def set_joint_motor(self, entities, keys, *, mode=None, target=np.nan, max_force=np.nan, axis=0):
+	def set_joint_motor(self, entities: EntityLike, keys: ArrayLike, *, mode: Any=None, target: ArrayLike=np.nan, max_force: ArrayLike=np.nan, axis: ArrayLike=0) -> int:
 		self._check()
 		entities = as_entities(entities)
 		keys = np.broadcast_to(np.asarray(keys), entities.shape)
@@ -639,17 +677,17 @@ class EcsPhysicsAdapter:
 		self._checkpoint_revision += 1
 		return seq
 
-	def entities_of(self, uids):
+	def entities_of(self, uids: ArrayLike) -> np.ndarray:
 		"""Resolve current body UIDs to live full handles; WORLD_ENTITY means absent."""
 		self._check()
 		return self._resolve_owners(uids, self._owner_by_uid | self._ragdoll_owners | self._character_owners)
 
-	def bone_indices_of(self, uids):
+	def bone_indices_of(self, uids: ArrayLike) -> np.ndarray:
 		"""Resolve native physical bone indices, or -1 for other/unowned bodies."""
 		self._check()
 		return self._resolve_bones(uids, self._bone_by_uid)
 
-	def _resolve_bones(self, uids, mapping):
+	def _resolve_bones(self, uids: ArrayLike, mapping: Mapping[int, int]) -> np.ndarray:
 		wanted = np.asarray(uids)
 		owners = self._resolve_owners(wanted, self._retired_bodies | self._owner_by_uid | self._ragdoll_owners)
 		result = np.full(wanted.shape, -1, dtype=np.int32)
@@ -662,7 +700,7 @@ class EcsPhysicsAdapter:
 			result[valid] = values[rows[valid]]
 		return result
 
-	def _resolve_owners(self, uids, mapping):
+	def _resolve_owners(self, uids: ArrayLike, mapping: Mapping[int, int]) -> np.ndarray:
 		wanted = np.asarray(uids)
 		if wanted.size == 0: return np.full(wanted.shape, WORLD_ENTITY, dtype=np.uint64)
 		if wanted.dtype.kind not in "iu": raise TypeError("body UIDs must be integers")
@@ -678,7 +716,7 @@ class EcsPhysicsAdapter:
 		result[~self.ecs.is_alive(result.reshape(-1)).reshape(result.shape)] = WORLD_ENTITY
 		return result
 
-	def query_filter(self, *, exclude=(), group=0xffffffff, mask=0xffffffff, triggers=False, characters=True):
+	def query_filter(self, *, exclude: EntityLike=(), group: int=0xffffffff, mask: int=0xffffffff, triggers: bool=False, characters: bool=True) -> pj.QueryFilter:
 		self._check()
 		uids = [self._uid_by_owner[int(owner)] for owner in as_entities(exclude) if int(owner) in self._uid_by_owner]
 		ragdolls = [self._ragdolls[int(owner)][1].bones for owner in as_entities(exclude) if int(owner) in self._ragdolls]
@@ -686,44 +724,44 @@ class EcsPhysicsAdapter:
 		uids.extend(self._characters[int(owner)][1].id for owner in as_entities(exclude) if int(owner) in self._characters)
 		return self.pj.QueryFilter(group=group, mask=mask, exclude=uids, triggers=triggers, characters=characters)
 
-	def _query_filter(self, filter, exclude):
+	def _query_filter(self, filter: pj.QueryFilter | None, exclude: EntityLike) -> pj.QueryFilter:
 		if filter is None: return self.query_filter(exclude=exclude)
 		extra = self.query_filter(exclude=exclude).exclude
 		return self.pj.QueryFilter(group=filter.group, mask=filter.mask, exclude=(*filter.exclude, *extra), triggers=filter.triggers, characters=filter.characters)
 
-	def raycast(self, origin, direction, max_distance=1000.0, *, filter=None, exclude=()):
+	def raycast(self, origin: ArrayLike, direction: ArrayLike, max_distance: float=1000.0, *, filter: pj.QueryFilter | None=None, exclude: EntityLike=()) -> pj.RayHit | None:
 		self._check()
-		return self.world.raycast(origin, direction, max_distance, self._query_filter(filter, exclude))
+		return self.world.raycast(cast(Sequence[float], origin), cast(Sequence[float], direction), max_distance, self._query_filter(filter, exclude))
 
-	def raycast_batch(self, origins, directions, max_distance=1000.0, *, filter=None, exclude=()):
+	def raycast_batch(self, origins: ArrayLike, directions: ArrayLike, max_distance: float=1000.0, *, filter: pj.QueryFilter | None=None, exclude: EntityLike=()) -> pj.RayHits:
 		self._check()
 		return self.world.raycast_batch(origins, directions, max_distance, self._query_filter(filter, exclude))
 
-	def sweep(self, shape, start, end, *, orientation=(0, 0, 0, 1), filter=None, exclude=(), all_hits=False):
+	def sweep(self, shape: pj.Shape | int, start: ArrayLike, end: ArrayLike, *, orientation: ArrayLike=(0, 0, 0, 1), filter: pj.QueryFilter | None=None, exclude: EntityLike=(), all_hits: bool=False) -> pj.ShapeHit | list[pj.ShapeHit] | None:
 		self._check()
 		shape = shape if isinstance(shape, self.pj.Shape) else self._shapes[int(shape)]
-		return self.world.sweep(shape, start, end, orientation, self._query_filter(filter, exclude), all_hits)
+		return self.world.sweep(shape, cast(Sequence[float], start), cast(Sequence[float], end), cast(Sequence[float], orientation), self._query_filter(filter, exclude), all_hits)
 
-	def overlap(self, shape, position, *, orientation=(0, 0, 0, 1), filter=None, exclude=()):
+	def overlap(self, shape: pj.Shape | int, position: ArrayLike, *, orientation: ArrayLike=(0, 0, 0, 1), filter: pj.QueryFilter | None=None, exclude: EntityLike=()) -> np.ndarray:
 		self._check()
 		shape = shape if isinstance(shape, self.pj.Shape) else self._shapes[int(shape)]
-		return self.world.overlap(shape, position, orientation, self._query_filter(filter, exclude))
+		return self.world.overlap(shape, cast(Sequence[float], position), cast(Sequence[float], orientation), self._query_filter(filter, exclude))
 
-	def set_filter_table(self, collides):
+	def set_filter_table(self, collides: ArrayLike) -> int:
 		self._check()
 		seq = self._seq(self.world.set_filter_table(collides))
 		self._checkpoint_revision += 1
 		return seq
 
 	@property
-	def materials(self):
+	def materials(self) -> pj.MaterialTable:
 		return self.world.materials
 
 	@property
-	def events_dropped(self):
-		return self.world.stats()["events_dropped"]
+	def events_dropped(self) -> int:
+		return int(self.world.stats()["events_dropped"])
 
-	def subscribe(self, callback, *, kind=None, entity=None):
+	def subscribe(self, callback: Callable[[ECS, CommandBuffer, np.ndarray], None], *, kind: Any=None, entity: EntityLike | None=None) -> int:
 		"""Call callback(ecs, commands, event_batch) on the dispatching thread."""
 		self._check()
 		_synchronous_callable(callback, "physics event callback")
@@ -737,16 +775,16 @@ class EcsPhysicsAdapter:
 		self._subscriptions[token] = (callback, kind, entity)
 		return token
 
-	def unsubscribe(self, token):
+	def unsubscribe(self, token: int) -> None:
 		self._subscriptions.pop(token, None)
 
-	def dispatch_events(self, ecs=None, commands=None, dt=None):
+	def dispatch_events(self, ecs: ECS | None=None, commands: CommandBuffer | None=None, dt: float | None=None) -> np.ndarray:
 		"""Drain once per tick and route native records, preserving removal identity."""
 		self._check(ecs, dt)
 		if self._events_tick == self.world.tick: return self.events
 		raw = self.world.drain_events()
 		events = np.zeros(len(raw), dtype=self.event_dtype)
-		for name in raw.dtype.names: events[name] = raw[name]
+		for name in raw.dtype.names or (): events[name] = raw[name]
 		events["entity_a"] = events["entity_b"] = WORLD_ENTITY
 		events["bone_a"] = events["bone_b"] = -1
 		body_events = np.isin(raw["kind"], (self.pj.EventKind.CONTACT, self.pj.EventKind.TRIGGER, self.pj.EventKind.STATE))
@@ -774,6 +812,10 @@ class EcsPhysicsAdapter:
 		self._retired_characters.clear()
 		own_commands = commands is None
 		commands = self.ecs.commands() if own_commands else commands
+		assert commands is not None
+		assert commands is not None
+		assert commands is not None
+		assert commands is not None
 		for callback, kind, entity in tuple(self._subscriptions.values()):
 			# A prior callback may delete an owner; never route to its recycled slot.
 			live_a, live_b = self.ecs.is_alive(events["entity_a"]), self.ecs.is_alive(events["entity_b"])
@@ -781,11 +823,13 @@ class EcsPhysicsAdapter:
 			if kind is not None: selected &= events["kind"] == kind
 			if entity is not None: selected &= (live_a & (events["entity_a"] == entity)) | (live_b & (events["entity_b"] == entity))
 			if np.any(selected): callback(self.ecs, commands, events[selected])
-		if own_commands: commands.flush()
+		if own_commands:
+			assert commands is not None
+			commands.flush()
 		return self.events
 
-	def _update_settings(self, uids, previous, values):
-		def changed(*names):
+	def _update_settings(self, uids: np.ndarray, previous: np.ndarray, values: np.ndarray) -> None:
+		def changed(*names: str) -> np.ndarray:
 			return np.logical_or.reduce([previous[name] != values[name] for name in names])
 		mask = changed("friction", "restitution")
 		if np.any(mask): self._seq(self.world.set_materials(uids[mask], values["friction"][mask], values["restitution"][mask]))
@@ -799,21 +843,23 @@ class EcsPhysicsAdapter:
 				mask = changed("flags") & ((values["flags"] & int(flag) != 0) == on) & ((previous["flags"] & int(flag) != 0) != on)
 				if np.any(mask): self._seq(self.world.set_flags(uids[mask], flag, on))
 
-	def _queue(self, kind, entities, **values):
+	def _queue(self, kind: str, entities: EntityLike, **values: ArrayLike | None) -> None:
 		self._check()
 		entities = as_entities(entities).copy()
 		arrays = {name: None if value is None else _vectors(value, len(entities), 4 if name == "orientations" else 3, name) for name, value in values.items()}
-		if "orientations" in arrays: _rotations(arrays["orientations"])
+		if "orientations" in arrays:
+			assert arrays["orientations"] is not None
+			_rotations(arrays["orientations"])
 		self._pending.append((kind, entities, arrays))
 
-	def teleport(self, entities, positions, orientations=(0, 0, 0, 1)):
+	def teleport(self, entities: EntityLike, positions: ArrayLike, orientations: ArrayLike=(0, 0, 0, 1)) -> None:
 		"""Queue an explicit pose move; velocities are preserved."""
 		self._queue("set_transforms", entities, positions=positions, orientations=orientations)
 
-	def set_velocity(self, entities, linear=None, angular=None):
+	def set_velocity(self, entities: EntityLike, linear: ArrayLike | None=None, angular: ArrayLike | None=None) -> None:
 		self._queue("set_velocities", entities, linear=linear, angular=angular)
 
-	def reset_bodies(self, entities, positions, orientations=(0, 0, 0, 1), *, linear=(0, 0, 0), angular=(0, 0, 0)):
+	def reset_bodies(self, entities: EntityLike, positions: ArrayLike, orientations: ArrayLike=(0, 0, 0, 1), *, linear: ArrayLike=(0, 0, 0), angular: ArrayLike=(0, 0, 0)) -> None:
 		"""Queue selected regular bodies' poses/velocities, replacing their pending inputs.
 
 		Call between ticks after native submissions have applied. Other owners'
@@ -840,10 +886,10 @@ class EcsPhysicsAdapter:
 		pending.append(("set_velocities", owners.copy(), dict(linear=velocity, angular=spin)))
 		self._pending = pending
 
-	def _checkpoint_joints(self):
+	def _checkpoint_joints(self) -> tuple[Any, ...]:
 		return tuple((key, record[0], tuple(np.asarray(record[2][name]).tobytes() for name in _JOINT_FIELDS)) for key, record in sorted(self._joint_records.items()))
 
-	def _checkpoint_snapshot(self):
+	def _checkpoint_snapshot(self) -> pj.Snapshot:
 		self._check()
 		snapshot = self.world.latest()
 		if not self.world.lockstep or snapshot is None or snapshot.applied_seq != self.world.submitted_seq or self._events_tick != self.world.tick:
@@ -857,7 +903,7 @@ class EcsPhysicsAdapter:
 			raise ValueError("checkpoints require exclusively adapter-owned bodies and joints")
 		return snapshot
 
-	def save_state(self):
+	def save_state(self) -> _PhysicsState:
 		"""Capture regular body/joint state, ECS targets and queued adapter inputs.
 
 		Requires a completed tick and unchanged configuration/topology on restore.
@@ -871,7 +917,7 @@ class EcsPhysicsAdapter:
 			tuple(self._geometry), self._checkpoint_joints(), self._checkpoint_revision, pose.position, pose.rotation, deepcopy(self._pending),
 		)
 
-	def restore_state(self, state):
+	def restore_state(self, state: _PhysicsState) -> int:
 		"""Restore a same-adapter checkpoint without stepping; return its saved tick.
 
 		Replace Python input queues and snap render history to restored poses.
@@ -896,13 +942,13 @@ class EcsPhysicsAdapter:
 		self._events_tick = self.world.tick
 		return state.tick
 
-	def add_impulse(self, entities, impulses, points=None):
+	def add_impulse(self, entities: EntityLike, impulses: ArrayLike, points: ArrayLike | None=None) -> None:
 		self._queue("add_impulses", entities, impulses=impulses, points=points)
 
-	def add_force(self, entities, forces, points=None):
+	def add_force(self, entities: EntityLike, forces: ArrayLike, points: ArrayLike | None=None) -> None:
 		self._queue("add_forces", entities, forces=forces, points=points)
 
-	def character_commands(self, entities, op, *, code=0, values=(0, 0, 0, 0)):
+	def character_commands(self, entities: EntityLike, op: Any, *, code: int=0, values: ArrayLike=(0, 0, 0, 0)) -> None:
 		"""Queue native CharacterOp rows by full entity handle; TELEPORT values use centres."""
 		self._check()
 		owners = as_entities(entities).copy()
@@ -918,7 +964,7 @@ class EcsPhysicsAdapter:
 		if np.any(data[ops == self.pj.CharacterOp.TELEPORT, 3] < 0): raise ValueError("teleport search must be nonnegative")
 		self._character_pending.append((owners, ops.astype(np.uint8), codes.astype(np.uint8), data))
 
-	def move_characters(self, entities, directions, *, speed=None, mode=0):
+	def move_characters(self, entities: EntityLike, directions: ArrayLike, *, speed: ArrayLike | None=None, mode: Any=0) -> None:
 		"""Queue held world-space movement; zero direction stops the native controller."""
 		owners = as_entities(entities)
 		data = np.empty((len(owners), 4), dtype=np.float64)
@@ -926,10 +972,10 @@ class EcsPhysicsAdapter:
 		data[:, 3] = np.nan if speed is None else speed
 		self.character_commands(owners, self.pj.CharacterOp.MOVE, code=mode, values=data)
 
-	def jump_characters(self, entities):
+	def jump_characters(self, entities: EntityLike) -> None:
 		self.character_commands(entities, self.pj.CharacterOp.JUMP)
 
-	def prepare_inputs(self, ecs=None, commands=None, dt=None):
+	def prepare_inputs(self, ecs: ECS | None=None, commands: CommandBuffer | None=None, dt: float | None=None) -> None:
 		"""Send current kinematic targets and queued commands for the next tick."""
 		self._check(ecs, dt)
 		while self._character_pending:
@@ -966,15 +1012,15 @@ class EcsPhysicsAdapter:
 			if np.any(live):
 				self._seq(getattr(self.world, kind)(uids[live], **{name: None if array is None else array[live] for name, array in values.items()}))
 				if kind == "set_transforms":
-					self.transforms[entities[live]].assign(position=values["positions"][live], rotation=values["orientations"][live])
+					self.transforms[entities[live]].assign(position=cast(np.ndarray, values["positions"])[live], rotation=cast(np.ndarray, values["orientations"])[live])
 					if self._interpolate: self._teleported = np.union1d(self._teleported, uids[live])
 			self._pending.pop(0)
 
-	def step(self, ecs=None, commands=None, dt=None):
+	def step(self, ecs: ECS | None=None, commands: CommandBuffer | None=None, dt: float | None=None) -> None:
 		self._check(ecs, dt)
 		self.world.run_ticks(1)
 
-	def pull(self, ecs=None, commands=None, dt=None):
+	def pull(self, ecs: ECS | None=None, commands: CommandBuffer | None=None, dt: float | None=None) -> None:
 		"""Mirror changed dynamic poses; never keep native snapshot views."""
 		self._check(ecs, dt)
 		snapshot = self.world.latest()
@@ -1015,7 +1061,7 @@ class EcsPhysicsAdapter:
 		if np.any(mask):
 			self.transforms[self._entities[mask]].assign(position=snapshot.position[rows[mask]], rotation=snapshot.orientation[rows[mask]])
 
-	def _pull_characters(self, snapshot):
+	def _pull_characters(self, snapshot: pj.Snapshot) -> None:
 		rows = snapshot.characters
 		owners = np.array(list(self._characters), dtype=np.uint64)
 		ids = np.array([self._characters[int(owner)][1].id for owner in owners], dtype=np.uint32)
@@ -1033,7 +1079,7 @@ class EcsPhysicsAdapter:
 		state = self.ecs.has(owners, CharacterState)
 		if np.any(state):
 			selected_rows = indices[state]
-			self._character_states[owners[state]].assign(velocity=rows.velocity[selected_rows], grounded=rows.grounded[selected_rows], ground=self.entities_of(rows.ground_uid[selected_rows]), ground_normal=rows.ground_normal[selected_rows], state=rows.state[selected_rows], height=rows.height[selected_rows], stuck=rows.stuck[selected_rows])
+			cast(Any, self._character_states)[owners[state]].assign(velocity=rows.velocity[selected_rows], grounded=rows.grounded[selected_rows], ground=self.entities_of(rows.ground_uid[selected_rows]), ground_normal=rows.ground_normal[selected_rows], state=rows.state[selected_rows], height=rows.height[selected_rows], stuck=rows.stuck[selected_rows])
 		if self._interpolate:
 			previous = feet.copy()
 			old = self._character_history
@@ -1045,7 +1091,7 @@ class EcsPhysicsAdapter:
 			self._character_history = (snapshot.tick, owners[order].copy(), ids[order].copy(), previous[order], feet[order]) if len(owners) else None
 		self._character_snap.clear()
 
-	def render_transforms(self, entities, *, alpha):
+	def render_transforms(self, entities: EntityLike, *, alpha: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Return interpolated TRS copies in requested entity order, without ECS writes.
 
 		Requires interpolate=True. Alpha is the caller's accumulator / fixed_dt
@@ -1076,7 +1122,7 @@ class EcsPhysicsAdapter:
 			if np.any(selected): position[selected] = previous[rows[selected]] * (1 - alpha) + current[rows[selected]] * alpha
 		return position, rotation, scale
 
-	def close(self):
+	def close(self) -> None:
 		"""Join the native thread and clear ownership and queued commands; idempotent."""
 		if self._closed: return
 		try:

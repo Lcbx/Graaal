@@ -1,8 +1,12 @@
 """Animation event tracks and interval traversal, independent of ECS."""
-from dataclasses import dataclass
-import math
-from operator import index
+from __future__ import annotations
 
+from dataclasses import dataclass
+from operator import index
+from typing import Iterable, Sequence, SupportsIndex
+import math
+
+from numpy.typing import ArrayLike
 import numpy as np
 
 
@@ -15,7 +19,7 @@ class EventOccurrence:
 
 class EventTrack:
 	"""Named events in the half-open interval [0, duration)."""
-	def __init__(self, duration, times, names):
+	def __init__(self, duration: float, times: ArrayLike, names: Iterable[str]) -> None:
 		if not np.isscalar(duration) or not np.isfinite(duration) or duration <= 0:
 			raise ValueError("event track duration must be positive and finite")
 		values = np.array(times, dtype=np.float64, copy=True)
@@ -30,7 +34,7 @@ class EventTrack:
 		self.times.flags.writeable = False
 		self.names = tuple(names[i] for i in order)
 
-	def between(self, start, end, *, loop=True):
+	def between(self, start: float, end: float, *, loop: bool=True) -> list[EventOccurrence]:
 		"""Return events crossed from start to end, excluding start and including end.
 
 		Looping accepts unwrapped times and reports every crossing, including
@@ -62,7 +66,7 @@ class EventTrack:
 
 class EventTimeline:
 	"""Edit event markers with stable IDs and produce independent event tracks."""
-	def __init__(self, track):
+	def __init__(self, track: EventTrack) -> None:
 		if not isinstance(track, EventTrack): raise ValueError("timeline requires an EventTrack")
 		track = EventTrack(track.duration, track.times, track.names)
 		self._duration = float(track.duration)
@@ -70,9 +74,9 @@ class EventTimeline:
 		self._next_id = len(self._events)
 
 	@property
-	def duration(self): return self._duration
+	def duration(self) -> float: return self._duration
 
-	def _find(self, event_id):
+	def _find(self, event_id: SupportsIndex) -> int:
 		if isinstance(event_id, (bool, np.bool_)): raise ValueError("event ID must be a nonnegative integer")
 		try: event_id = index(event_id)
 		except TypeError as exc: raise ValueError("event ID must be a nonnegative integer") from exc
@@ -81,15 +85,15 @@ class EventTimeline:
 			if event[0] == event_id: return position
 		raise KeyError(event_id)
 
-	def _track(self, events):
+	def _track(self, events: Sequence[tuple[int, float, str]]) -> EventTrack:
 		return EventTrack(self.duration, [event[1] for event in events], [event[2] for event in events])
 
-	def snapshot(self):
+	def snapshot(self) -> tuple[tuple[int, ...], EventTrack]:
 		"""Return (event IDs, EventTrack), ordered by time and stable at ties."""
 		ordered = sorted(self._events, key=lambda event: event[1])
 		return tuple(event[0] for event in ordered), self._track(ordered)
 
-	def add(self, time, name):
+	def add(self, time: float, name: str) -> int:
 		"""Insert a marker and return its stable ID."""
 		event = (self._next_id, time, name)
 		self._track([event])
@@ -97,7 +101,7 @@ class EventTimeline:
 		self._next_id += 1
 		return event[0]
 
-	def update(self, event_id, *, time=None, name=None):
+	def update(self, event_id: SupportsIndex, *, time: float | None=None, name: str | None=None) -> None:
 		"""Move or rename a marker; omitted fields retain their values."""
 		position = self._find(event_id)
 		old_id, old_time, old_name = self._events[position]
@@ -105,6 +109,6 @@ class EventTimeline:
 		self._track([event])
 		self._events[position] = (old_id, float(event[1]), event[2])
 
-	def remove(self, event_id):
+	def remove(self, event_id: SupportsIndex) -> None:
 		"""Remove one marker by ID; removed IDs are not reused."""
 		del self._events[self._find(event_id)]

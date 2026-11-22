@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-import base64
-import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Tuple
+import base64
+import io
 
 import numpy as np
 
 if TYPE_CHECKING:
-	from pygltflib import GLTF2, Material
+	from pygltflib import GLTF2, Image, Material, Node
 
-def gltf_buffer_bytes(gltf: GLTF2, index: int, base_dir=".") -> bytes:
+
+def gltf_buffer_bytes(gltf: GLTF2, index: int, base_dir: str | Path=".") -> bytes:
 	"""Read a GLB, base64 data URI, or external buffer relative to the asset."""
 	buffer = gltf.buffers[index]
 	if buffer.uri is None:
@@ -21,7 +22,7 @@ def gltf_buffer_bytes(gltf: GLTF2, index: int, base_dir=".") -> bytes:
 	return (Path(base_dir) / buffer.uri).read_bytes()
 
 
-def gltf_image_bytes(gltf: GLTF2, image, base_dir=".") -> bytes | None:
+def gltf_image_bytes(gltf: GLTF2, image: Image, base_dir: str | Path=".") -> bytes | None:
 	"""Read encoded image bytes from a URI or buffer view, without decoding."""
 	if image.uri:
 		if image.uri.startswith("data:"):
@@ -34,7 +35,7 @@ def gltf_image_bytes(gltf: GLTF2, image, base_dir=".") -> bytes | None:
 	return None
 
 
-def read_gltf_accessor(gltf: GLTF2, index: int, base_dir=".") -> np.ndarray:
+def read_gltf_accessor(gltf: GLTF2, index: int, base_dir: str | Path=".") -> np.ndarray:
 	"""Read interleaved/normalized glTF attributes without opening a GPU device."""
 	accessor = gltf.accessors[index]
 	if accessor.sparse is not None:
@@ -63,7 +64,7 @@ def read_gltf_accessor(gltf: GLTF2, index: int, base_dir=".") -> np.ndarray:
 	return values
 
 
-def gltf_node_matrix(node) -> np.ndarray:
+def gltf_node_matrix(node: Node) -> np.ndarray:
 	"""Column-vector glTF local transform (including nonuniform/mirrored scale)."""
 	if node.matrix is not None:
 		return np.asarray(node.matrix, dtype=np.float64).reshape(4, 4).T
@@ -123,7 +124,7 @@ def load_gltf_scene(path: str | Path) -> tuple[list[GltfPrimitive], list[Materia
 			images.append(np.full((1, 1, 4), 255, dtype=np.uint8))
 
 	primitives = []
-	def visit(node_id, parent):
+	def visit(node_id: int, parent: np.ndarray) -> None:
 		node = gltf.nodes[node_id]
 		if node.skin is not None:
 			raise ValueError("Static glTF loading does not support skinned nodes")
@@ -216,7 +217,7 @@ def load_gltf_first_mesh_interleaved(glb_path: str) -> Tuple[np.ndarray,np.ndarr
 	return verts, idx.astype(np.uint32).reshape(-1)
 
 
-def interleave_mesh_position_normal_uv(positions, normals, uvs):
+def interleave_mesh_position_normal_uv(positions: np.ndarray, normals: np.ndarray, uvs: np.ndarray) -> np.ndarray:
 	vertex_dtype = np.dtype([
 			("position", np.float32, (3,)),
 			("normal",   np.float32, (3,)), # float16x3 does not exist in wgpu

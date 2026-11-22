@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Sequence, Mapping
+
+from numpy.typing import ArrayLike
 import numpy as np
 
 
@@ -11,7 +14,7 @@ MESH_INSTANCE_DTYPE = np.dtype([
 ])
 
 
-def pack_quaternion(rot):
+def pack_quaternion(rot: ArrayLike) -> np.ndarray:
 	rot_arr = np.asarray(rot)
 	#if rot_arr.dtype == object: rot_arr = np.stack(rot_arr)
 	snorm16 = np.round(np.clip(rot_arr, -1.0, 1.0) * 32767.0).astype(np.int16)
@@ -19,14 +22,14 @@ def pack_quaternion(rot):
 	return u32_view
 
 
-def pack_scale(scale):
+def pack_scale(scale: ArrayLike) -> np.ndarray:
 	scl_arr = np.asarray(scale, dtype=np.float32)
 	f16 = np.zeros((*scl_arr.shape[:-1], 4), dtype=np.float16)
 	f16[..., :3] = scl_arr
 	return f16.view(np.uint32)
 
 
-def make_instances(position, rotation, scale, tint):
+def make_instances(position: Mapping[str, np.ndarray] | np.ndarray, rotation: Mapping[str, np.ndarray] | np.ndarray, scale: Mapping[str, np.ndarray] | np.ndarray, tint: Mapping[str, np.ndarray] | np.ndarray) -> np.ndarray:
 	n = len(position["x"])
 
 	out = np.empty(n, dtype=MESH_INSTANCE_DTYPE)
@@ -55,7 +58,7 @@ def make_instances(position, rotation, scale, tint):
 	return out
 
 
-def linear_to_srgb(x):
+def linear_to_srgb(x: ArrayLike) -> np.ndarray:
 	x = np.asarray(x, dtype=np.float32)
 	return np.where(
 		x <= 0.0031308,
@@ -67,7 +70,7 @@ def linear_to_srgb(x):
 _RGBA_SHIFT = np.array([0, 8, 16, 24], dtype=np.uint32)
 
 
-def pack_rgba8_srgb(rgba):
+def pack_rgba8_srgb(rgba: Sequence[float] | np.ndarray) -> np.uint32:
 	rgba = np.array([ *linear_to_srgb(rgba[:3]), rgba[3]])
 	rgba8 = np.rint(rgba * 255).astype(np.uint32)
 	return np.uint32(np.sum(rgba8 << _RGBA_SHIFT))

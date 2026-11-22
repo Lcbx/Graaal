@@ -1,6 +1,12 @@
 """WGSL token spans for function dependency checks; declarations come from Jinja2."""
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Mapping, TYPE_CHECKING
 import re
+
+if TYPE_CHECKING:
+	from .core import EntryPointInfo
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
@@ -11,9 +17,10 @@ _COMMENT = re.compile(r"//[^\r\n]*|/\*")
 _BLOCK_COMMENT = re.compile(r"/\*|\*/")
 
 
-def strip_comments(source):
+def strip_comments(source: str) -> str:
 	"""Mask comments without moving source positions, including nested WGSL blocks."""
-	pieces, end = [], 0
+	pieces: list[str] = []
+	end = 0
 	while match := _COMMENT.search(source, end):
 		start, stop = match.span()
 		if match[0] == "/*":
@@ -38,7 +45,7 @@ class SourceSpan:
 
 class ShaderSyntax:
 	"""Find global bindings reachable from shader entry points through function calls."""
-	def __init__(self, source, functions):
+	def __init__(self, source: str, functions: Mapping[str, EntryPointInfo]) -> None:
 		self.source, self.functions = source, functions
 		self.tokens = list(_TOKEN.finditer(source))
 		self.positions = {token.start(): index for index, token in enumerate(self.tokens)}
@@ -51,10 +58,11 @@ class ShaderSyntax:
 				self.pairs[stack.pop()] = index
 		if stack: raise ValueError("Unbalanced WGSL delimiters")
 
-	def function_references(self):
+	def function_references(self) -> dict[str, tuple[set[str], set[str]]]:
 		"""Conservative function references, excluding struct member access."""
 		result = {}
 		for name, function in self.functions.items():
+			assert function.body_start is not None
 			opening = self.positions[function.body_start]
 			body = self.tokens[opening+1:self.pairs[opening]]
 			words = {token[0] for index, token in enumerate(body)

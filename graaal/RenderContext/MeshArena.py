@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Self
 
+from numpy.typing import DTypeLike
 import numpy as np
+
+if TYPE_CHECKING:
+	from .core import GpuBuffer
 
 
 @dataclass(eq=False)
@@ -15,16 +20,16 @@ class MeshAllocation:
 	generation: int = 0
 	live: bool = True
 
-	def check(self):
+	def check(self) -> None:
 		self.pool.arena.check()
 		if not self.live: raise RuntimeError("Mesh allocation has been released")
 
 	@property
-	def range(self):
+	def range(self) -> tuple[int, int]:
 		self.check()
 		return self.start, self.count
 
-	def release(self):
+	def release(self) -> None:
 		if self.live:
 			self.pool.free.append((self.start, self.count))
 			self.live = False
@@ -34,27 +39,27 @@ class MeshAllocation:
 
 
 class _Pool:
-	def __init__(self, arena, dtype, usage):
+	def __init__(self, arena: MeshArena, dtype: DTypeLike, usage: int) -> None:
 		from .core import BufferUsage, GpuBuffer
 
 		self._buffer_type = GpuBuffer
 		usage |= BufferUsage.COPY_DST
 		self.arena, self.dtype, self.usage = arena, np.dtype(dtype), usage
-		self.buffer = None
+		self.buffer: GpuBuffer | None = None
 		self.content = np.empty(0, dtype=dtype)
 		self.used = 0
-		self.free = []
-		self.allocations = []
+		self.free: list[tuple[int, int]] = []
+		self.allocations: list[MeshAllocation] = []
 		self.detach = False
 
-	def _replace_buffer(self):
+	def _replace_buffer(self) -> None:
 		self.buffer = self._buffer_type(self.content, self.usage)
 		self.detach = False
 
-	def alloc(self, data):
+	def alloc(self, data: np.ndarray) -> MeshAllocation:
 		count = len(data)
 		self.free.sort()
-		merged = []
+		merged: list[tuple[int, int]] = []
 		for start, size in self.free:
 			if merged and merged[-1][0] + merged[-1][1] == start:
 				merged[-1] = (merged[-1][0], merged[-1][1] + size)
@@ -85,7 +90,7 @@ class _Pool:
 		self.allocations.append(allocation)
 		return allocation
 
-	def compact(self):
+	def compact(self) -> None:
 		live = [item for item in self.allocations if item.live]
 		values = [self.content[item.start:item.start + item.count].copy() for item in live]
 		offset = 0
@@ -100,21 +105,21 @@ class _Pool:
 
 
 class MeshArena:
-	def __init__(self):
+	def __init__(self) -> None:
 		from .core import RenderContext
 
 		self._context = RenderContext
 		self.device = RenderContext.device
 		self.device_generation = self._context.device_generation
-		self.pools = {}
+		self.pools: dict[tuple[np.dtype, int], _Pool] = {}
 		self.closed = False
 
-	def check(self):
+	def check(self) -> None:
 		if self.closed: raise RuntimeError("Mesh arena is closed")
 		if self.device is not self._context.device or self.device_generation != self._context.device_generation:
 			raise RuntimeError("Mesh arena belongs to an expired device generation")
 
-	def allocate(self, data, usage):
+	def allocate(self, data: np.ndarray, usage: int) -> MeshAllocation:
 		self.check()
 		data = np.ascontiguousarray(data)
 		if data.ndim != 1 or not len(data): raise ValueError("Expected nonempty one-dimensional mesh data")
@@ -122,16 +127,16 @@ class MeshArena:
 		if key not in self.pools: self.pools[key] = _Pool(self, data.dtype, usage)
 		return self.pools[key].alloc(data)
 
-	def compact(self):
+	def compact(self) -> None:
 		self.check()
 		for pool in self.pools.values(): pool.compact()
 
-	def inspect(self):
+	def inspect(self) -> dict[str, int]:
 		return {"capacity_bytes": sum(pool.content.nbytes for pool in self.pools.values()),
 			"active_bytes": sum(item.count * pool.dtype.itemsize for pool in self.pools.values() for item in pool.allocations if item.live),
 			"allocations": sum(item.live for pool in self.pools.values() for item in pool.allocations)}
 
-	def close(self):
+	def close(self) -> None:
 		if self.closed: return
 		self.closed = True
 		for pool in self.pools.values():
@@ -140,5 +145,5 @@ class MeshArena:
 			pool.content = np.empty(0, dtype=pool.dtype)
 		self.pools.clear()
 
-	def __enter__(self): return self
-	def __exit__(self, *args): self.close()
+	def __enter__(self) -> Self: return self
+	def __exit__(self, *args: Any) -> None: self.close()

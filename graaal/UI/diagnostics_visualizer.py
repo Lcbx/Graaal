@@ -3,25 +3,31 @@
 The widget owns only presentation state. Feed it reports after submission and
 call draw() inside an ImGui.render callback; it creates no GPU resources.
 """
+from __future__ import annotations
+
 from collections import deque
+from typing import Any
 
 import numpy as np
 
+
 try:
-	from imgui_bundle import imgui
+	from imgui_bundle import imgui as _imgui
+	imgui: Any = _imgui
 except ModuleNotFoundError as error:
 	if error.name != "imgui_bundle": raise
 	imgui = None
 
 
-def _size(value):
+def _size(value: float | None) -> str:
 	if value is None: return "unavailable"
 	for unit in ("B", "KiB", "MiB", "GiB"):
 		if abs(value) < 1024 or unit == "GiB": return f"{value:.1f} {unit}"
 		value /= 1024
+	raise AssertionError("unreachable size unit")
 
 
-def _ms(value):
+def _ms(value: float | None) -> str:
 	return "--" if value is None else f"{value:.2f} ms"
 
 
@@ -34,18 +40,22 @@ class DiagnosticsVisualizer:
 	A report may also contain physics=inspect_physics(world), with or without
 	render commands. Native mean tick timings have their own bounded history.
 	"""
-	def __init__(self, *, visible=True, history_size=120, position=(480, 12)):
+	def __init__(self, *, visible: bool=True, history_size: int=120, position: tuple[float, float]=(480, 12)) -> None:
 		if type(history_size) is not int or history_size < 1:
 			raise ValueError("history_size must be a positive integer")
 		self.visible = visible
 		self.position = position
+		self.report: dict[str, Any] | None
 		self.report = None
 		self.paused = False
+		self.history: deque[float]
 		self.history = deque(maxlen=history_size)
+		self.physics_history: deque[float]
 		self.physics_history = deque(maxlen=history_size)
+		self._history_source: str | None
 		self._history_source = None
 
-	def update(self, report):
+	def update(self, report: dict[str, Any]) -> None:
 		"""Keep a report and separate bounded render/physics timing histories."""
 		if self.paused: return
 		self.report = report
@@ -62,7 +72,7 @@ class DiagnosticsVisualizer:
 		value = sum(entry.get("gpu_span_ms") or 0 for entry in commands) if gpu else sum(entry.get("encode_ms") or 0 for entry in commands)
 		self.history.append(value)
 
-	def draw(self):
+	def draw(self) -> None:
 		"""Draw inside the active ImGui frame; requires the optional UI package."""
 		if not self.visible: return
 		if imgui is None:
@@ -70,7 +80,8 @@ class DiagnosticsVisualizer:
 
 		imgui.set_next_window_pos(self.position, imgui.Cond_.first_use_ever)
 		imgui.set_next_window_size((500, 620), imgui.Cond_.first_use_ever)
-		expanded, self.visible = imgui.begin("Performance profiler", self.visible)
+		expanded, visible = imgui.begin("Performance profiler", self.visible)
+		self.visible = bool(visible)
 		try:
 			if not expanded: return
 			_, self.paused = imgui.checkbox("Pause display", self.paused)
@@ -86,7 +97,8 @@ class DiagnosticsVisualizer:
 		finally:
 			imgui.end()
 
-	def _draw_physics(self, imgui):
+	def _draw_physics(self, imgui: Any) -> None:
+		assert self.report is not None
 		physics = self.report.get("physics")
 		if physics is None or not imgui.collapsing_header("Physics"): return
 		stats = physics["stats"]
@@ -99,7 +111,8 @@ class DiagnosticsVisualizer:
 		for name, value in stats.items():
 			imgui.text(f"{name}: {_ms(value) if name.endswith('_ms') else value}")
 
-	def _draw_summary(self, imgui):
+	def _draw_summary(self, imgui: Any) -> None:
+		assert self.report is not None
 		report = self.report
 		commands = report.get("commands", ())
 		cpu_record = sum(entry.get("encode_ms") or 0 for entry in commands)
@@ -122,7 +135,8 @@ class DiagnosticsVisualizer:
 		if memory.get("gpu_unestimated_count"):
 			imgui.text_disabled(f"{memory['gpu_unestimated_count']} texture format(s) have no size estimate.")
 
-	def _draw_passes(self, imgui):
+	def _draw_passes(self, imgui: Any) -> None:
+		assert self.report is not None
 		if not imgui.collapsing_header("Pass timings"): return
 		passes = [(command.get("label") or "commands", scope) for command in self.report.get("commands", ())
 			for scope in command.get("passes", ())]
@@ -138,7 +152,8 @@ class DiagnosticsVisualizer:
 			imgui.text(f"{command_name} / {label}: {_ms(scope.get('gpu_ms'))} GPU, {_ms(scope.get('cpu_encode_ms'))} CPU")
 			imgui.progress_bar(value / maximum if maximum > 0 else 0, (-1, 5), "")
 
-	def _draw_commands(self, imgui):
+	def _draw_commands(self, imgui: Any) -> None:
+		assert self.report is not None
 		if not imgui.collapsing_header("Commands and used resources"): return
 		for index, command in enumerate(self.report.get("commands", ())):
 			label = command.get("label") or f"commands_{index}"
@@ -163,7 +178,8 @@ class DiagnosticsVisualizer:
 			finally:
 				imgui.tree_pop()
 
-	def _draw_resources(self, imgui):
+	def _draw_resources(self, imgui: Any) -> None:
+		assert self.report is not None
 		if not imgui.collapsing_header("Live buffers and textures"): return
 		resources = self.report.get("memory", {}).get("resources", ())
 		if not resources:

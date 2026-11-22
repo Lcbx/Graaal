@@ -1,13 +1,14 @@
 """Internal retained draw registries, resource synchronization, and instance uploads."""
+from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, TypeAlias
 
+from numpy.typing import DTypeLike, ArrayLike, NDArray
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
 
+from ..RenderContext import BufferUsage, GpuBuffer, Mesh
 from ..utils import higher_pow2
-from .DrawList import DrawList, SourceBatch
 from .draw_compiler import compile_destinations, compile_workgroups, group_bounds
 from .draw_layout import (
     BATCH_DTYPE,
@@ -19,12 +20,14 @@ from .draw_layout import (
     LodGroup,
     MeshId,
 )
-from ..RenderContext import BufferUsage, GpuBuffer, Mesh
+from .DrawList import DrawList, SourceBatch
 
 
 Entity = np.uint64
-EntityArray = FieldArray = NDArray[Any]
-EntityLike = ComponentAccessor = Any
+EntityArray: TypeAlias = NDArray[Any]
+FieldArray: TypeAlias = NDArray[Any]
+EntityLike: TypeAlias = Any
+ComponentAccessor: TypeAlias = Any
 
 
 @dataclass
@@ -39,22 +42,22 @@ class _MeshSelection(Protocol):
 
 class _ArrayTemplate:
 	"""CPU compiler output; per-view GPU buffers are allocated by Visibility."""
-	def __init__(self, content, *args, **kwargs): self.content = content
-	def resize(self, count): pass
-	def upload(self): pass
-	def upload_range(self, start, count): pass
+	def __init__(self, content: np.ndarray, *args: Any, **kwargs: Any) -> None: self.content = content
+	def resize(self, count: int) -> None: pass
+	def upload(self) -> None: pass
+	def upload_range(self, start: int, count: int) -> None: pass
 
 
 class _DrawResources:
 	"""Retain draw registries, grouping caches, CPU templates, and shared GPU buffers."""
 
-	def __init__(self, instance_dtype: np.dtype[Any]) -> None:
+	def __init__(self, instance_dtype: DTypeLike) -> None:
 		"""The caller supplies the instance layout; matching shader code is caller-owned."""
 		self.instance_dtype: np.dtype[Any] = np.dtype(instance_dtype)
 		if self.instance_dtype.hasobject or self.instance_dtype.subdtype is not None or not self.instance_dtype.itemsize or self.instance_dtype.itemsize % 4:
 			raise ValueError("Expected fixed-size instance records with a stride divisible by four")
-		self.meshes: dict[MeshId, MeshInfo] = {}
-		self._mesh_versions = {}
+		self.meshes: dict[int, MeshInfo] = {}
+		self._mesh_versions: dict[int, tuple[int, int] | None] = {}
 		self.resource_version = 0
 		self.group_rows: dict[int, int] = {}
 		self.lod_groups: dict[int, LodGroup] = {}
@@ -132,6 +135,7 @@ class _DrawResources:
 		Callers replace active inputs after growth. GPU outputs are regenerated.
 		"""
 		buffer = self.buffers[name]
+		assert buffer.content is not None
 		if count > buffer.content.size:
 			capacity = higher_pow2(count - 1)
 			buffer.content = np.zeros(capacity, dtype=buffer.content.dtype)
@@ -192,6 +196,7 @@ class _DrawResources:
 			if self._dirty_meshes.isdisjoint(self.lod_groups[group_id].lod_ids): continue
 			center, extents = group_bounds(self.lod_groups[group_id], self.meshes)
 			buffer = self.buffers["mesh_metadata"]
+			assert buffer.content is not None
 			metadata = buffer.content[row]
 			if not (np.array_equal(metadata["box_center"][:3], center) and np.array_equal(metadata["box_extents"][:3], extents)):
 				metadata["box_center"][:3], metadata["box_extents"][:3] = center, extents
@@ -205,13 +210,14 @@ class _DrawResources:
 			for command_index in command_indices:
 				for name in ("prepass_draw_cmd", "main_draw_cmd"):
 					buffer = self.buffers[name]
+					assert buffer.content is not None
 					command = buffer.content[command_index]
 					if all(command[field] == value for field, value in zip(fields, values)): continue
 					for field, value in zip(fields, values): command[field] = value
 					buffer.upload_range(command_index, 1)
 		self._dirty_meshes.clear()
 
-	def _group_instances(self, labels, lod_ids, shader_ids):
+	def _group_instances(self, labels: np.ndarray, lod_ids: ArrayLike, shader_ids: ArrayLike) -> np.ndarray:
 		"""Common grouping, destination rebuild, and order invalidation for all inputs."""
 		grouping = DrawList.build(lod_ids, shader_ids)
 		order, batches = grouping.order, list(grouping.batches)
@@ -307,6 +313,7 @@ class _DrawResources:
 		if values.ndim != 1 or len(values) != count:
 			raise ValueError("Expected one packed record per current mesh component")
 		buffer = self.buffers["instances"]
+		assert buffer.content is not None
 		values = values.copy() if np.shares_memory(values, buffer.content) else values
 		buffer.content[:len(values)] = values
 		if count: buffer.upload_range(0, count)
@@ -320,6 +327,7 @@ class _DrawResources:
 		"""
 		if not fields: return
 		buffer = self.buffers["instances"]
+		assert buffer.content is not None
 		count = len(self.entities)
 		# Validate before modifying storage; preserve aliased inputs across writes.
 		values: dict[str, NDArray[Any]] = {}
@@ -332,6 +340,8 @@ class _DrawResources:
 
 	def _sync_lod_distances(self) -> None:
 		buffer = self.buffers["lod_distances"]
+		assert buffer.content is not None
+		assert self.buffers["mesh_metadata"].content is not None
 		for group_id in self._dirty_lod_distances:
 			row = self.group_rows.get(group_id)
 			if row is None: continue

@@ -1,13 +1,22 @@
 """Array-based drawing with named passes and independent per-view visibility."""
+from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, cast, Self, Sequence, TYPE_CHECKING
 
+from numpy.typing import ArrayLike, DTypeLike
 import numpy as np
 
-from .draw_resources import _DrawResources
+from ..RenderContext import BindGroup, BufferUsage, GpuBuffer, RenderContext, RenderPipeline
 from .draw_culling import _CullingState, default_cull_shader
 from .draw_layout import INDIRECT_DTYPE
-from ..RenderContext import BindGroup, BufferUsage, GpuBuffer, RenderContext, RenderPipeline
+from .draw_resources import _DrawResources
+
+
+if TYPE_CHECKING:
+	from ..RenderContext import CommandContext, RenderPass, Mesh, Shader, TextureView
+	from .draw_layout import DrawBatch
+	from .draw_resources import _ArrayTemplate
 
 
 @dataclass
@@ -30,16 +39,16 @@ class RenderShader:
 	"""Named passes; grouping and visibility do not prescribe pass names."""
 	passes: dict[str, ShaderPass]
 
-	def __post_init__(self):
+	def __post_init__(self) -> None:
 		self.passes = {name: spec for name, spec in self.passes.items() if spec is not None}
 		if not self.passes: raise ValueError("Expected at least one shader pass")
 		if any(not isinstance(name, str) or not name for name in self.passes):
 			raise ValueError("Pass names must be nonempty strings")
 
-	def __getitem__(self, name): return self.passes[name]
+	def __getitem__(self, name: str) -> ShaderPass: return self.passes[name]
 
 
-def standard_render_shader(shader, uniform_buffer=None, vertex_entry="vertex", fragment_entry="fragment"):
+def standard_render_shader(shader: Shader, uniform_buffer: GpuBuffer | None=None, vertex_entry: str="vertex", fragment_entry: str="fragment") -> RenderShader:
 	"""Build matching depth/main passes sharing one uniform buffer and binding."""
 	uniform_buffer = uniform_buffer if uniform_buffer is not None else shader.uniform_buffer()
 	bindings = (shader.bind_group(0, uniforms=uniform_buffer),)
@@ -59,40 +68,41 @@ class DrawBatches:
 	The default culler accepts InstanceData.MESH_INSTANCE_DTYPE. Custom layouts
 	require matching shaders or caller-produced Visibility.write() data.
 	"""
-	def __init__(self, instance_dtype, *, cull_shader=None):
+	def __init__(self, instance_dtype: DTypeLike, *, cull_shader: Shader | None=None) -> None:
 		self._resources = _DrawResources(instance_dtype)
 		self._cull_shader = cull_shader if cull_shader is not None else default_cull_shader()
+		self.shaders: dict[int, RenderShader]
 		self.shaders = {}
 		self._instance_version = 0
 
 	@property
-	def buffers(self):
-		return {name: self._resources.buffers[name] for name in ("instances", "mesh_metadata", "lod_distances", "workgroups")}
+	def buffers(self) -> dict[str, GpuBuffer]:
+		return {name: cast(GpuBuffer, self._resources.buffers[name]) for name in ("instances", "mesh_metadata", "lod_distances", "workgroups")}
 
 	@property
-	def entities(self): return self._resources.entities
+	def entities(self) -> np.ndarray: return self._resources.entities
 
 	@property
-	def instance_order(self): return self._resources.instance_order
+	def instance_order(self) -> np.ndarray: return self._resources.instance_order
 
 	@property
-	def instance_dtype(self): return self._resources.instance_dtype
+	def instance_dtype(self) -> np.dtype: return self._resources.instance_dtype
 
 	@property
-	def instance_order_version(self): return self._resources.instance_order_version + self._instance_version
+	def instance_order_version(self) -> int: return self._resources.instance_order_version + self._instance_version
 
 	@property
-	def draw_batches(self): return self._resources.draw_batches
+	def draw_batches(self) -> list[DrawBatch]: return self._resources.draw_batches
 
 	@property
-	def layout_token(self): return self._resources.resource_version, self.instance_order_version
+	def layout_token(self) -> tuple[int, int]: return self._resources.resource_version, self.instance_order_version
 
-	def register_mesh(self, mesh_id, mesh, bounds=None): self._resources.register_mesh(mesh_id, mesh, bounds)
-	def register_lod_group(self, group_id, lod_ids, distances=()): self._resources.register_lod_group(group_id, lod_ids, distances)
-	def unregister_lod_group(self, group_id): self._resources.unregister_lod_group(group_id)
-	def unregister_mesh(self, mesh_id): self._resources.unregister_mesh(mesh_id)
+	def register_mesh(self, mesh_id: int, mesh: Mesh, bounds: tuple[ArrayLike, ArrayLike] | None=None) -> None: self._resources.register_mesh(mesh_id, mesh, bounds)
+	def register_lod_group(self, group_id: int, lod_ids: Sequence[int | None], distances: Sequence[float]=()) -> None: self._resources.register_lod_group(group_id, lod_ids, distances)
+	def unregister_lod_group(self, group_id: int) -> None: self._resources.unregister_lod_group(group_id)
+	def unregister_mesh(self, mesh_id: int) -> None: self._resources.unregister_mesh(mesh_id)
 
-	def register_shader(self, shader_id, shader):
+	def register_shader(self, shader_id: int, shader: RenderShader) -> None:
 		if not isinstance(shader, RenderShader): raise TypeError("Expected RenderShader with named passes")
 		for spec in shader.passes.values():
 			if not isinstance(spec.pipeline, RenderPipeline): raise TypeError("Expected a RenderPipeline")
@@ -101,7 +111,7 @@ class DrawBatches:
 		self._resources.register_shader(shader_id)
 		self.shaders[shader_id] = shader
 
-	def sync(self, lod_ids, shader_ids, *, labels=None):
+	def sync(self, lod_ids: ArrayLike, shader_ids: ArrayLike, *, labels: ArrayLike | None=None) -> bool:
 		lod_ids, shader_ids = np.asarray(lod_ids), np.asarray(shader_ids)
 		if lod_ids.ndim != 1 or shader_ids.ndim != 1: raise ValueError("Expected one-dimensional grouping keys")
 		labels = np.arange(len(lod_ids), dtype=np.uint64) if labels is None else np.asarray(labels)
@@ -109,14 +119,14 @@ class DrawBatches:
 		if changed: RenderContext.record_stat("regroup_calls")
 		return changed
 
-	def invalidate_instances(self): self._instance_version += 1
-	def sync_resources(self): self._resources.sync_resources()
-	def write_instances(self, values): self._resources.write_instances(values)
-	def write_instance_fields(self, **fields): self._resources.write_instance_fields(**fields)
+	def invalidate_instances(self) -> None: self._instance_version += 1
+	def sync_resources(self) -> None: self._resources.sync_resources()
+	def write_instances(self, values: np.ndarray) -> None: self._resources.write_instances(values)
+	def write_instance_fields(self, **fields: ArrayLike) -> None: self._resources.write_instance_fields(**fields)
 
-	def create_visibility(self, *, cull_shader=None): return Visibility(self, cull_shader=cull_shader)
+	def create_visibility(self, *, cull_shader: Shader | None=None) -> Visibility: return Visibility(self, cull_shader=cull_shader)
 
-	def draw(self, render, visibility, pass_name="main", *, pass_override=None, instance_binding=None):
+	def draw(self, render: RenderPass, visibility: Visibility, pass_name: str="main", *, pass_override: ShaderPass | None=None, instance_binding: Callable[[DrawBatches, Visibility, ShaderPass], BindGroup] | None=None) -> None:
 		visibility.check(self)
 		if self.draw_batches: RenderContext.require_features(("indirect-first-instance",))
 		commands = visibility.commands
@@ -136,12 +146,14 @@ class DrawBatches:
 
 class Visibility:
 	"""One view's culling state and indirect outputs. Shared data stays in DrawBatches."""
-	def __init__(self, draws, *, cull_shader=None):
+	def __init__(self, draws: DrawBatches, *, cull_shader: Shader | None=None) -> None:
+		self._token: tuple[int, int] | None
+		self._stage: str | None
 		self.draws, self._token, self._stage = draws, None, None
 		self._view = _CullingState(cull_shader or draws._cull_shader, draws.buffers)
 		self.sync()
 
-	def sync(self):
+	def sync(self) -> bool:
 		self.draws.sync_resources()
 		if self._token == self.draws.layout_token: return False
 		source = self.draws._resources
@@ -151,9 +163,9 @@ class Visibility:
 		for name in ("frustum_candidates", "prepass_visible_instances", "main_visible_instances", "batches", "prepass_draw_cmd", "main_draw_cmd"):
 			if name in ("frustum_candidates", "prepass_visible_instances", "main_visible_instances"):
 				self._view.buffers[name] = GpuBuffer(None, BufferUsage.STORAGE | BufferUsage.COPY_DST,
-					dtype=source.buffers[name].content.dtype, count=source.buffers[name].content.size)
+					dtype=cast(np.ndarray, source.buffers[name].content).dtype, count=cast(np.ndarray, source.buffers[name].content).size)
 			else:
-				content = source.buffers[name].content.copy()
+				content = cast(np.ndarray, source.buffers[name].content).copy()
 				if name in self._view.buffers: self._view.buffers[name].write(content)
 				else:
 					usage = BufferUsage.STORAGE | BufferUsage.COPY_DST
@@ -167,21 +179,21 @@ class Visibility:
 		return True
 
 	@property
-	def commands(self):
+	def commands(self) -> GpuBuffer:
 		self.check(self.draws)
 		return self._view.buffers[f"{self._stage}_draw_cmd"]
 
 	@property
-	def visible_instances(self):
+	def visible_instances(self) -> GpuBuffer:
 		self.check(self.draws)
 		return self._view.buffers[f"{self._stage}_visible_instances"]
 
-	def check(self, draws):
+	def check(self, draws: DrawBatches) -> None:
 		if draws is not self.draws: raise ValueError("Visibility belongs to a different draw list")
 		if self._token != draws.layout_token: raise RuntimeError("Visibility is stale; prepare it again after regrouping")
 		if self._stage is None: raise RuntimeError("Prepare visibility before drawing")
 
-	def write(self, visible_instances, commands):
+	def write(self, visible_instances: ArrayLike, commands: ArrayLike) -> None:
 		"""Accept caller-produced visibility/indirect records in packed instance order."""
 		self.sync()
 		visible_instances, commands = np.asarray(visible_instances), np.asarray(commands)
@@ -198,11 +210,11 @@ class Visibility:
 		self._view.buffers["main_draw_cmd"].write(commands)
 		self._stage = "main"
 
-	def all_visible(self, *, lod=0):
+	def all_visible(self, *, lod: int=0) -> Self:
 		"""CPU/direct path: select one LoD per source group without running a culler."""
 		RenderContext.record_stat("direct_visibility_calls")
 		self.sync()
-		commands = self._view.buffers["main_draw_cmd"].content.copy()
+		commands = cast(np.ndarray, self._view.buffers["main_draw_cmd"].content).copy()
 		commands["instance_count"] = 0
 		indices = []
 		instance_offset = 0
@@ -210,7 +222,7 @@ class Visibility:
 			group = self.draws._resources.lod_groups[batch.lod_group_id]
 			if not 0 <= lod < len(group.lod_ids): raise ValueError("LoD is outside a registered group")
 			if group.lod_ids[lod] is None: continue
-			command_id = int(self._view.buffers["batches"].content[i]["command_offset"]) + lod
+			command_id = int(cast(np.ndarray, self._view.buffers["batches"].content)[i]["command_offset"]) + lod
 			commands[command_id]["first_instance"] = instance_offset
 			commands[command_id]["instance_count"] = batch.count
 			indices.append(np.arange(batch.offset, batch.offset + batch.count, dtype=np.uint32))
@@ -220,7 +232,7 @@ class Visibility:
 
 
 class FrustumCuller:
-	def record(self, commands, visibility, *, camera_position, view_projection, fovy_deg=90.0):
+	def record(self, commands: CommandContext, visibility: Visibility, *, camera_position: ArrayLike, view_projection: np.ndarray, fovy_deg: float=90.0) -> Visibility:
 		"""Use vertical FoV for LoD; 90 degrees preserves registered switch distances."""
 		RenderContext.record_stat("frustum_visibility_calls")
 		if visibility._stage == "main": visibility._token = None
@@ -235,7 +247,7 @@ class FrustumCuller:
 
 
 class HiZCuller:
-	def record(self, commands, visibility, *, hzb_view):
+	def record(self, commands: CommandContext, visibility: Visibility, *, hzb_view: TextureView) -> Visibility:
 		RenderContext.record_stat("hiz_visibility_calls")
 		visibility.check(visibility.draws)
 		if visibility._stage != "prepass": raise RuntimeError("Record frustum visibility before Hi-Z culling")

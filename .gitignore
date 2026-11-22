@@ -4,6 +4,7 @@
 
 # mypy
 *.pyd
+.mypy_cache/
 
 # nuitka & mypyc
 build/*

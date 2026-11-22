@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 
@@ -32,7 +33,7 @@ class Primitive:
 	stable_id: int
 
 
-def load_transparency_scene(path: str | Path, *, mask_materials=()):
+def load_transparency_scene(path: str | Path, *, mask_materials: Iterable[str]=()) -> tuple[list[Primitive], np.ndarray, list[np.ndarray], np.ndarray]:
 	"""Load static glTF into raster primitives, GPU material records and images.
 
 	Returns (primitives, materials, images, shading_vertices), packed for the

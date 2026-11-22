@@ -3,21 +3,32 @@
 The caller owns geometry, camera, command recording, output and submission.
 No window, asset file, ECS world, or ImGui context is created by this module.
 """
+from __future__ import annotations
+
+from collections.abc import Mapping
 from dataclasses import dataclass, asdict
 from operator import index
 from pathlib import Path
-from collections.abc import Mapping
+from typing import cast, Annotated, Any, Callable, Sequence, TYPE_CHECKING
 
-import numpy as np
 from numpy.typing import ArrayLike, NDArray
+import numpy as np
 
-from .pass_settings import AmbientOcclusionSettings
 from ..DrawBatches import RenderShader, ShaderPass
-from ..RenderContext import BindGroup, BufferUsage, GpuBuffer, ComputePipeline, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
-from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
-from .TextureProcessing import get_default_blue_noise
 from ..Materials.material_layout import material_pipeline_layout
+from ..RenderContext import BindGroup, BufferUsage, GpuBuffer, ComputePipeline, RenderContext, RenderPipeline, Sampler, Shader, Texture, TextureUsage
+from .pass_settings import AmbientOcclusionSettings
 from .settings_validation import checked_dataclass, float_range
+from .TextureProcessing import get_default_blue_noise
+from .TransparencyData import MATERIAL_DTYPE, SHADING_VERTEX_DTYPE, VERTEX_DTYPE
+
+if TYPE_CHECKING:
+	from ..Materials.core import MaterialLibrary
+
+
+if TYPE_CHECKING:
+	from ..Math import Camera
+	from ..RenderContext import BindGroupLayout, ColorAttachment, CommandContext, RenderPass, TextureView, PipelineLayout
 
 
 SHADERS = Path(__file__).resolve().parents[1] / "shaders"
@@ -29,10 +40,10 @@ MSAA_SAMPLE_COUNTS = (1, 4)
 class GrazingFade:
 	"""BLEND opacity and MASK coverage fade by geometric angle, 0 face-on to 90 edge-on."""
 	enabled: bool = True
-	start_angle: float_range(0, 90) = 83.0
-	end_angle: float_range(0, 90) = 86.0
+	start_angle: Annotated[float, float_range(0, 90).__metadata__[0]] = 83.0
+	end_angle: Annotated[float, float_range(0, 90).__metadata__[0]] = 86.0
 
-	def __post_init__(self):
+	def __post_init__(self) -> None:
 		if not (self.start_angle < self.end_angle and np.float32(self.start_angle) < np.float32(self.end_angle)):
 			raise ValueError("Grazing fade angles must satisfy 0 <= start_angle < end_angle <= 90 degrees")
 
@@ -76,18 +87,30 @@ class TransparencyPass:
 	custom shading, opacity and matched raster/deferred vertex deformation.
 	"""
 
-	def __init__(self, *, materials, base_textures, vertices, blue_noise=None,
-		material_sampler=None, target_format=None, noise_scale=1.0, grazing_fade=None, sample_count=1,
-		opaque_color=None, opaque_depth=None, material_source=None, material_library=None, frame_fields=None, gpu_skinning=False,
-		kawase_passes=1, banded_proxy=False, banded_subset=False, banded_tail_msaa=False):
+	def __init__(self, *, materials: GpuBuffer, base_textures: Texture | TextureView, vertices: GpuBuffer, blue_noise: Texture | None=None,
+		material_sampler: Sampler | None=None, target_format: str | None=None, noise_scale: float=1.0, grazing_fade: GrazingFade | None=None, sample_count: int=1,
+		opaque_color: Texture | None=None, opaque_depth: Texture | None=None, material_source: str | None=None, material_library: MaterialLibrary | None=None, frame_fields: Mapping[str, tuple[str, Any]] | None=None, gpu_skinning: bool=False,
+		kawase_passes: int=1, banded_proxy: bool=False, banded_subset: bool=False, banded_tail_msaa: bool=False) -> None:
 		if any(type(value) is not bool for value in (banded_proxy, banded_subset, banded_tail_msaa)): raise ValueError("Banded options must be boolean")
 		if type(kawase_passes) is not int or not 0 <= kawase_passes <= 8: raise ValueError("kawase_passes must be an integer from 0 through 8")
 		if type(sample_count) is not int or sample_count not in MSAA_SAMPLE_COUNTS: raise ValueError("Transparency sample_count must be 1 or 4")
 		self.banded_proxy, self.banded_subset, self.banded_tail_msaa = banded_proxy, banded_subset, banded_tail_msaa
 		self.kawase_passes = kawase_passes
+		self.main_color: Texture
+		self.depth: Texture
+		self.transmittance: Texture
+		self.winner_color: Texture
+		self.reconstruction_color: Texture
+		self.nearest_payload: Texture
+		self.nearest_alpha: Texture
+		self.nearest_depth: Texture
+		self.nearest_color: Texture
+		self.band_counts: GpuBuffer | None
+		self.band_payloads: Texture | None
 		self.band_counts = self.band_payloads = None
+		self.kawase_stages: list[tuple[str, BindGroup, BindGroup, tuple[int, int]]]
 		self.kawase_stages = []
-		self.target_format = target_format or getattr(RenderContext, "presentation_format", "rgba8unorm")
+		self.target_format: str = target_format or cast(str, getattr(RenderContext, "presentation_format", "rgba8unorm"))
 		self.sample_count = sample_count
 		self._material_source = material_source
 		self._material_library = material_library
@@ -105,23 +128,31 @@ class TransparencyPass:
 			self.frame_fields[name] = (spec[0], spec[1])
 		self._frame_types = {name: spec[0] for name, spec in self.frame_fields.items()}
 		self.ambient_occlusion_settings = AmbientOcclusionSettings()
+		self._shader_sets: dict[Any, tuple[Shader, Shader, Shader]]
 		self._shader_sets = {}
+		self._geometry_shaders: dict[Any, Shader]
 		self._geometry_shaders = {}
+		self._layout_cache: dict[Any, BindGroupLayout]
+		self._pipeline_layouts: dict[Any, PipelineLayout]
 		self._layout_cache, self._pipeline_layouts = {}, {}
+		self._nearest_shaders: dict[int, Shader]
 		self._nearest_shaders = {}
 		self._activate_shaders(sample_count)
 		self.uniforms = self.shader.uniform_buffer("frame")
 		for name, (_, default) in self.frame_fields.items():
 			self.uniforms.content[name] = self._frame_value(name, default)
 		self.lighting_uniforms = self.shader.uniform_buffer("lighting") if "lighting" in self.shader.info.uniforms else None
-		if self.lighting_uniforms is not None and "light_dir" in self.lighting_uniforms.dtype.names:
+		if self.lighting_uniforms is not None and "light_dir" in (self.lighting_uniforms.dtype.names or ()):
 			self.lighting_uniforms.content["light_dir"] = (0.4, 0.8, 0.3, 0)
 			self.lighting_uniforms.upload_changed()
 		if blue_noise is None:
 			blue_noise = get_default_blue_noise()
 		self.noise = blue_noise
+		self._transparent_geometries: list[GeometryPasses]
 		self._transparent_geometries = []
+		self._geometries: list[GeometryPasses]
 		self._geometries = []
+		self.size: tuple[int, int] | None
 		self.size = None
 		self.set_noise_scale(noise_scale)
 		self.set_grazing_fade(grazing_fade if grazing_fade is not None else GrazingFade())
@@ -134,12 +165,14 @@ class TransparencyPass:
 		self.shared = dict(materials=materials, base_textures=base_textures,
 			material_sampler=material_sampler or Sampler(address_mode_u="repeat", address_mode_v="repeat", mag_filter="linear", min_filter="linear", mipmap_filter="linear"))
 		self.shade_frame = self._frame_group(self.shading_shader)
+		self._opaque_inputs: tuple[Texture, Texture] | None
 		self._opaque_inputs = None
+		self._targets: TransparencyTargets | None
 		self._targets = None
 		if opaque_color is not None or opaque_depth is not None:
 			self.set_opaque_inputs(opaque_color, opaque_depth)
 
-	def _geometry_shader(self, count):
+	def _geometry_shader(self, count: int) -> Shader:
 		key = (count, self._banded_flags)
 		if key not in self._geometry_shaders:
 			self._geometry_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"),
@@ -149,24 +182,24 @@ class TransparencyPass:
 
 
 	@property
-	def depth_shader(self):
+	def depth_shader(self) -> Shader:
 		"""The auxiliary 1x geometry module is created only when requested."""
 		return self._geometry_shader(1)
 
-	def _frame_group(self, shader):
+	def _frame_group(self, shader: Shader) -> BindGroup:
 		if "frame" in shader.info.uniforms and shader.info.uniforms["frame"].dtype != self.uniforms.dtype:
 			raise ValueError("Shader Frame uniform layout differs from the configured frame_fields")
-		resources = dict(frame=self.uniforms)
+		resources: dict[str, Any] = dict(frame=self.uniforms)
 		if "lighting" in shader.info.bindings: resources["lighting"] = self.lighting_uniforms
 		return shader.bind_group(0, **resources)
 
-	def _pipeline_layout(self, shader, *entries):
+	def _pipeline_layout(self, shader: Shader, *entries: str | None) -> PipelineLayout:
 		key = (shader, entries)
 		if key not in self._pipeline_layouts:
 			self._pipeline_layouts[key] = material_pipeline_layout(shader, entries, self._layout_cache)
 		return self._pipeline_layouts[key]
 
-	def _shader_set(self, count):
+	def _shader_set(self, count: int) -> tuple[Shader, Shader, Shader]:
 		key = (count, self._banded_flags, self.ambient_occlusion_settings)
 		if key not in self._shader_sets:
 			params = {**self._banded_params(count), "material_source": self._material_source,
@@ -180,7 +213,7 @@ class TransparencyPass:
 			)
 		return self._shader_sets[key]
 
-	def _activate_shaders(self, count):
+	def _activate_shaders(self, count: int) -> None:
 		self.shader, self.shading_shader, self.compose_shader = self._shader_set(count)
 		self.tail_shader = self.shader
 		if count > 1 and not self.banded_tail_msaa:
@@ -191,7 +224,7 @@ class TransparencyPass:
 				self._geometry_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_geometry.shader"), params=params)
 			self.tail_shader = self._geometry_shaders[key]
 
-	def _create_pipelines(self):
+	def _create_pipelines(self) -> None:
 		key = self.sample_count
 		if key not in self._nearest_shaders:
 			self._nearest_shaders[key] = Shader(filepath=str(SHADERS / "stochastic_shade.shader"),
@@ -205,25 +238,25 @@ class TransparencyPass:
 
 
 	@property
-	def _banded_flags(self):
+	def _banded_flags(self) -> tuple[bool, bool, bool]:
 		return self.banded_proxy, self.banded_subset, self.banded_tail_msaa
 
-	def _banded_params(self, samples):
+	def _banded_params(self, samples: int) -> dict[str, Any]:
 		mixed = samples > 1 and not self.banded_tail_msaa
 		return dict(banded_proxy=self.banded_proxy, banded_subset=self.banded_subset,
 			banded_mixed=mixed, banded_statistics=not mixed, guide_sample_count=samples)
 
 
 	@property
-	def tail_sample_count(self):
+	def tail_sample_count(self) -> int:
 		return 1 if not self.banded_tail_msaa else self.sample_count
 
 
 	@property
-	def mixed_tail(self):
+	def mixed_tail(self) -> bool:
 		return self.tail_sample_count != self.sample_count
 
-	def set_banded_options(self, *, proxy=None, subset=None, tail_msaa=None):
+	def set_banded_options(self, *, proxy: bool | None=None, subset: bool | None=None, tail_msaa: bool | None=None) -> bool:
 		"""Configure proxy residuals, one selected pixel per 2x2 block, and tail MSAA."""
 		values = tuple(current if value is None else value for current, value in zip(self._banded_flags, (proxy, subset, tail_msaa)))
 		if any(type(value) is not bool for value in values): raise ValueError("Banded options must be boolean")
@@ -233,7 +266,7 @@ class TransparencyPass:
 		self._rebuild_geometry()
 		return True
 
-	def set_kawase_passes(self, count):
+	def set_kawase_passes(self, count: int) -> bool:
 		"""Set 0-8 down/up pairs for the banded tail."""
 		if type(count) is not int or not 0 <= count <= 8: raise ValueError("kawase_passes must be an integer from 0 through 8")
 		if count == self.kawase_passes: return False
@@ -243,7 +276,7 @@ class TransparencyPass:
 			for layout in self._layout_cache.values(): layout.clear_cache()
 		return True
 
-	def set_sample_count(self, count):
+	def set_sample_count(self, count: int) -> bool:
 		"""Switch 1x/4x MSAA, preserving geometry registration and live settings."""
 		if type(count) is not int or count not in MSAA_SAMPLE_COUNTS:
 			raise ValueError("Transparency sample_count must be 1 or 4")
@@ -257,13 +290,14 @@ class TransparencyPass:
 		self._rebuild_geometry()
 		return True
 
-	def _rebuild_geometry(self, *, preserve_targets=False):
+	def _rebuild_geometry(self, *, preserve_targets: bool=False) -> None:
 		size, geometries = self.size, self._geometries
 		self._create_pipelines()
 		targets = self._targets if preserve_targets and size is not None else None
 		self.size = None
 		self._geometries, self._transparent_geometries = [], []
 		for geometry in geometries:
+			assert geometry.creation_args is not None
 			rebuilt = self.create_geometry_passes(**geometry.creation_args)
 			geometry.render_shader.passes.clear()
 			geometry.render_shader.passes.update(rebuilt.render_shader.passes)
@@ -276,8 +310,8 @@ class TransparencyPass:
 		if size is not None:
 			self.resize(size, targets=targets)
 
-	def create_geometry_passes(self, metadata, *, transparent, instances,
-		geometry_resources=None, shading_resources=None, geometry_bindings=(), shading_bindings=()):
+	def create_geometry_passes(self, metadata: GpuBuffer, *, transparent: bool, instances: GpuBuffer,
+		geometry_resources: Mapping[str, Any] | None=None, shading_resources: Mapping[str, Any] | None=None, geometry_bindings: Sequence[BindGroup]=(), shading_bindings: Sequence[BindGroup]=()) -> GeometryPasses:
 		"""Build DrawBatches passes bound to caller-owned per-instance metadata."""
 		if metadata.binding_size % 16 or not metadata.binding_size: raise ValueError("Metadata must contain nonempty vec4u records")
 		if instances.binding_size % 32 or instances.binding_size // 32 < metadata.binding_size // 16: raise ValueError("Supply an instance transform for every metadata record")
@@ -316,9 +350,10 @@ class TransparencyPass:
 			if self.size is not None: self._bind_targets(geometry)
 		return geometry
 
-	def _bind_targets(self, geometry):
+	def _bind_targets(self, geometry: GeometryPasses) -> None:
+		assert geometry.nearest is not None and self.band_payloads is not None
 		bindings = tuple(b for b in geometry.render_shader["transmittance"].bindings if b.group != 3)
-		nearest = dict(nearest_ids=self.nearest_payload)
+		nearest: dict[str, Any] = dict(nearest_ids=self.nearest_payload)
 		if self.sample_count > 1: nearest["nearest_ids_extra"] = self.nearest_extra
 		geometry.nearest.bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth),)
 		geometry.render_shader["transmittance"].bindings = bindings + (self.shader.bind_group(3, opaque_depth=self.depth, band_counts=self.band_counts, **nearest),)
@@ -326,11 +361,11 @@ class TransparencyPass:
 		geometry.render_shader["bands"].bindings = tail_bindings + (self.tail_shader.bind_group(3, opaque_depth=self.depth, blue_noise=self.noise, band_counts=self.band_counts, band_payloads=self.band_payloads.view(dimension="2d-array"), **nearest),)
 		if self.mixed_tail: geometry.render_shader["tail_statistics"].bindings = tail_bindings + (self.tail_shader.bind_group(3, opaque_depth=self.depth, band_counts=self.band_counts, **nearest),)
 
-	def _update_compose_settings(self):
+	def _update_compose_settings(self) -> None:
 		self.compose_uniforms.content["options"] = (DEBUG_VIEWS.index(self.debug_view), int(self.ambient_occlusion), 0, 0)
 		self.compose_uniforms.upload_changed()
 
-	def set_ambient_occlusion_settings(self, settings):
+	def set_ambient_occlusion_settings(self, settings: AmbientOcclusionSettings) -> bool:
 		"""Set the composed ambient occlusion sampling and strength controls."""
 		if not isinstance(settings, AmbientOcclusionSettings): raise TypeError("Expected AmbientOcclusionSettings")
 		if settings == self.ambient_occlusion_settings: return False
@@ -339,7 +374,7 @@ class TransparencyPass:
 		self._rebuild_geometry(preserve_targets=True)
 		return True
 
-	def set_ambient_occlusion(self, enabled):
+	def set_ambient_occlusion(self, enabled: bool) -> bool:
 		"""Enable screen-space ambient occlusion in the composed output."""
 		if type(enabled) is not bool: raise ValueError("Ambient occlusion enabled must be boolean")
 		if enabled == self.ambient_occlusion: return False
@@ -349,11 +384,11 @@ class TransparencyPass:
 
 
 	@property
-	def effective_noise_scale(self):
+	def effective_noise_scale(self) -> float:
 		"""Approximate cell width after MSAA sample-density adjustment."""
 		return self.noise_scale / self.sample_count**0.5
 
-	def set_noise_scale(self, pixels):
+	def set_noise_scale(self, pixels: float) -> None:
 		"""Set approximate 1x screen noise-cell width in pixels (default 1).
 
 		Larger cells trade coarser grain for fewer threshold changes under motion.
@@ -366,13 +401,13 @@ class TransparencyPass:
 		self.uniforms.content["clip"][..., 2] = self.effective_noise_scale
 		self.uniforms.upload_changed()
 
-	def set_grazing_fade(self, options):
+	def set_grazing_fade(self, options: GrazingFade) -> None:
 		"""Change BLEND opacity and MASK coverage fade without rebuilding GPU resources."""
 		self.uniforms.content["grazing"] = (options.start_angle, options.end_angle, options.enabled, 0)
 		self.uniforms.upload_changed()
 		self.grazing_fade = options
 
-	def set_debug_view(self, view):
+	def set_debug_view(self, view: str) -> None:
 		"""Inspect transmission, raw tail winners, reconstruction or the nearest layer."""
 		if view not in DEBUG_VIEWS: raise ValueError(f"Debug view must be one of {DEBUG_VIEWS}")
 		self.debug_view = view
@@ -380,19 +415,20 @@ class TransparencyPass:
 
 
 	@property
-	def has_external_opaque_inputs(self):
+	def has_external_opaque_inputs(self) -> bool:
 		return self._opaque_inputs is not None
 
-	def set_opaque_inputs(self, color, depth):
+	def set_opaque_inputs(self, color: Texture | None, depth: Texture | None) -> None:
 		"""Use another renderer's color/depth; pass both as None to restore defaults."""
 		if (color is None) != (depth is None): raise ValueError("Supply both opaque color and depth")
 		if color is not None:
+			assert depth is not None
 			if color.size != depth.size or not depth.format.startswith("depth"):
 				raise ValueError("Opaque inputs require matching dimensions and a depth format")
 			for texture in (color, depth):
 				if texture.sample_count != self.sample_count or not texture.usage & TextureUsage.TEXTURE_BINDING:
 					raise ValueError("Opaque inputs must match sample_count and have TEXTURE_BINDING")
-		self._opaque_inputs = None if color is None else (color, depth)
+		self._opaque_inputs = None if color is None else (color, cast(Texture, depth))
 		self.size = None
 
 	def resize(self, size: tuple[int, int], *, targets: TransparencyTargets | None = None) -> bool:
@@ -400,7 +436,7 @@ class TransparencyPass:
 		if len(size) != 2:
 			raise ValueError("Expected transparency target width and height")
 		try:
-			size = tuple(index(value) for value in size)
+			size = (index(size[0]), index(size[1]))
 		except TypeError:
 			raise ValueError("Expected integer transparency target dimensions") from None
 		if size[0] <= 0 or size[1] <= 0:
@@ -432,7 +468,7 @@ class TransparencyPass:
 		for name, texture in values.items(): setattr(self, name, texture)
 		self.nearest_extra = targets.nearest_extra
 		self._targets = targets
-		resources = dict(winners=self.nearest_payload, winner_color=self.nearest_color.view(dimension="2d-array") if self.sample_count > 1 else self.nearest_color)
+		resources: dict[str, Any] = dict(winners=self.nearest_payload, winner_color=self.nearest_color.view(dimension="2d-array") if self.sample_count > 1 else self.nearest_color)
 		if self.sample_count > 1: resources["winners_extra"] = self.nearest_extra
 		self.nearest_shade_targets = self.nearest_shading_shader.bind_group(1, **resources)
 		self._setup_banded(size)
@@ -442,12 +478,12 @@ class TransparencyPass:
 		for layout in self._layout_cache.values(): layout.clear_cache()
 		return True
 
-	def _setup_banded(self, size):
+	def _setup_banded(self, size: tuple[int, int]) -> None:
 		count = size[0]*size[1]*self.tail_sample_count*2
 		if count*4 > RenderContext.device.limits["max-storage-buffer-binding-size"]:
 			raise ValueError("Banded tail counters exceed max-storage-buffer-binding-size at this resolution/sample count")
 		self.band_counts = GpuBuffer(None, BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC, dtype=np.uint32, count=count, label="band_counts")
-		payload_size = tuple((value+1)//2 for value in size) if self.banded_subset else size
+		payload_size = ((size[0]+1)//2, (size[1]+1)//2) if self.banded_subset else size
 		self.band_payloads = Texture((*payload_size, self.tail_sample_count*2), format="rgba32uint", usage=TextureUsage.STORAGE_BINDING | TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_SRC, label="band_payloads")
 		self.band_proxy = Texture(size, format="rgba16float", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING, sample_count=self.tail_sample_count, label="band_proxy") if self.banded_proxy or self.mixed_tail else None
 		self.band_clear_shader = Shader(filepath=str(SHADERS / "banded_clear.shader"))
@@ -466,13 +502,14 @@ class TransparencyPass:
 			reconstructed=self.reconstruction_color.view(dimension="2d-array") if self.sample_count > 1 else self.reconstruction_color)
 		self._setup_kawase()
 
-	def _setup_kawase(self):
+	def _setup_kawase(self) -> None:
 		self.kawase_shader = Shader(filepath=str(SHADERS / "stochastic_kawase.shader"), params={"sample_count": self.tail_sample_count, "banded_proxy": self.banded_proxy, "banded_mixed": self.mixed_tail})
 		self.kawase_pipelines = {entry: ComputePipeline(self.kawase_shader, entry=entry, layout=self._pipeline_layout(self.kawase_shader, entry)) for entry in ("down", "up", "finish")}
+		self.kawase_textures: list[Texture]
 		self.kawase_stages, self.kawase_textures = [], []
 		self.kawase_dummy = Texture((1, 1, self.tail_sample_count), format="rgba16float", usage=TextureUsage.STORAGE_BINDING)
-		def stage(entry, source, destination):
-			resources = dict(source_pair=source.view(dimension="2d-array"))
+		def stage(entry: str, source: Texture, destination: Texture) -> None:
+			resources: dict[str, Any] = dict(source_pair=source.view(dimension="2d-array"))
 			if not self.mixed_tail: resources["transmission"] = self.transmittance
 			if self.banded_proxy: resources.update(band_proxy=self.band_proxy, band_counts=self.band_counts, local_pair=self.winner_color.view(dimension="2d-array"))
 			inputs = self.kawase_shader.bind_group(0, **resources)
@@ -481,7 +518,7 @@ class TransparencyPass:
 			resources = dict(output_pair=pair.view(dimension="2d-array"), output_color=color.view(dimension="2d-array") if self.tail_sample_count > 1 else color.view(dimension="2d"))
 			outputs = self.kawase_shader.bind_group(1, **resources)
 			self.kawase_stages.append((entry, inputs, outputs, destination.size[:2]))
-		def texture(size):
+		def texture(size: tuple[int, int]) -> Texture:
 			result = Texture((*size, self.tail_sample_count), format="rgba16float", usage=TextureUsage.TEXTURE_BINDING | TextureUsage.STORAGE_BINDING, label="kawase_pair")
 			self.kawase_textures.append(result)
 			return result
@@ -489,7 +526,7 @@ class TransparencyPass:
 		sizes = [current.size[:2]]
 		for _ in range(self.kawase_passes):
 			if sizes[-1] == (1, 1): break
-			size = tuple((value+1)//2 for value in sizes[-1])
+			size = ((sizes[-1][0]+1)//2, (sizes[-1][1]+1)//2)
 			destination = texture(size)
 			stage("down", current, destination)
 			current = destination
@@ -507,8 +544,9 @@ class TransparencyPass:
 
 
 	@staticmethod
-	def _uniform_value(buffer, name, value, kind):
+	def _uniform_value(buffer: GpuBuffer, name: str, value: Any, kind: str) -> np.ndarray:
 		"""Check one uniform field before mutating its buffer."""
+		assert buffer.dtype.fields is not None
 		field_dtype = buffer.dtype.fields[name][0]
 		dtype, shape = field_dtype.subdtype or (field_dtype, ())
 		try: supplied = np.asarray(value)
@@ -526,12 +564,12 @@ class TransparencyPass:
 			raise ValueError(f"{kind.capitalize()} field {name!r} is out of range or non-finite") from exc
 		return converted
 
-	def _frame_value(self, name, value):
+	def _frame_value(self, name: str, value: Any) -> np.ndarray:
 		return self._uniform_value(self.uniforms, name, value, "frame")
 
 	def update_frame(self, *, view: ArrayLike, projection: ArrayLike,
 		camera_position: ArrayLike, near: float, far: float,
-		frame=None, lighting=None) -> NDArray[np.float32]:
+		frame: Mapping[str, Any] | None=None, lighting: Mapping[str, Any] | None=None) -> NDArray[np.float32]:
 		"""Upload explicit camera values and return view @ projection for culling.
 
 		Matrices follow the existing row-vector convention. No camera class is
@@ -553,11 +591,12 @@ class TransparencyPass:
 		custom = {name: self._frame_value(name, value) for name, value in frame.items()}
 		if lighting is None: lighting = {}
 		if not isinstance(lighting, Mapping): raise ValueError("lighting must be a mapping of field values")
-		fields = set(self.lighting_uniforms.dtype.names) if self.lighting_uniforms is not None else set()
+		fields = set(self.lighting_uniforms.dtype.names or ()) if self.lighting_uniforms is not None else set()
 		unknown = set(lighting) - fields
 		if unknown: raise ValueError(f"Unknown lighting fields: {sorted(map(str, unknown))}")
 		light_values = {}
 		for name, value in lighting.items():
+			assert self.lighting_uniforms is not None
 			if name == "light_dir":
 				try: value = np.asarray(value)
 				except (TypeError, ValueError) as exc: raise ValueError("Invalid lighting field 'light_dir'") from exc
@@ -570,39 +609,42 @@ class TransparencyPass:
 		values.update(custom)
 		for name, value in values.items(): self.uniforms.content[name] = value
 		if light_values:
+			assert self.lighting_uniforms is not None
 			for name, value in light_values.items(): self.lighting_uniforms.content[name] = value
 			self.lighting_uniforms.upload_changed()
 		self.uniforms.upload_changed()
 		return view @ projection
 
-	def update_camera(self, camera, *, frame=None, lighting=None):
+	def update_camera(self, camera: Camera, *, frame: Mapping[str, Any] | None=None, lighting: Mapping[str, Any] | None=None) -> np.ndarray:
 		"""Convenience adapter for camera objects; update_frame accepts plain arrays."""
 		width, height = self._require_targets()
 		return self.update_frame(view=camera.view(), projection=camera.projection(width/height),
 			camera_position=camera.position, near=camera.near, far=camera.far, frame=frame, lighting=lighting)
 
-	def opaque_pass(self, commands, *, clear=(0.035, 0.05, 0.08, 1), load=False):
+	def opaque_pass(self, commands: CommandContext, *, clear: tuple[float, float, float, float]=(0.035, 0.05, 0.08, 1), load: bool=False) -> RenderPass:
 		"""Draw opaque geometry; load=True preserves existing color and depth."""
 		self._require_targets()
 		return commands.render_pass(color=self.main_color.color_attachment(clear=None if load else clear),
 			depth=self.depth.depth_attachment(clear=None if load else 1), label="1_opaque")
 
-	def nearest_pass(self, commands):
+	def nearest_pass(self, commands: CommandContext) -> RenderPass:
 		self._require_targets()
 		colors = [self.nearest_payload.color_attachment(clear=(0, 0, 0, 0)), self.nearest_alpha.color_attachment(clear=(0, 0, 0, 0))]
-		if self.sample_count > 1: colors.append(self.nearest_extra.color_attachment(clear=(0, 0, 0, 0)))
+		if self.sample_count > 1: colors.append(cast(Texture, self.nearest_extra).color_attachment(clear=(0, 0, 0, 0)))
 		return commands.render_pass(color=colors, depth=self.nearest_depth.depth_attachment(clear=1), label="2_nearest_layer")
 
-	def shade_nearest(self, commands, geometry):
+	def shade_nearest(self, commands: CommandContext, geometry: GeometryPasses) -> None:
 		width, height = self._require_targets()
 		if geometry.owner is not self: raise ValueError("Geometry passes belong to another transparency pass")
+		assert geometry.nearest_shading is not None
 		with commands.compute_pass(label="2_shade_nearest") as compute:
 			compute.set_pipeline(self.nearest_shade_pipeline)
 			for bindings in (self._frame_group(self.nearest_shading_shader), self.nearest_shade_targets, geometry.nearest_shading, *geometry.shading_bindings): compute.set_bind_group(bindings)
 			compute.dispatch((width+7)//8, (height+7)//8, self.sample_count)
 
-	def transmittance_pass(self, commands):
+	def transmittance_pass(self, commands: CommandContext) -> RenderPass:
 		self._require_targets()
+		assert self.band_payloads is not None and self.band_counts is not None
 		commands.clear_buffer(self.band_counts)
 		width, height = self.band_payloads.size[:2]
 		with commands.compute_pass(label="2_clear_bands") as compute:
@@ -610,22 +652,22 @@ class TransparencyPass:
 			compute.set_bind_group(self.band_clear_targets)
 			compute.dispatch((width+7)//8, (height+7)//8, self.tail_sample_count*2)
 		colors = [self.transmittance.color_attachment(clear=(1, 1, 1, 1))]
-		if self.banded_proxy and not self.mixed_tail: colors.append(self.band_proxy.color_attachment(clear=(0, 0, 0, 0)))
+		if self.banded_proxy and not self.mixed_tail: colors.append(cast(Texture, self.band_proxy).color_attachment(clear=(0, 0, 0, 0)))
 		return commands.render_pass(color=colors, depth=self.depth.depth_attachment(read_only=True), label="2_transmittance")
 
-	def banded_pass(self, commands):
+	def banded_pass(self, commands: CommandContext) -> RenderPass:
 		"""Allocate both banded payloads after recording transmittance once."""
 		self._require_targets()
-		if self.mixed_tail: return commands.render_pass(color=self.band_proxy.color_attachment(), label="3_banded_tail")
+		if self.mixed_tail: return commands.render_pass(color=cast(Texture, self.band_proxy).color_attachment(), label="3_banded_tail")
 		return commands.render_pass(depth=self.depth.depth_attachment(read_only=True), label="3_banded_tail")
 
-	def tail_statistics_pass(self, commands):
+	def tail_statistics_pass(self, commands: CommandContext) -> RenderPass:
 		"""Accumulate full-resolution single-sample S/Q for a mixed-sample tail."""
 		self._require_targets()
 		if not self.mixed_tail: raise RuntimeError("Separate tail statistics require mixed tail sampling")
-		return commands.render_pass(color=self.band_proxy.color_attachment(clear=(0, 0, 0, 0)), label="2_tail_statistics")
+		return commands.render_pass(color=cast(Texture, self.band_proxy).color_attachment(clear=(0, 0, 0, 0)), label="2_tail_statistics")
 
-	def shade_winner(self, commands, geometry):
+	def shade_winner(self, commands: CommandContext, geometry: GeometryPasses) -> None:
 		"""Shade both banded tail winners in one dispatch."""
 		width, height = self._require_targets()
 		if geometry.owner is not self: raise ValueError("Geometry passes belong to another transparency pass")
@@ -635,7 +677,7 @@ class TransparencyPass:
 			for bindings in (self.shade_frame, self.shade_targets, geometry.shading, *geometry.shading_bindings): compute.set_bind_group(bindings)
 			compute.dispatch((width+step-1)//step, (height+step-1)//step, self.tail_sample_count)
 
-	def compose(self, commands, output):
+	def compose(self, commands: CommandContext, output: ColorAttachment) -> None:
 		"""Reconstruct into a caller-provided ColorAttachment; does not submit."""
 		self._require_targets()
 		if output.format != self.target_format: raise ValueError("Output format must match the configured transparency target_format")
@@ -652,7 +694,7 @@ class TransparencyPass:
 			render.draw(3)
 
 
-def record_transparency(commands, transparency, geometry, draw):
+def record_transparency(commands: CommandContext, transparency: TransparencyPass, geometry: GeometryPasses, draw: Callable[[RenderPass, str], None]) -> None:
 	"""Record banded transparency using draw(render, pass_name)."""
 	with transparency.nearest_pass(commands) as render:
 		draw(render, "nearest")

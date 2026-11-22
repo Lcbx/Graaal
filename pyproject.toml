@@ -15,7 +15,7 @@ assets = ["pygltflib>=1.16", "Pillow>=10"]
 ui = ["imgui-bundle==1.92.5"]
 examples = []
 physics = ["pyjoltphysics==0.1.0a3"]
-test = ["pytest>=8.3"]
+test = ["pytest>=8.3", "mypy>=1.13"]
 
 [tool.setuptools]
 include-package-data = false
@@ -29,3 +29,9 @@ graaal = ["shaders/*.shader", "shaders/*.shaderlib", "shaders/*_LICENSE.txt", "d
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+files = ["graaal"]
+disallow_untyped_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true

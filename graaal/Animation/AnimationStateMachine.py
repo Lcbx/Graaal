@@ -1,11 +1,14 @@
 """Batched conditional transition selection for animation controllers."""
+from __future__ import annotations
 
 from operator import index
+from typing import Iterable, Sequence, SupportsIndex
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 
-def _nonnegative_integer(value, name):
+def _nonnegative_integer(value: SupportsIndex, name: str) -> int:
 	if isinstance(value, (bool, np.bool_)): raise ValueError(f"{name} must be a nonnegative integer")
 	try: result = index(value)
 	except TypeError as exc: raise ValueError(f"{name} must be a nonnegative integer") from exc
@@ -22,7 +25,7 @@ class AnimationStateMachine:
 	more (parameter, comparison, threshold) tuples. All conditions must match;
 	the first matching edge wins per instance.
 	"""
-	def __init__(self, transitions):
+	def __init__(self, transitions: Iterable[tuple[int, int, Sequence[tuple[int, str, float]], float]]) -> None:
 		operations = {"<": np.less, "<=": np.less_equal, ">": np.greater, ">=": np.greater_equal, "==": np.equal, "!=": np.not_equal}
 		compiled = []
 		for edge in transitions:
@@ -46,7 +49,7 @@ class AnimationStateMachine:
 			compiled.append((source, target, tuple(compiled_conditions), duration))
 		self._transitions = tuple(compiled)
 
-	def select(self, states, parameters, transitioning):
+	def select(self, states: ArrayLike, parameters: ArrayLike, transitioning: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Return (selected, target states, durations) without changing inputs.
 
 		Existing transitions are never interrupted. For unselected rows, target is

@@ -1,19 +1,30 @@
 """CPU ragdoll pose conversion and joint springs, independent of ECS and rendering."""
+from __future__ import annotations
 
+from typing import cast, Any, Sequence, TYPE_CHECKING
+
+from numpy.typing import ArrayLike
 import numpy as np
 
-from .Math import Quaternion
 from .Animation.SkeletalAnimation import _rotations, blend_poses, model_matrices, skin_matrices
+from .Math import Quaternion
+
+if TYPE_CHECKING:
+	import pyjoltphysics as pj
 
 
-def _rigid_pose(skeleton, pose):
+if TYPE_CHECKING:
+	from .Animation.SkeletalAnimation import Skeleton
+
+
+def _rigid_pose(skeleton: Skeleton, pose: Sequence[np.ndarray]) -> np.ndarray:
 	model = model_matrices(skeleton, *pose)
 	if not np.allclose(pose[2], 1, atol=1e-6):
 		raise ValueError("ragdoll poses require unit local scale; bake scale into the skeleton and shapes")
 	return model
 
 
-def _frame(position, rotation, count):
+def _frame(position: ArrayLike, rotation: ArrayLike, count: int) -> np.ndarray:
 	position = np.array(np.broadcast_to(position, (count, 3)), dtype=np.float64, copy=True)
 	if not np.all(np.isfinite(position)): raise ValueError("frame position must be finite")
 	rotation = _rotations(np.broadcast_to(rotation, (count, 4)), (count, 4), "frame rotation")
@@ -22,7 +33,7 @@ def _frame(position, rotation, count):
 	return result
 
 
-def _joint_state(parents, orientations, angular_velocity):
+def _joint_state(parents: ArrayLike, orientations: ArrayLike, angular_velocity: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	parents = np.asarray(parents)
 	if parents.ndim != 1 or not len(parents) or parents.dtype.kind not in "iu" or parents[0] != -1 or np.any(parents[1:] < 0) or np.any(parents[1:] >= np.arange(1, len(parents))):
 		raise ValueError("parents must describe one parent-before-child tree")
@@ -38,14 +49,14 @@ def _joint_state(parents, orientations, angular_velocity):
 	return parents, turns, angular
 
 
-def _rotation_vector(error):
+def _rotation_vector(error: np.ndarray) -> np.ndarray:
 	error = np.where(error[..., 3:] < 0, -error, error)
 	sine = np.linalg.norm(error[..., :3], axis=-1, keepdims=True)
 	factor = np.divide(2 * np.arctan2(sine, error[..., 3:]), sine, out=np.full_like(sine, 2), where=sine > 1e-8)
 	return error[..., :3] * factor
 
 
-def _joint_reactions(parents, torque, limit):
+def _joint_reactions(parents: np.ndarray, torque: np.ndarray, limit: np.ndarray) -> np.ndarray:
 	length = np.linalg.norm(torque, axis=-1, keepdims=True)
 	torque = torque * np.minimum(1, np.divide(limit, length, out=np.ones_like(length), where=length > 0))
 	result = np.zeros((len(torque), len(parents), 3), dtype=np.float64)
@@ -55,7 +66,7 @@ def _joint_reactions(parents, torque, limit):
 	return result
 
 
-def joint_spring_torques(parents, orientations, angular_velocity, neutral_rotations, *, stiffness, damping, max_torque):
+def joint_spring_torques(parents: ArrayLike, orientations: ArrayLike, angular_velocity: ArrayLike, neutral_rotations: ArrayLike, *, stiffness: ArrayLike, damping: ArrayLike, max_torque: ArrayLike) -> np.ndarray:
 	"""Return bounded world-space joint spring reactions as (instances, bones, 3).
 
 	Orientations/velocities are world-space; neutral xyzw rotations are relative
@@ -78,7 +89,7 @@ def joint_spring_torques(parents, orientations, angular_velocity, neutral_rotati
 	return _joint_reactions(parents, torque, limit)
 
 
-def ragdoll_limit_parameters(settings):
+def ragdoll_limit_parameters(settings: pj.RagdollSettings) -> dict[str, np.ndarray]:
 	"""Copy authored Bone axes, bend and limits into detached soft-limit parameters.
 
 	Call once per immutable native RagdollSettings asset. No backend is imported;
@@ -88,9 +99,12 @@ def ragdoll_limit_parameters(settings):
 	bones = len(parents)
 	rotations = _rotations(settings.rest_rotations, (bones, 4), "rest rotations")
 	translations = np.asarray(settings.rest_translations, dtype=np.float64)
+	first_child: dict[int, int]
 	first_child = {}
 	for i, parent in enumerate(parents):
 		if parent >= 0: first_child.setdefault(int(parent), i)
+	axes: list[np.ndarray] | np.ndarray
+	planes: list[np.ndarray] | np.ndarray
 	axes, planes = [], []
 	for i, bone in enumerate(settings.bones):
 		if bone.twist_axis is not None: axis = np.asarray(bone.twist_axis, dtype=np.float64)
@@ -117,7 +131,7 @@ def ragdoll_limit_parameters(settings):
 	return result
 
 
-def joint_limit_torques(parents, orientations, angular_velocity, parent_frames, child_frames, *, twist, swing, margin, stiffness, damping, max_torque):
+def joint_limit_torques(parents: ArrayLike, orientations: ArrayLike, angular_velocity: ArrayLike, parent_frames: ArrayLike, child_frames: ArrayLike, *, twist: ArrayLike, swing: ArrayLike, margin: ArrayLike, stiffness: ArrayLike, damping: ArrayLike, max_torque: ArrayLike) -> np.ndarray:
 	"""Return progressive swing/twist soft-limit torques, with parent reactions.
 
 	Frames are bone-local xyzw, limits are (min, max) twist and two swing half
@@ -180,7 +194,7 @@ class RagdollAsset:
 	must coincide with the selected render joints. Shapes may have arbitrary
 	native offsets and rotations. Unit skeleton/entity scale is required.
 	"""
-	def __init__(self, skeleton, settings=None, *, bones=None, names=None, **native_settings):
+	def __init__(self, skeleton: Skeleton, settings: pj.RagdollSettings | None=None, *, bones: ArrayLike | None=None, names: Sequence[str] | None=None, **native_settings: Any) -> None:
 		import pyjoltphysics as pj
 		self.skeleton = skeleton
 		if bones is None: bones = np.arange(len(skeleton.parents))
@@ -204,7 +218,7 @@ class RagdollAsset:
 		if settings is None:
 			names = [str(int(bone)) for bone in bones] if names is None else names
 			if len(names) != len(bones): raise ValueError("names must match the physical bone count")
-			settings = pj.RagdollSettings.from_skeleton(names, self.parents, translations[0], rotations[0], **native_settings)
+			settings = pj.RagdollSettings.from_skeleton(names, cast(Sequence[int], self.parents), translations[0], rotations[0], **native_settings)
 		elif native_settings or names is not None:
 			raise ValueError("native settings and names are only used when generating fallback settings")
 		if not isinstance(settings, pj.RagdollSettings) or len(settings.bones) != len(bones):
@@ -213,7 +227,7 @@ class RagdollAsset:
 			raise ValueError("native rest joint frames must match the mapped skeleton rest pose")
 		self.settings = settings
 
-	def target_pose(self, pose):
+	def target_pose(self, pose: Sequence[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
 		"""Convert batched render-local TRS into native-parent joint targets (T, R)."""
 		model = _rigid_pose(self.skeleton, pose)[:, self.bones].astype(np.float64)
 		local = model.copy()
@@ -222,7 +236,7 @@ class RagdollAsset:
 		rotation = Quaternion.from_matrices_batch(local[..., :3, :3].reshape(-1, 3, 3)).reshape(local.shape[:2] + (4,))
 		return local[..., :3, 3].copy(), rotation
 
-	def local_pose(self, positions, orientations, base, *, position=(0, 0, 0), rotation=(0, 0, 0, 1), weight=1):
+	def local_pose(self, positions: ArrayLike, orientations: ArrayLike, base: Sequence[np.ndarray], *, position: ArrayLike=(0, 0, 0), rotation: ArrayLike=(0, 0, 0, 1), weight: ArrayLike=1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Overlay native world joint poses on animation, returning detached local TRS.
 
 		Inputs are (instances, physical bones, 3/4) and batched render-local TRS.
@@ -253,6 +267,6 @@ class RagdollAsset:
 				model[:, bone] = local if parent < 0 else model[:, parent] @ local
 		return blend_poses(self.skeleton, base, (translation, turns, scale), weight)
 
-	def skin(self, positions, orientations, base, **kwargs):
+	def skin(self, positions: ArrayLike, orientations: ArrayLike, base: Sequence[np.ndarray], **kwargs: Any) -> np.ndarray:
 		"""Produce the existing float32 (instances, render bones, 3, 4) palette."""
 		return skin_matrices(self.skeleton, model_matrices(self.skeleton, *self.local_pose(positions, orientations, base, **kwargs)))

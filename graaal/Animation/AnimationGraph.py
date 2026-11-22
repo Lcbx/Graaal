@@ -1,19 +1,23 @@
 """Headless authoring of state rules and layered pose plans, without playback."""
+from __future__ import annotations
+
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import cast, Any, Iterable
 
+from numpy.typing import ArrayLike
 import numpy as np
 
-from .AnimationStateMachine import AnimationStateMachine
 from .AnimationEvents import EventTrack
+from .AnimationStateMachine import AnimationStateMachine
 from .AnimationSync import BlendSpaceSync, SyncMapping
 from .PoseTasks import PoseOp, PosePlan
 from .SkeletalAnimation import Clip, Skeleton, blend_space_1d, blend_space_2d, subtree_mask
 
 
-def _record(value, allowed, required, path):
+def _record(value: Any, allowed: Iterable[str], required: Iterable[str], path: str) -> Mapping[str, Any]:
 	if not isinstance(value, Mapping): raise ValueError(f"{path}: expected a mapping")
 	for key in value:
 		if key not in allowed: raise ValueError(f"{path}.{key}: unsupported field")
@@ -22,13 +26,13 @@ def _record(value, allowed, required, path):
 	return value
 
 
-def _named(value, path):
+def _named(value: Any, path: str) -> Mapping[str, Any]:
 	if not isinstance(value, Mapping): raise ValueError(f"{path}: expected a mapping of names")
 	if any(not isinstance(name, str) or not name for name in value): raise ValueError(f"{path}: names must be nonempty strings")
 	return value
 
 
-def _slots(value, path):
+def _slots(value: Any, path: str) -> dict[str, int]:
 	if not isinstance(value, (list, tuple)): raise ValueError(f"{path}: expected a list of names")
 	result = {}
 	for i, name in enumerate(value):
@@ -37,19 +41,19 @@ def _slots(value, path):
 	return result
 
 
-def _reference(value, names, path):
+def _reference(value: Any, names: Mapping[str, Any], path: str) -> Any:
 	if not isinstance(value, str) or value not in names: raise ValueError(f"{path}: unknown reference {value!r}")
 	return names[value]
 
 
-def _number(value, path):
+def _number(value: Any, path: str) -> float:
 	try: result = float(value)
 	except (TypeError, ValueError, OverflowError) as exc: raise ValueError(f"{path}: expected a finite number") from exc
 	if not np.isscalar(value) or not np.isfinite(result): raise ValueError(f"{path}: expected a finite number")
 	return result
 
 
-def _compile_masks(skeleton, definitions):
+def _compile_masks(skeleton: Skeleton, definitions: Any) -> dict[str, np.ndarray]:
 	masks = {}
 	for name, value in _named(definitions, "masks").items():
 		path = f"masks.{name}"
@@ -66,7 +70,7 @@ def _compile_masks(skeleton, definitions):
 	return masks
 
 
-def _compile_transitions(definitions, states, parameters):
+def _compile_transitions(definitions: Any, states: Mapping[str, int], parameters: Mapping[str, int]) -> AnimationStateMachine:
 	if not isinstance(definitions, (list, tuple)): raise ValueError("transitions: expected a list")
 	edges = []
 	for i, edge in enumerate(definitions):
@@ -90,16 +94,18 @@ def _compile_transitions(definitions, states, parameters):
 	return AnimationStateMachine(edges)
 
 
-def _compile_tasks(skeleton, definitions, samples, weights, motions, masks):
+def _compile_tasks(skeleton: Skeleton, definitions: Any, samples: Mapping[str, int], weights: Mapping[str, int], motions: Mapping[str, int], masks: Mapping[str, np.ndarray]) -> tuple[PosePlan, PosePlan]:
 	if not isinstance(definitions, (list, tuple)) or not definitions: raise ValueError("tasks: expected a nonempty list")
-	names, tasks = {}, []
+	names: dict[str, int] = {}
+	tasks: list[tuple[Any, ...]] = []
+	compiled: tuple[Any, ...]
 	for i, task in enumerate(definitions):
 		path = f"tasks[{i}]"
 		if not isinstance(task, Mapping): raise ValueError(f"{path}: expected a mapping")
 		name = task.get("name")
 		if not isinstance(name, str) or not name or name in names: raise ValueError(f"{path}.name: expected a unique nonempty name")
 		path += f" ({name})"
-		try: op = PoseOp(task.get("op"))
+		try: op = PoseOp(cast(str, task.get("op")))
 		except (ValueError, TypeError) as exc: raise ValueError(f"{path}.op: unsupported operation") from exc
 		if op is PoseOp.SAMPLE:
 			_record(task, {"name", "op", "slot"}, ("slot",), path)
@@ -121,7 +127,7 @@ def _compile_tasks(skeleton, definitions, samples, weights, motions, masks):
 	return PosePlan(skeleton, tasks), PosePlan(skeleton, input_tasks)
 
 
-def _compile_sync(definitions, tracks, clips, clip_ids):
+def _compile_sync(definitions: Any, tracks: Mapping[str, EventTrack] | None, clips: Mapping[str, Clip], clip_ids: Mapping[str, int]) -> Mapping[tuple[int, int], SyncMapping]:
 	if not isinstance(definitions, (list, tuple)): raise ValueError("sync_mappings: expected a list")
 	tracks = _named({} if tracks is None else tracks, "sync_tracks")
 	mappings = {}
@@ -151,13 +157,13 @@ class CompiledBlendSpace1D:
 	clip_ids: np.ndarray
 	sync: BlendSpaceSync | None = None
 
-	def select(self, parameters):
+	def select(self, parameters: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
 		values = np.asarray(parameters, dtype=np.float64)
 		if values.ndim != 2 or self.parameter >= values.shape[1]: raise ValueError("parameters must contain the blend-space column")
 		return blend_space_1d(self.positions, self.clip_ids, values[:, self.parameter])
 
 
-def _compile_space_sync(value, path, ids, clips, resources, tracks):
+def _compile_space_sync(value: Any, path: str, ids: np.ndarray, clips: Mapping[str, int], resources: Mapping[str, Clip], tracks: Mapping[str, EventTrack] | None) -> BlendSpaceSync | None:
 	if "sync_reference" not in value: return None
 	path += ".sync_reference"
 	reference = _reference(value["sync_reference"], clips, path)
@@ -174,7 +180,7 @@ def _compile_space_sync(value, path, ids, clips, resources, tracks):
 	except ValueError as exc: raise ValueError(f"{path}: {exc}") from exc
 
 
-def _compile_blend_spaces(definitions, parameters, clips, resources, tracks):
+def _compile_blend_spaces(definitions: Any, parameters: Mapping[str, int], clips: Mapping[str, int], resources: Mapping[str, Clip], tracks: Mapping[str, EventTrack] | None) -> Mapping[str, CompiledBlendSpace1D]:
 	result = {}
 	for name, value in _named(definitions, "blend_spaces").items():
 		path = f"blend_spaces.{name}"
@@ -182,7 +188,8 @@ def _compile_blend_spaces(definitions, parameters, clips, resources, tracks):
 		parameter = _reference(value["parameter"], parameters, path + ".parameter")
 		points = value["points"]
 		if not isinstance(points, (list, tuple)) or not points: raise ValueError(f"{path}.points: expected a nonempty list")
-		positions, ids = [], []
+		positions: list[float] = []
+		ids: list[int] = []
 		for i, point in enumerate(points):
 			item = f"{path}.points[{i}]"
 			_record(point, {"position", "clip"}, ("position", "clip"), item)
@@ -211,15 +218,15 @@ class CompiledBlendSpace2D:
 	weight_slot: int | None
 	sync: BlendSpaceSync | None = None
 
-	def select(self, parameters):
+	def select(self, parameters: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		values = np.asarray(parameters, dtype=np.float64)
 		if values.ndim != 2 or max(self.x_parameter, self.y_parameter) >= values.shape[1]: raise ValueError("parameters must contain both blend-space columns")
 		return blend_space_2d(self.x_positions, self.y_positions, self.clip_ids, values[:, [self.x_parameter, self.y_parameter]])
 
 
-def _compile_blend_spaces_2d(definitions, parameters, clips, samples, weights, resources, tracks):
+def _compile_blend_spaces_2d(definitions: Any, parameters: Mapping[str, int], clips: Mapping[str, int], samples: Mapping[str, int], weights: Mapping[str, int], resources: Mapping[str, Clip], tracks: Mapping[str, EventTrack] | None) -> Mapping[str, CompiledBlendSpace2D]:
 	result = {}
-	weight_owners = {}
+	weight_owners: dict[int, str] = {}
 	for name, value in _named(definitions, "blend_spaces_2d").items():
 		path = f"blend_spaces_2d.{name}"
 		_record(value, {"x_parameter", "y_parameter", "x_positions", "y_positions", "clips", "sample_slots", "weight_slot", "sync_reference"}, ("x_parameter", "y_parameter", "x_positions", "y_positions", "clips"), path)
@@ -244,7 +251,7 @@ def _compile_blend_spaces_2d(definitions, parameters, clips, samples, weights, r
 		ids.flags.writeable = False
 		sync = _compile_space_sync(value, path, ids, clips, resources, tracks)
 		if "sample_slots" not in value and "weight_slot" not in value:
-			result[name] = CompiledBlendSpace2D(x_parameter, y_parameter, *axes, ids, (), None, sync)
+			result[name] = CompiledBlendSpace2D(x_parameter, y_parameter, axes[0], axes[1], ids, (), None, sync)
 			continue
 		for field in ("sample_slots", "weight_slot"):
 			if field not in value: raise ValueError(f"{path}.{field}: sample_slots and weight_slot must be supplied together")
@@ -255,7 +262,7 @@ def _compile_blend_spaces_2d(definitions, parameters, clips, samples, weights, r
 		weight = _reference(value["weight_slot"], weights, path + ".weight_slot")
 		if weight in weight_owners: raise ValueError(f"{path}.weight_slot: already used by blend_spaces_2d.{weight_owners[weight]}")
 		weight_owners[weight] = name
-		result[name] = CompiledBlendSpace2D(x_parameter, y_parameter, *axes, ids, compiled_slots, weight, sync)
+		result[name] = CompiledBlendSpace2D(x_parameter, y_parameter, axes[0], axes[1], ids, compiled_slots, weight, sync)
 	return MappingProxyType(result)
 
 
@@ -294,10 +301,10 @@ class AnimationGraphDefinition:
 	task inputs must refer backward.
 	Playback, sample times, events, physics and ECS integration remain external.
 	"""
-	def __init__(self, data):
+	def __init__(self, data: Mapping[str, Any]) -> None:
 		self.data = deepcopy(data)
 
-	def compile(self, skeleton, clips, *, sync_tracks=None):
+	def compile(self, skeleton: Skeleton, clips: Mapping[str, Clip], *, sync_tracks: Mapping[str, EventTrack] | None=None) -> CompiledAnimationGraph:
 		"""Validate the current draft and return independent compiled resources.
 
 		Clips are a name-to-Clip mapping for one skeleton. Clip objects are shared;

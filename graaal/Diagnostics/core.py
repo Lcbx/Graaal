@@ -1,14 +1,18 @@
 """CPU timers, process monitoring and native physics statistics."""
 from __future__ import annotations
 
+from time import perf_counter as get_time
+from types import TracebackType
+from typing import TYPE_CHECKING, Callable, ClassVar
 import gc
 import os
 import tracemalloc
-from time import perf_counter as get_time
-from typing import Callable, ClassVar
+
+if TYPE_CHECKING:
+	from pyjoltphysics import World
 
 
-def inspect_physics(world) -> dict:
+def inspect_physics(world: World) -> dict:
 	"""Copy native world statistics without stepping, draining events or retaining snapshots.
 
 	Pass a standalone pyjoltphysics.World or an adapter's world on its owning
@@ -24,7 +28,7 @@ class WatchTimer:
 	report: ClassVar[str] = ''
 	print_region: ClassVar[WatchTimer | None] = None
 	
-	def __init__(self, region:str, print_:bool=False, *, frame_time: float | None = None):
+	def __init__(self, region:str, print_:bool=False, *, frame_time: float | None = None) -> None:
 		self.region = region
 		self.frame_time = frame_time
 		if print_:
@@ -40,7 +44,7 @@ class WatchTimer:
 				return
 		WatchTimer.timers.append(self)
 
-	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+	def __exit__(self, exception_type: type[BaseException] | None, exception_value: BaseException | None, exception_traceback: TracebackType | None) -> None:
 		WatchTimer.nesting -= 1
 		self.message = self.get_message()
 

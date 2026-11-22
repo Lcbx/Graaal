@@ -1,12 +1,16 @@
 """Fixed-capacity GPU skin-matrix storage, independent of ECS and rendering."""
-from operator import index
+from __future__ import annotations
 
+from operator import index
+from typing import SupportsIndex
+
+from numpy.typing import ArrayLike
 import numpy as np
 
 from .core import BufferUsage, GpuBuffer
 
 
-def _uint(value, label, *, positive=False):
+def _uint(value: SupportsIndex, label: str, *, positive: bool=False) -> int:
 	if isinstance(value, (bool, np.bool_)): raise ValueError(f"{label} must be an integer")
 	try: value = index(value)
 	except TypeError as exc: raise ValueError(f"{label} must be an integer") from exc
@@ -21,15 +25,15 @@ class SkinMatrixBuffer:
 	handles or any other unique uint64 IDs. The caller manages their lifetimes and
 	ensures recorded work no longer needs a range before releasing or rewriting it.
 	"""
-	def __init__(self, capacity):
+	def __init__(self, capacity: int) -> None:
 		capacity = _uint(capacity, "capacity", positive=True)
 		if capacity > np.iinfo(np.uint32).max: raise ValueError("capacity exceeds uint32 indexing")
 		self.capacity = capacity
 		self.buffer = GpuBuffer(np.zeros((capacity, 3, 4), dtype=np.float32), BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC)
 		self._free = [(0, capacity)]
-		self._ranges = {}
+		self._ranges: dict[int, tuple[int, int]] = {}
 
-	def acquire(self, owner, bones):
+	def acquire(self, owner: SupportsIndex, bones: int) -> int:
 		"""Allocate a range and return its base matrix index."""
 		owner, bones = _uint(owner, "owner"), _uint(bones, "bones", positive=True)
 		if owner in self._ranges: raise ValueError("Owner already has a skin range")
@@ -41,23 +45,23 @@ class SkinMatrixBuffer:
 			return base
 		raise ValueError("Skin matrix buffer has insufficient contiguous capacity")
 
-	def range(self, owner):
+	def range(self, owner: SupportsIndex) -> tuple[int, int]:
 		"""Return (base, bone_count) for an allocated owner."""
 		return self._ranges[_uint(owner, "owner")]
 
-	def release(self, owner):
+	def release(self, owner: SupportsIndex) -> None:
 		"""Release a range for reuse; previously uploaded bytes are not cleared."""
 		allocation = self._ranges.pop(_uint(owner, "owner"))
 		self._free.append(allocation)
 		self._free.sort()
-		merged = []
+		merged: list[tuple[int, int]] = []
 		for base, count in self._free:
 			if merged and merged[-1][0] + merged[-1][1] == base:
 				merged[-1] = (merged[-1][0], merged[-1][1] + count)
 			else: merged.append((base, count))
 		self._free = merged
 
-	def write(self, owners, matrices):
+	def write(self, owners: ArrayLike, matrices: ArrayLike) -> None:
 		"""Upload same-skeleton poses in owner order after validating the whole batch."""
 		owners = np.asarray(owners)
 		matrices = np.asarray(matrices, dtype=np.float32)
@@ -85,7 +89,7 @@ class SkinMatrixBuffer:
 			self.buffer.write_range(data, offset=entries[start][0] * 48)
 			start = end
 
-	def close(self):
+	def close(self) -> None:
 		self.buffer.close()
 		self._ranges.clear()
 		self._free.clear()

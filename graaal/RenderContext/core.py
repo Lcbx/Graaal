@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-import atexit
-import gc
-import os
-import re
-import time
-import weakref
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -13,19 +7,26 @@ from math import isfinite
 from operator import index as integer_index
 from threading import Lock
 from time import perf_counter as get_time, sleep
-from typing import Any, Callable, ClassVar, Iterable, Iterator, ParamSpec, Sequence, TypeVar
+from types import TracebackType
+from typing import SupportsIndex, Any, Callable, ClassVar, Iterable, Iterator, ParamSpec, Sequence, TypeVar
+import atexit
+import gc
+import os
+import re
+import time
+import weakref
 
-import glfw  # type: ignore[import-untyped]
-import numpy as np
-import wgpu  # type: ignore[import-untyped]
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from wgpu import BufferUsage, TextureUsage  # type: ignore[import-untyped]
 from wgpu.utils.glfw_present_info import get_glfw_present_info  # type: ignore[import-untyped]
+import glfw  # type: ignore[import-untyped]
+import numpy as np
+import wgpu  # type: ignore[import-untyped]
 
 from ..utils import higher_pow2
 from .MeshArena import MeshArena
-from .ShaderSyntax import ShaderSyntax, SourceSpan, strip_comments
 from .ShaderShorthand import ShaderShorthand, MISSING
+from .ShaderSyntax import ShaderSyntax, SourceSpan, strip_comments
 
 
 Color = tuple[float, float, float, float]
@@ -40,9 +41,9 @@ class _RenderContext:
 		self.adapter: wgpu.GPUAdapter
 		self.device: wgpu.GPUDevice
 		self.device_generation = 0
-		self._mesh_arena = None
-		self._statistics = None
-		self._tracked_resources = weakref.WeakSet()
+		self._mesh_arena: MeshArena | None = None
+		self._statistics: dict[str, int] | None = None
+		self._tracked_resources: weakref.WeakSet[_OwnedResource] = weakref.WeakSet()
 		self.presentation_format: str
 
 		self.window: Any = None
@@ -99,7 +100,7 @@ class _RenderContext:
 			self.cleanup()
 			raise
 
-	def _init_window(self, w, h, title, highpower_gpu, target_fps, required_gpu_features, custom_gc, optional_gpu_features):
+	def _init_window(self, w: int, h: int, title: str, highpower_gpu: bool, target_fps: int, required_gpu_features: Sequence[str], custom_gc: bool, optional_gpu_features: Sequence[str]) -> None:
 
 		glfw.window_hint(glfw.CLIENT_API, glfw.NO_API)
 
@@ -192,7 +193,7 @@ class _RenderContext:
 		mapper: Callable | None = None,
 	) -> Callable:
 		
-		def deflt_mapper(*args) -> tuple:
+		def deflt_mapper(*args: Any) -> tuple:
 			return args[1:] # glfw first arg is window handle
 		
 		mapper = mapper or deflt_mapper
@@ -207,12 +208,12 @@ class _RenderContext:
 
 		self.event_handlers[channel_name] = []
 
-		def deflt_mapper(*args) -> tuple:
+		def deflt_mapper(*args: Any) -> tuple:
 			return args
 
 		mapper = mapper or deflt_mapper
 
-		def handlers_call(*args) -> None:
+		def handlers_call(*args: Any) -> None:
 			args = mapper(*args)
 			for handler in self.event_handlers[channel_name]:
 				if handler(*args):
@@ -295,12 +296,12 @@ class _RenderContext:
 	# commands -----------------------------------------------------------------
 
 	@property
-	def mesh_arena(self):
+	def mesh_arena(self) -> MeshArena:
 		if self._mesh_arena is None:
 			self._mesh_arena = MeshArena()
 		return self._mesh_arena
 
-	def reset_mesh_arena(self):
+	def reset_mesh_arena(self) -> None:
 		if self._mesh_arena is not None:
 			self._mesh_arena.close()
 			self._mesh_arena = None
@@ -319,15 +320,15 @@ class _RenderContext:
 		missing = set(features) - set(self.device.features)
 		if missing: raise ValueError(f"Device is missing required GPU features: {', '.join(sorted(missing))}")
 
-	def enable_statistics(self, enabled: bool = True):
+	def enable_statistics(self, enabled: bool = True) -> None:
 		"""Enable/reset opt-in counters; no GPU synchronization is performed."""
 		self._statistics = {} if enabled else None
 
-	def record_stat(self, name: str, value: int = 1):
+	def record_stat(self, name: str, value: int = 1) -> None:
 		if self._statistics is not None:
 			self._statistics[name] = self._statistics.get(name, 0) + value
 
-	def inspect_resources(self):
+	def inspect_resources(self) -> dict[str, Any]:
 		return {"device_generation": self.device_generation,
 			"mesh_arena": self._mesh_arena.inspect() if self._mesh_arena is not None else None,
 			"statistics": dict(self._statistics or {})}
@@ -395,7 +396,7 @@ class GCManager:
 		else:
 			gc.disable()
 
-	def __call__(self):
+	def __call__(self) -> None:
 		if self._closed:
 			return
 		counts = gc.get_count()
@@ -440,17 +441,19 @@ class GCManager:
 
 
 class _OwnedResource:
-	def _capture_device(self):
+	_content: np.ndarray | None
+
+	def _capture_device(self) -> None:
 		if not hasattr(RenderContext, "device"):
 			raise RuntimeError("Initialize RenderContext with init_window() or setup_graphics_backend() before creating GPU resources")
 		self._device = RenderContext.device
 		self._device_generation = RenderContext.device_generation
 		RenderContext.record_stat(f"created.{type(self).__name__}")
 
-	def _track_resource(self):
+	def _track_resource(self) -> None:
 		RenderContext._tracked_resources.add(self)
 
-	def _check_device(self):
+	def _check_device(self) -> wgpu.GPUDevice:
 		# Metadata-only pipeline specifications bind lazily on first GPU use.
 		if not hasattr(self, "_device"): self._capture_device()
 		if self._device is not RenderContext.device or self._device_generation != RenderContext.device_generation:
@@ -458,7 +461,7 @@ class _OwnedResource:
 		if getattr(self, "_closed", False): raise RuntimeError("Resource is closed")
 		return self._device
 
-	def close(self):
+	def close(self) -> None:
 		# Release wrapper ownership without destroying in-flight WGPU handles.
 		self._closed = True
 		RenderContext._tracked_resources.discard(self)
@@ -475,7 +478,7 @@ class CommandContext(_OwnedResource):
 	order in which their resulting command buffers should execute.
 	"""
 
-	def __init__(self, label: str | None = None):
+	def __init__(self, label: str | None = None) -> None:
 		self._capture_device()
 		self.handle = self._check_device().create_command_encoder(label=label or "")
 		self.finished = False
@@ -545,7 +548,7 @@ class RenderPass:
 		depth: DepthAttachment | None = None,
 		label: str | None = None,
 		timestamp_writes: dict | None = None,
-	):
+	) -> None:
 		self.commands = commands
 		self.color = [color] if isinstance(color, ColorAttachment) else list(color)
 		self.depth = depth
@@ -603,7 +606,7 @@ class RenderPass:
 		)
 		return self
 
-	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+	def __exit__(self, exception_type: type[BaseException] | None, exception_value: BaseException | None, exception_traceback: TracebackType | None) -> None:
 		self._require_handle().end()
 		self.handle = None
 
@@ -789,7 +792,7 @@ class RenderPass:
 
 
 class ComputePass:
-	def __init__(self, commands: CommandContext, *, label: str | None = None, timestamp_writes: dict | None = None):
+	def __init__(self, commands: CommandContext, *, label: str | None = None, timestamp_writes: dict | None = None) -> None:
 		self.commands = commands
 		self.label = label
 		self.timestamp_writes = timestamp_writes
@@ -801,7 +804,7 @@ class ComputePass:
 			**({"timestamp_writes": self.timestamp_writes} if self.timestamp_writes is not None else {}))
 		return self
 
-	def __exit__(self, exception_type, exception_value, exception_traceback) -> None:
+	def __exit__(self, exception_type: type[BaseException] | None, exception_value: BaseException | None, exception_traceback: TracebackType | None) -> None:
 		self.end()
 
 	def end(self) -> None:
@@ -869,7 +872,7 @@ class DepthAttachment:
 			depth = dict(depth_clear_value=self.clear or 0.0,
 				depth_load_op="clear" if self.clear is not None else "load",
 				depth_store_op="store" if self.store else "discard")
-		stencil = {}
+		stencil: dict[str, Any] = {}
 		if "stencil" in self.format:
 			stencil = dict(stencil_read_only=self.stencil_read_only)
 			if not self.stencil_read_only:
@@ -885,7 +888,7 @@ class DepthAttachment:
 
 # numpy buffers ---------------------------------------------------------------
 
-def _element_count(value):
+def _element_count(value: SupportsIndex) -> int:
 	if isinstance(value, (bool, np.bool_)): raise TypeError("Buffer counts must be integers")
 	value = integer_index(value)
 	if value < 0: raise ValueError("Buffer counts must be nonnegative")
@@ -909,7 +912,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 		res = []
 		for name in dtype.names or ():
 			field_dtype, offset = dtype.fields[name][:2]
-			vformat = dtype_to_vertex_format(field_dtype)
+			vformat: Any = dtype_to_vertex_format(field_dtype)
 			if isinstance(vformat, str):
 				res.append((vformat, offset))
 			else:
@@ -922,7 +925,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 			prefix, scalar_size = _VertexFormat[dtype.type]
 		except KeyError:
 			raise TypeError(f"Unsupported vertex scalar dtype: {dtype}") from None
-		format = getattr(wgpu.VertexFormat, prefix, None)
+		format: str | None = getattr(wgpu.VertexFormat, prefix, None)
 		if format is None:
 			raise TypeError(f"Unsupported vertex format: {dtype}")
 		return format
@@ -948,7 +951,7 @@ def dtype_to_vertex_format(dtype: np.dtype) -> list | str:
 	return vformat
 
 
-def _changed_byte_ranges(previous, current):
+def _changed_byte_ranges(previous: np.ndarray, current: np.ndarray) -> Iterator[tuple[int, int]]:
 	"""Word-aligned changes; merge gaps up to 64 bytes to limit queue overhead."""
 	before = np.ascontiguousarray(previous).view(np.uint8).reshape(-1)
 	after = np.ascontiguousarray(current).view(np.uint8).reshape(-1)
@@ -970,12 +973,13 @@ class GpuBuffer(_OwnedResource):
 		dtype: Any = None,
 		count: int = 0,
 		copy: bool = False,
-	):
+	) -> None:
 		self._capture_device()
 		if content is None:
 			count = _element_count(count)
 			if dtype is None or count < 0: raise ValueError("GPU-only buffers require dtype and nonnegative count")
-			self._dtype, self._count, self._content = np.dtype(dtype), count, None
+			self._content: np.ndarray | None = None
+			self._dtype, self._count = np.dtype(dtype), count
 			if self._dtype.hasobject: raise TypeError("GPU buffers cannot contain Python objects")
 		else:
 			self.content = np.array(content, copy=True, order="C") if copy else content
@@ -998,28 +1002,28 @@ class GpuBuffer(_OwnedResource):
 		self._track_resource()
 
 	@property
-	def content(self): return self._content
+	def content(self) -> np.ndarray | None: return self._content
 
 	@content.setter
-	def content(self, value):
+	def content(self, value: np.ndarray) -> None:
 		self._content = self._content_array(value)
 		self._dtype, self._count = self._content.dtype, self._content.size
 
 	@property
-	def dtype(self): return self._dtype
+	def dtype(self) -> np.dtype[Any]: return self._dtype
 
 	@property
-	def count(self): return self._count
+	def count(self) -> int: return self._count
 
 	@property
-	def binding_size(self): return self.count * self.dtype.itemsize
+	def binding_size(self) -> int: return self.count * self.dtype.itemsize
 
 	@property
-	def capacity_bytes(self):
+	def capacity_bytes(self) -> int:
 		self._check_device()
 		return self.handle.size
 
-	def set_count(self, count: int):
+	def set_count(self, count: int) -> None:
 		"""Set the active scalar/record count within allocated and mirrored capacity."""
 		count = _element_count(count)
 		if count < 0 or count * self.dtype.itemsize > self.capacity_bytes:
@@ -1084,6 +1088,7 @@ class GpuBuffer(_OwnedResource):
 		self._upload_bytes(0, self.binding_size)
 
 	def upload_range(self, start: int, count: int) -> None:
+		assert self.content is not None
 		if self.content.ndim != 1:
 			raise ValueError("Element range uploads require a one-dimensional array")
 		if start < 0 or count < 0 or start + count > self.content.size:
@@ -1143,6 +1148,7 @@ class GpuBuffer(_OwnedResource):
 
 	def write_range(self, data: np.ndarray, *, offset: int = 0) -> None:
 		"""Update CPU/GPU content at a byte offset without changing binding size."""
+		assert self.content is not None
 		data = self._content_array(data).view(np.uint8).reshape(-1)
 		if offset < 0 or offset + data.size > self.content.nbytes:
 			raise ValueError("Write range is outside CPU content")
@@ -1157,7 +1163,7 @@ class GpuBuffer(_OwnedResource):
 class Mesh:
 	index_formats = {np.dtype(np.uint16): "uint16", np.dtype(np.uint32): "uint32"}
 
-	def __init__(self, vertex_data: np.ndarray, indices: np.ndarray, *, arena=None):
+	def __init__(self, vertex_data: np.ndarray, indices: np.ndarray, *, arena: MeshArena | None=None) -> None:
 		self.vertex_dtype, self.index_dtype = vertex_data.dtype, indices.dtype
 		if self.index_dtype not in self.index_formats: raise TypeError(f"Unsupported index dtype: {self.index_dtype}")
 		self.arena = arena if arena is not None else RenderContext.mesh_arena
@@ -1170,39 +1176,41 @@ class Mesh:
 		self.index_format = self.index_formats[self.index_dtype]
 
 	@property
-	def vertex_buffer(self):
+	def vertex_buffer(self) -> GpuBuffer:
 		self._vertices.check()
+		assert self._vertices.pool.buffer is not None
 		return self._vertices.pool.buffer
 
 	@property
-	def index_buffer(self):
+	def index_buffer(self) -> GpuBuffer:
 		self._indices.check()
+		assert self._indices.pool.buffer is not None
 		return self._indices.pool.buffer
 
 	@property
-	def vertex_range(self): return self._vertices.range
+	def vertex_range(self) -> tuple[int, int]: return self._vertices.range
 
 	@property
-	def index_range(self): return self._indices.range
+	def index_range(self) -> tuple[int, int]: return self._indices.range
 
 	@property
-	def index_count(self): return self.index_range[1]
+	def index_count(self) -> int: return self.index_range[1]
 
 	@property
-	def version(self):
+	def version(self) -> tuple[int, int]:
 		return self._vertices.generation, self._indices.generation
 
 	@property
-	def vertices(self):
+	def vertices(self) -> np.ndarray:
 		start, count = self.vertex_range
 		return self._vertices.pool.content[start:start + count]
 
 	@property
-	def vertex_range_bytes(self):
+	def vertex_range_bytes(self) -> tuple[int, int]:
 		start, count = self.vertex_range
 		return start * self.vertex_dtype.itemsize, count * self.vertex_dtype.itemsize
 
-	def release(self):
+	def release(self) -> None:
 		self._vertices.release()
 		self._indices.release()
 
@@ -1218,7 +1226,7 @@ class Texture(_OwnedResource):
 		sample_count: int = 1,
 		dimension: str = "2d",
 		label: str | None = None,
-	):
+	) -> None:
 		self._capture_device()
 		if len(size) == 2:
 			size = (*size, 1)
@@ -1241,7 +1249,7 @@ class Texture(_OwnedResource):
 		)
 		self._track_resource()
 
-	def close(self):
+	def close(self) -> None:
 		self._view = None
 		super().close()
 
@@ -1249,7 +1257,7 @@ class Texture(_OwnedResource):
 	def binding(self) -> wgpu.GPUTextureView:
 		return self.view().handle
 
-	def view(self, **kwargs) -> TextureView:
+	def view(self, **kwargs: Any) -> TextureView:
 		self._check_device()
 		if kwargs:
 			return TextureView(self, self.handle.create_view(**kwargs))
@@ -1304,7 +1312,7 @@ class TextureView:
 
 
 class Sampler(_OwnedResource):
-	def __init__(self, **descriptor: Any):
+	def __init__(self, **descriptor: Any) -> None:
 		self._capture_device()
 		self.handle = self._check_device().create_sampler(**descriptor)
 
@@ -1429,18 +1437,18 @@ def _wgsl_vector_type(type_name: str) -> tuple[np.dtype, int] | None:
 
 class ShaderDeclarations:
 	"""Jinja declaration callbacks; emit WGSL and collect Python layout metadata."""
-	def __init__(self):
+	def __init__(self) -> None:
 		self._fields: dict[str, list[ShaderField]] = {}
 		self.bindings: dict[str, BindingInfo] = {}
 		self.defaults: dict[str, dict[str, object]] = {}
 
 	@staticmethod
-	def _identifier(name):
+	def _identifier(name: str) -> str:
 		if not isinstance(name, str) or not name.isascii() or not name.isidentifier():
 			raise ValueError(f"Invalid WGSL identifier {name!r}")
 		return name
 
-	def field(self, struct, name, type_name, *, location=None, builtin=None, interpolate=None, align=None, size=None, default=MISSING):
+	def field(self, struct: str, name: str, type_name: str, *, location: int | None=None, builtin: str | None=None, interpolate: str | None=None, align: int | None=None, size: int | None=None, default: object=MISSING) -> str:
 		struct, name = self._identifier(struct), self._identifier(name)
 		if not isinstance(type_name, str) or not type_name.strip():
 			raise ValueError("Field requires a WGSL type")
@@ -1460,7 +1468,7 @@ class ShaderDeclarations:
 		if default is not MISSING: self.defaults.setdefault(struct, {})[name] = default
 		return ""
 
-	def binding(self, name, type_name, group, binding, *, storage=None, access=None):
+	def binding(self, name: str, type_name: str, group: int, binding: int, *, storage: str | None=None, access: str | None=None) -> str:
 		name = self._identifier(name)
 		if name in self.bindings:
 			raise ValueError(f"Duplicate WGSL binding {name}")
@@ -1475,12 +1483,12 @@ class ShaderDeclarations:
 		space = f"<{storage}{', '+access if access else ''}>" if storage else ""
 		return f"@group({group}) @binding({binding}) var{space} {name}: {type_name};"
 
-	def next_binding(self, group):
+	def next_binding(self, group: int) -> int:
 		"""Next free slot after declarations already rendered in this group."""
 		return max((info.binding for info in self.bindings.values() if info.group == group), default=-1)+1
 
 	@property
-	def structs(self):
+	def structs(self) -> dict[str, ShaderStruct]:
 		result = {}
 		for name, fields in self._fields.items():
 			resolved, next_location = [], 0
@@ -1495,7 +1503,7 @@ class ShaderDeclarations:
 			result[name] = ShaderStruct(name, tuple(resolved))
 		return result
 
-	def definitions(self):
+	def definitions(self) -> str:
 		parts = []
 		for name, struct in self.structs.items():
 			lines = [f"struct {name} {{"]
@@ -1532,7 +1540,7 @@ class ShaderSource:
 	)
 
 
-	def __init__(self, source: str, *, declarations: ShaderDeclarations | None = None):
+	def __init__(self, source: str, *, declarations: ShaderDeclarations | None = None) -> None:
 
 		# Jinja callbacks supply struct/binding metadata; only function entry points are parsed.
 		code = _strip_wgsl_comments(source)
@@ -1545,14 +1553,14 @@ class ShaderSource:
 		self.functions = self._parse_functions(code)
 		self.entry_points = {name: function for name, function in self.functions.items() if function.stage is not None}
 		self.uniforms = self._uniforms()
-		self._syntax = None
+		self._syntax: ShaderSyntax | None = None
 
-	def _source_syntax(self):
+	def _source_syntax(self) -> ShaderSyntax:
 		if self._syntax is None:
 			self._syntax = ShaderSyntax(self.source, self.functions)
 		return self._syntax
 
-	def used_bindings(self, entries):
+	def used_bindings(self, entries: Sequence[str | None]) -> dict[str, BindingInfo]:
 		"""Conservative function-call traversal for automatic pipeline layouts.
 
 		Explicit ShaderInterface.active_bindings handles interfaces requiring
@@ -1638,6 +1646,7 @@ class ShaderSource:
 		entries: dict[str, list[str]] = {"vertex": [], "fragment": [], "compute": []}
 
 		for entry in self.entry_points.values():
+			assert entry.stage is not None
 			entries[entry.stage].append(entry.name)
 
 		return entries
@@ -1676,7 +1685,7 @@ class ShaderSource:
 		return entry_points
 
 
-	def _field(self, match: re.Match, *, offset=0) -> ShaderField:
+	def _field(self, match: re.Match, *, offset: int=0) -> ShaderField:
 		return ShaderField(
 			name=match.group("name"),
 			type_name=self._type_name(match.group("type")),
@@ -1870,12 +1879,12 @@ class ShaderInterface:
 	active_bindings: dict[str, tuple[str, ...]] | None = None
 
 	@property
-	def entry_points(self):
+	def entry_points(self) -> dict[str, EntryPointInfo]:
 		return {name: EntryPointInfo(name, stage, (), None, ()) for name, stage in self.entries.items()}
 
-	def vertex_inputs(self, name): return self.inputs.get(name, ())
+	def vertex_inputs(self, name: str) -> tuple[VertexInfo, ...]: return self.inputs.get(name, ())
 
-	def used_bindings(self, entries):
+	def used_bindings(self, entries: Sequence[str | None]) -> dict[str, BindingInfo]:
 		if self.active_bindings is None: return self.bindings
 		names = {name for entry in entries if entry for name in self.active_bindings.get(entry, ())}
 		return {name: self.bindings[name] for name in names}
@@ -1894,7 +1903,7 @@ class Shader(_OwnedResource):
 		label: str | None = None,
 		interface: ShaderInterface | None = None,
 		required_features: Sequence[str] = (),
-	):
+	) -> None:
 		self._capture_device()
 		if required_features: RenderContext.require_features(required_features)
 		if source is None and filepath is None:
@@ -1954,7 +1963,7 @@ class Shader(_OwnedResource):
 
 		return entries[0]
 
-	def _load_source(self, source, filepath, basedir, features, params):
+	def _load_source(self, source: str | None, filepath: str | None, basedir: str | Sequence[str] | None, features: Sequence[str] | None, params: dict[str, Any] | None) -> str:
 		return self._render_source(source, filepath, basedir, features, params)[0]
 
 	def _render_source(
@@ -2008,12 +2017,13 @@ class Shader(_OwnedResource):
 
 
 class DefaultFalseDict(dict):
-	def __missing__(self, key):
+	def __missing__(self, key: str) -> bool:
 		return False
 
 
 class _UniformBuffer(GpuBuffer):
-	def __init__(self, info: UniformInfo, label="uniform"):
+	content: np.ndarray
+	def __init__(self, info: UniformInfo, label: str | None="uniform") -> None:
 		self.info = info
 
 		super().__init__(
@@ -2023,11 +2033,11 @@ class _UniformBuffer(GpuBuffer):
 		)
 		self._uploaded = self.content.view(np.uint8).reshape(-1).copy()
 
-	def upload(self):
+	def upload(self) -> None:
 		super().upload()
 		self._uploaded = self.content.view(np.uint8).reshape(-1).copy()
 
-	def upload_changed(self):
+	def upload_changed(self) -> None:
 		"""Upload changes since the last successful upload, including direct CPU edits."""
 		for offset, size in _changed_byte_ranges(self._uploaded, self.content):
 			self._upload_bytes(offset, size)
@@ -2044,7 +2054,7 @@ class BindGroup:
 		shader: Shader,
 		group: int,
 		resources: dict[str, Any],
-	):
+	) -> None:
 		self.shader = shader
 		self.group = group
 		self.resources = resources
@@ -2062,7 +2072,7 @@ class BindGroup:
 			(shader.info.bindings[name].binding, name) for name in resources
 		))
 
-	def cache_key(self, slots=None) -> tuple:
+	def cache_key(self, slots: set[tuple[int, int]] | None=None) -> tuple:
  		return (
  			self.group,
  			tuple(
@@ -2072,7 +2082,7 @@ class BindGroup:
 			),
 		)
  
-	def entries(self, slots=None) -> list[wgpu.BindGroupEntry]:
+	def entries(self, slots: set[tuple[int, int]] | None=None) -> list[wgpu.BindGroupEntry]:
 		return [
 			wgpu.BindGroupEntry(binding=binding, resource=self._resource(self.resources[name]))
 			for binding, name in self._bindings
@@ -2099,43 +2109,43 @@ class BindGroup:
 
 class BindGroupLayout(_OwnedResource):
 	"""An explicit layout and bounded resource cache reusable across pipelines."""
-	def __init__(self, entries):
+	def __init__(self, entries: Sequence[dict[str, Any]]) -> None:
 		self._capture_device()
 		self.entries = tuple(deepcopy(entries))
 		self.handle = self._check_device().create_bind_group_layout(entries=self.entries)
-		self._bind_groups = OrderedDict()
+		self._bind_groups: OrderedDict[Any, wgpu.GPUBindGroup] = OrderedDict()
 		self._lock = Lock()
 
-	def bind_group(self, bindings):
+	def bind_group(self, bindings: BindGroup) -> wgpu.GPUBindGroup:
 		self._check_device()
 		slots = {(bindings.group, entry["binding"]) for entry in self.entries}
 		return _cached_bind_group(self, self.handle, bindings, slots)
 
-	def clear_cache(self):
+	def clear_cache(self) -> None:
 		"""Release cached resource bindings while keeping the layout usable."""
 		self._check_device()
 		with self._lock: self._bind_groups.clear()
 
-	def close(self):
+	def close(self) -> None:
 		self._bind_groups.clear()
 		super().close()
 
 
 class PipelineLayout(_OwnedResource):
 	"""Explicit pipeline ABI; group layout objects own shared bind-group caches."""
-	def __init__(self, groups):
+	def __init__(self, groups: Sequence[BindGroupLayout]) -> None:
 		self._capture_device()
 		self.groups = tuple(groups)
 		for group in self.groups: group._check_device()
 		self.handle = self._check_device().create_pipeline_layout(bind_group_layouts=[g.handle for g in self.groups])
 		self.binding_slots = {(i, entry["binding"]) for i, group in enumerate(self.groups) for entry in group.entries}
 
-	def close(self):
+	def close(self) -> None:
 		self.groups = ()
 		super().close()
 
 
-def _cached_bind_group(owner, layout, bindings, slots):
+def _cached_bind_group(owner: Any, layout: wgpu.GPUBindGroupLayout, bindings: BindGroup, slots: set[tuple[int, int]] | None) -> wgpu.GPUBindGroup:
 	device = owner._check_device()
 	key = bindings.cache_key(slots)
 	with owner._lock:
@@ -2156,8 +2166,8 @@ class _PipelineVariant(_OwnedResource):
 		self,
 		handle: wgpu.GPURenderPipeline | wgpu.GPUComputePipeline,
 		bindings: dict[str, BindingInfo] | None = None,
-		layout=None,
-	):
+		layout: PipelineLayout | None=None,
+	) -> None:
 		self._capture_device()
 		self.handle = handle
 		self.layout = layout
@@ -2170,7 +2180,7 @@ class _PipelineVariant(_OwnedResource):
 			groups = {group for group, binding in self.binding_slots}
 		self.empty_groups = tuple(group for group in range(max(groups, default=-1) + 1) if group not in groups)
 
-	def empty_bind_group(self, group):
+	def empty_bind_group(self, group: int) -> wgpu.GPUBindGroup:
 		self._check_device()
 		key = ("empty", group)
 		if key not in self._bind_groups:
@@ -2216,7 +2226,7 @@ class RenderPipeline(_OwnedResource):
 		depth_stencil: dict[str, Any] | None = None,
 		vertex_formats: dict[str, str] | None = None,
 		required_features: Sequence[str] = (),
-	):
+	) -> None:
 		if sample_count not in (1, 4): raise ValueError("sample_count must be 1 or 4")
 		if required_features: RenderContext.require_features(required_features)
 		self.targets = tuple(deepcopy(target) for target in targets) if targets is not None else None
@@ -2259,7 +2269,7 @@ class RenderPipeline(_OwnedResource):
 		self._cache_lock = Lock()
 
 
-	def clear_bind_group_cache(self):
+	def clear_bind_group_cache(self) -> None:
 		"""Release resources retained by this pipeline's cached bindings."""
 		self._check_device()
 		with self._cache_lock:
@@ -2449,7 +2459,7 @@ class ComputePipeline(_OwnedResource):
 		label: str | None = None,
 		layout: Any = "auto",
 		required_features: Sequence[str] = (),
-	):
+	) -> None:
 		if required_features: RenderContext.require_features(required_features)
 		if isinstance(layout, PipelineLayout): layout._check_device()
 		self.shader = shader

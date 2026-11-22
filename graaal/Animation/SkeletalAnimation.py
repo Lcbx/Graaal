@@ -2,33 +2,36 @@
 
 Transforms use column vectors, xyzw quaternions and float32 arrays.
 """
+from __future__ import annotations
 
 from operator import index
+from typing import cast, Mapping, Sequence, SupportsIndex
 
+from numpy.typing import ArrayLike
 import numpy as np
 
 from ..Math import Quaternion
 
 
-def _array(value, shape, name):
+def _array(value: ArrayLike, shape: tuple[int, ...], name: str) -> np.ndarray:
 	result = np.array(value, dtype=np.float32, copy=True)
 	if result.shape != shape or not np.isfinite(result).all():
 		raise ValueError(f"{name} must be finite with shape {shape}")
 	return result
 
 
-def _rotations(value, shape, name):
+def _rotations(value: ArrayLike, shape: tuple[int, ...], name: str) -> np.ndarray:
 	result = _array(value, shape, name)
 	length = np.linalg.norm(result, axis=-1, keepdims=True)
 	if np.any(length < 1e-8): raise ValueError(f"{name} contains a zero quaternion")
 	return result / length
 
 
-def _freeze(*arrays):
+def _freeze(*arrays: np.ndarray) -> None:
 	for array in arrays: array.flags.writeable = False
 
 
-def _output(value, shape, name):
+def _output(value: ArrayLike, shape: tuple[int, ...], name: str) -> np.ndarray:
 	if not isinstance(value, np.ndarray) or value.dtype != np.float32 or value.shape != shape or not value.flags.writeable or not value.flags.c_contiguous:
 		raise ValueError(f"{name} must be a writable C-contiguous float32 array with shape {shape}")
 	return value
@@ -36,12 +39,12 @@ def _output(value, shape, name):
 
 class Skeleton:
 	"""A depth-first, parent-before-child skeleton and its local reference pose."""
-	def __init__(self, parents, translation, rotation, scale, inverse_bind):
+	def __init__(self, parents: ArrayLike, translation: ArrayLike, rotation: ArrayLike, scale: ArrayLike, inverse_bind: ArrayLike) -> None:
 		raw = np.asarray(parents)
 		if raw.ndim != 1 or not len(raw) or raw.dtype.kind not in "iu":
 			raise ValueError("parents must be a nonempty integer array")
 		parents = raw.astype(np.int64, copy=True)
-		stack = []
+		stack: list[int] = []
 		depth = np.empty(len(parents), dtype=np.intp)
 		for i, parent in enumerate(parents):
 			if parent == -1:
@@ -65,7 +68,7 @@ class Skeleton:
 
 class Clip:
 	"""Uniformly sampled local poses. The last frame is at (frame_count - 1) / fps."""
-	def __init__(self, translation, rotation, scale, fps=30):
+	def __init__(self, translation: ArrayLike, rotation: ArrayLike, scale: ArrayLike, fps: float=30) -> None:
 		values = np.asarray(translation)
 		if values.ndim != 3 or values.shape[0] < 1 or values.shape[1] < 1 or values.shape[2] != 3:
 			raise ValueError("translation must have shape (frames, bones, 3)")
@@ -82,10 +85,10 @@ class Clip:
 		_freeze(self.translation, self.rotation, self.scale)
 
 	@property
-	def duration(self): return (len(self.translation) - 1) / self.fps
+	def duration(self) -> float: return (len(self.translation) - 1) / self.fps
 
 
-def subtree_mask(skeleton, root):
+def subtree_mask(skeleton: Skeleton, root: SupportsIndex) -> np.ndarray:
 	"""Return a float32 mask selecting a bone and its depth-first subtree."""
 	if isinstance(root, (bool, np.bool_)): raise ValueError("root must be a bone index")
 	try: root = index(root)
@@ -98,7 +101,7 @@ def subtree_mask(skeleton, root):
 	return mask
 
 
-def _layer_inputs(skeleton, base, overlay, weight, mask):
+def _layer_inputs(skeleton: Skeleton, base: Sequence[np.ndarray], overlay: Sequence[np.ndarray], weight: ArrayLike, mask: ArrayLike | None) -> tuple[tuple[np.ndarray, np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray], np.ndarray]:
 	if not isinstance(base, (tuple, list)) or len(base) != 3 or not isinstance(overlay, (tuple, list)) or len(overlay) != 3:
 		raise ValueError("poses must contain translation, rotation and scale arrays")
 	translation = np.asarray(base[0], dtype=np.float32)
@@ -125,19 +128,19 @@ def _layer_inputs(skeleton, base, overlay, weight, mask):
 	return (base_t, base_r, base_s), (overlay_t, overlay_r, overlay_s), w
 
 
-def _blend_local_poses(base, overlay, weight):
+def _blend_local_poses(base: Sequence[np.ndarray], overlay: Sequence[np.ndarray], weight: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	return (base[0] * (1 - weight) + overlay[0] * weight,
 		Quaternion.nlerp_batch(base[1], overlay[1], weight),
 		base[2] * (1 - weight) + overlay[2] * weight)
 
 
-def blend_poses(skeleton, base, overlay, weight, *, mask=None):
+def blend_poses(skeleton: Skeleton, base: Sequence[np.ndarray], overlay: Sequence[np.ndarray], weight: ArrayLike, *, mask: ArrayLike | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Blend batched local poses using per-instance weights and a per-bone mask."""
 	base, overlay, w = _layer_inputs(skeleton, base, overlay, weight, mask)
 	return _blend_local_poses(base, overlay, w)
 
 
-def additive_pose(skeleton, base, overlay, weight, *, mask=None):
+def additive_pose(skeleton: Skeleton, base: Sequence[np.ndarray], overlay: Sequence[np.ndarray], weight: ArrayLike, *, mask: ArrayLike | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Apply an overlay's local-pose delta from the skeleton reference to a base pose."""
 	(base_t, base_r, base_s), (overlay_t, overlay_r, overlay_s), w = _layer_inputs(skeleton, base, overlay, weight, mask)
 	reference_inverse = skeleton.rotation.copy()
@@ -151,7 +154,7 @@ def additive_pose(skeleton, base, overlay, weight, *, mask=None):
 	return base_t + (overlay_t - skeleton.translation) * w, rotation, base_s + (overlay_s - skeleton.scale) * w
 
 
-def sample_clip(clip, times, *, loop=True, out=None):
+def sample_clip(clip: Clip, times: ArrayLike, *, loop: bool=True, out: Sequence[np.ndarray] | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Return batched local translation, rotation and scale for a 1D time array.
 
 	Looping treats the final frame as the endpoint at duration and wraps there;
@@ -188,7 +191,7 @@ def sample_clip(clip, times, *, loop=True, out=None):
 	return translation, rotation, scale
 
 
-def sample_crossfade(source, target, source_times, target_times, weights, *, source_loop=True, target_loop=True):
+def sample_crossfade(source: Clip, target: Clip, source_times: ArrayLike, target_times: ArrayLike, weights: ArrayLike, *, source_loop: bool=True, target_loop: bool=True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Sample and blend two clips in local space, with one weight per instance.
 
 	Weights range from zero (source) to one (target); a scalar applies to all
@@ -210,7 +213,7 @@ def sample_crossfade(source, target, source_times, target_times, weights, *, sou
 	return _blend_local_poses(source_pose, target_pose, weights[:, None, None])
 
 
-def blend_space_1d(positions, clip_ids, values):
+def blend_space_1d(positions: ArrayLike, clip_ids: ArrayLike, values: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
 	"""Select two clips and their weights for each value on a 1D axis.
 
 	Positions must be strictly increasing. Values outside the axis clamp to
@@ -241,7 +244,7 @@ def blend_space_1d(positions, clip_ids, values):
 	return np.stack((clip_ids[lower], clip_ids[upper]), axis=1), np.stack((1 - weight, weight), axis=1)
 
 
-def blend_space_2d(x_positions, y_positions, clip_ids, values):
+def blend_space_2d(x_positions: ArrayLike, y_positions: ArrayLike, clip_ids: ArrayLike, values: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Select two horizontal clip pairs and a vertical blend for a grid.
 
 	The clip grid has shape (y positions, x positions), and values have shape
@@ -262,7 +265,7 @@ def blend_space_2d(x_positions, y_positions, clip_ids, values):
 	return ids, x_weights, y_weights[:, 1]
 
 
-def sample_clip_pairs(skeleton, clips, clip_ids, times, weights, *, out=None):
+def sample_clip_pairs(skeleton: Skeleton, clips: Mapping[int, Clip], clip_ids: ArrayLike, times: ArrayLike, weights: ArrayLike, *, out: Sequence[np.ndarray] | None=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	"""Evaluate two clamped clip samples per instance into batched local poses.
 
 	`clip_ids`, `times` and `weights` have shape (instances, 2). Weights are
@@ -301,10 +304,10 @@ def sample_clip_pairs(skeleton, clips, clip_ids, times, weights, *, out=None):
 		rows = np.flatnonzero(intermediate & (clip_ids[:, 0] == source) & (clip_ids[:, 1] == target))
 		mixed = sample_crossfade(clips[int(source)], clips[int(target)], times[rows, 0], times[rows, 1], weights[rows, 1], source_loop=False, target_loop=False)
 		for output, values in zip(pose, mixed): output[rows] = values
-	return pose
+	return cast(tuple[np.ndarray, np.ndarray, np.ndarray], pose)
 
 
-def model_matrices(skeleton, translation, rotation, scale, *, out=None):
+def model_matrices(skeleton: Skeleton, translation: ArrayLike, rotation: ArrayLike, scale: ArrayLike, *, out: np.ndarray | None=None) -> np.ndarray:
 	"""Convert batched local TRS to model matrices, processing one depth at a time."""
 	translation = np.asarray(translation, dtype=np.float32)
 	if translation.ndim != 3 or translation.shape[1:] != (len(skeleton.parents), 3):
@@ -326,7 +329,7 @@ def model_matrices(skeleton, translation, rotation, scale, *, out=None):
 	return result
 
 
-def skin_matrices(skeleton, model, *, out=None):
+def skin_matrices(skeleton: Skeleton, model: ArrayLike, *, out: np.ndarray | None=None) -> np.ndarray:
 	"""Return contiguous row-major 3x4 affine skin matrices (model @ inverse bind)."""
 	model = np.asarray(model, dtype=np.float32)
 	if model.ndim != 4 or model.shape[1:] != (len(skeleton.parents), 4, 4) or not np.isfinite(model).all():
@@ -337,7 +340,7 @@ def skin_matrices(skeleton, model, *, out=None):
 	return result
 
 
-def skin_vertices(positions, normals, joints, weights, matrices):
+def skin_vertices(positions: ArrayLike, normals: ArrayLike | None, joints: ArrayLike, weights: ArrayLike, matrices: ArrayLike) -> tuple[np.ndarray, np.ndarray | None]:
 	"""Skin one mesh on the CPU, returning positions and inverse-transpose normals.
 
 	Joint indices and weights have shape (vertices, influences); matrices have

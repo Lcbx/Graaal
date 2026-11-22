@@ -1,26 +1,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Sequence, TYPE_CHECKING
 import weakref
 
 import numpy as np
 
 from ..Assets import load_blue_noise
-from ..RenderContext import (
-    BufferUsage,
-    ComputePipeline,
-    GpuBuffer,
-    RenderContext,
-    Shader,
-    Texture,
-    TextureUsage,
-)
+from ..RenderContext import BufferUsage, ComputePipeline, GpuBuffer, RenderContext, Shader, Texture, TextureUsage
+
+
+if TYPE_CHECKING:
+	from ..RenderContext import ComputePass
 
 
 _default_blue_noise = None
 
 
-def get_default_blue_noise():
+def get_default_blue_noise() -> Texture:
 	"""Lazily upload the packaged tile, sharing it among active device users.
 
 	The weak cache does not retain GPU devices after renderers are released.
@@ -46,7 +43,7 @@ def get_default_blue_noise():
 	return texture
 
 
-def build_material_texture_array(images, materials, size):
+def build_material_texture_array(images: Sequence[np.ndarray], materials: np.ndarray, size: tuple[int, int]) -> Texture:
 	"""Upload source images, then resample/filter/correct/encode mips on the GPU.
 
 	Uncorrected premultiplied linear RGBA32F scratch mips retain tiny alpha values.
@@ -63,7 +60,7 @@ def build_material_texture_array(images, materials, size):
 	shader = Shader(filepath=str(Path(__file__).resolve().parents[1] / "shaders" / "material_mipmaps.shader"))
 	pipelines = {entry: ComputePipeline(shader, entry=entry) for entry in (
 		"decode", "resample", "init_source", "measure_source", "begin_search", "measure_candidate", "update_search", "encode")}
-	def dispatch(compute, entry, resources, x=1, y=1):
+	def dispatch(compute: ComputePass, entry: str, resources: dict[str, Any], x: int=1, y: int=1) -> None:
 		compute.set_pipeline(pipelines[entry])
 		compute.set_bind_group(shader.bind_group(0, **resources))
 		compute.dispatch(x, y)
