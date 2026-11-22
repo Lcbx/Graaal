@@ -1,48 +1,32 @@
-"""Greenman skeletal animation: 1 pose, 2 idle, 3 move, 4 attack; Space pauses.
+"""Dummy skeletal animation: 1 rest pose, 2 walk, 3 run; Space pauses.
 
 Run from the repository root: python main.py scenes/simple_animation_example.py
 """
-from pathlib import Path
-
-from graaal.Animation.SkeletalGltf import load_skinned_gltf
-
-
-ASSET = Path(__file__).parent / "resources" / "greenman.glb"
-def load_greenman(path=ASSET):
-	"""Load the example asset with the reusable skinned glTF importer."""
-	asset = load_skinned_gltf(path)
-	if len(asset.primitives) != 1: raise ValueError("The Greenman example expects one primitive")
-	primitive = asset.primitives[0]
-	return asset.skeleton, primitive.vertices, primitive.indices, asset.clips
-
-
+from scenes.animation_dummy import dummy_material_mesh, load_dummy
 
 def run_scene():
-	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.ECS import ECS
 	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.EcsAdapters.MaterialTransform import MaterialTransform
-	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
+	from graaal.Materials.MaterialRenderer import MaterialRenderer
 	from graaal.Math import Camera, Vec3
 	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
 
-	rig, vertices, indices, clips = load_greenman()
-	RenderContext.init_window(960, 720, "Greenman | 1-4: animation | Space: pause", required_gpu_features=["indirect-first-instance"])
-	shader = DefaultMaterialShader(default_material={"base_color": (0.22, 0.65, 0.25, 1), "roughness": 0.65})
-	mesh = MaterialMesh(vertices, shader, indices=indices, bounds=((0, 1, 0), (4, 4, 4)))
+	rig, primitive, clips = load_dummy()
+	RenderContext.init_window(960, 720, "Dummy | 1-3: animation | Space: pause", required_gpu_features=["indirect-first-instance"])
+	mesh, textures = dummy_material_mesh(primitive)
 	palette = SkinMatrixBuffer(3 * len(rig.parents))
 	poses = PosePalette(palette)
-	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette)
-	camera = Camera((0, 2.6, 11), (0, 1, 0), (0, 1, 0), 45, near=0.05, far=100)
+	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
+	camera = Camera((0, 1.6, 5.5), (0, 0.9, 0), (0, 1, 0), 45, near=0.05, far=100)
 	world = ECS()
 	world.register(SkeletonRef, ClipPlayer, MaterialInstance, MaterialTransform)
 	entities = world.create(3)
 	for i, entity in enumerate(entities):
-		world.add(entity, SkeletonRef(0), ClipPlayer(min(i + 1, len(clips) - 1)),
-			MaterialInstance(mesh), MaterialTransform(position=Vec3((i - 1) * 3, 0, 0)))
+		world.add(entity, SkeletonRef(0), ClipPlayer(i), MaterialInstance(mesh), MaterialTransform(position=Vec3((i - 1) * 1.7, 0, 0)))
 	players = world.get(ClipPlayer)
 	anim = EcsAnimationAdapter(world, {0: rig}, {i: clip for i, (_, clip) in enumerate(clips)})
 	materials = EcsMaterialAdapter(renderer, world)
@@ -63,7 +47,7 @@ def run_scene():
 	while RenderContext.window_loop():
 		poses.update(anim.update(RenderContext.frame_time))
 		materials.sync()
-		commands = RenderContext.commands("greenman")
+		commands = RenderContext.commands("simple_animation_example")
 		renderer.record(commands, RenderContext.window_dimensions, camera, RenderContext.screen())
 		RenderContext.submit(commands.finish())
 

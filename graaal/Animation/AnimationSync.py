@@ -80,6 +80,25 @@ class SyncMapping:
 		if not np.isfinite(self._rates).all() or np.any(self._rates <= 0): raise ValueError("sync intervals must have finite positive rate ratios")
 		self._target_offsets = np.mod(self._target_times - self._target_times[0], target.duration)
 
+	def _local_clock(self, times: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+		duration = self.source.duration
+		local = np.mod(times, duration)
+		with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+			cycles = np.floor(times / duration)
+		rows = np.flatnonzero((cycles != 0) & (np.abs(cycles) < 2**52))
+		if len(rows):
+			markers = self.source.times
+			right = np.searchsorted(markers, local[rows], side="right")
+			# A wrapped timestamp can be off by an ulp at an authored marker.
+			# Match the actual unwrapped crossing, without rounding nearby times.
+			for candidate in (right - 1, right):
+				phase = markers[candidate % len(markers)]
+				with np.errstate(over="ignore", invalid="ignore"):
+					cycle = np.rint((times[rows] - phase) / duration)
+					exact = cycle * duration + phase == times[rows]
+				local[rows[exact]], cycles[rows[exact]] = phase[exact], cycle[exact]
+		return local, cycles
+
 	def map(self, times: ArrayLike, *, reverse: bool=False) -> tuple[np.ndarray, np.ndarray]:
 		"""Return wrapped target times and local time-rate ratios for source times.
 
@@ -91,7 +110,7 @@ class SyncMapping:
 		times = np.asarray(times, dtype=np.float64)
 		if times.ndim != 1 or not np.isfinite(times).all(): raise ValueError("source times must be a finite 1D array")
 		if not isinstance(reverse, (bool, np.bool_)): raise ValueError("reverse must be boolean")
-		local = np.mod(times, self.source.duration)
+		local, _ = self._local_clock(times)
 		segment = (np.searchsorted(self.source.times, local, side="left" if reverse else "right") - 1) % len(self.source.times)
 		elapsed = np.mod(local - self.source.times[segment], self.source.duration)
 		phase = elapsed / self._source_spans[segment]
@@ -118,10 +137,8 @@ class SyncMapping:
 			raise ValueError("interval endpoints and target starts must be equal-length finite 1D arrays")
 		positions, cycles = [], []
 		for times in (start, end):
-			with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-				cycle = np.floor(times / self.source.duration)
+			local, cycle = self._local_clock(times)
 			if not np.isfinite(cycle).all() or np.any(np.abs(cycle) >= 2**52): raise ValueError("sync interval exceeds supported loop count")
-			local = np.mod(times, self.source.duration)
 			segment = (np.searchsorted(self.source.times, local, side="right") - 1) % len(self.source.times)
 			elapsed = np.mod(local - self.source.times[segment], self.source.duration)
 			phase = elapsed / self._source_spans[segment]

@@ -9,6 +9,11 @@ from graaal.Animation.SkeletalAnimation import Clip, Skeleton, blend_poses, samp
 from tools.animation_graph_playback import GraphPlayback, state_pose, state_sample
 
 
+def playback_snapshot(player):
+	return (player.state, player.time, player.speed, player.target_state,
+		player.target_time, player.target_speed, player.elapsed, player.duration)
+
+
 def graph(*, sync=False, duration=0.25, static=False):
 	rotation, scale = np.array([[[0, 0, 0, 1]]] * 2), np.ones((2, 1, 3))
 	rig = Skeleton([-1], [[0, 0, 0]], rotation[0], scale[0], [np.eye(4)])
@@ -135,9 +140,9 @@ def test_preview_poses_and_clocks_match_existing_ecs_playback(sync):
 def test_invalid_updates_preserve_active_transition(dt, parameters):
 	player = GraphPlayback(graph())
 	player.advance(0.1, [1])
-	before = player.__dict__.copy()
+	before = playback_snapshot(player)
 	with pytest.raises(ValueError): player.advance(dt, parameters)
-	assert player.__dict__ == before
+	assert playback_snapshot(player) == before
 
 
 def blend_graph(initial="idle", *, static=False, sync=False):
@@ -223,10 +228,10 @@ def test_static_blend_states_complete_fades_and_reject_invalid_updates_atomicall
 	player = GraphPlayback(blend_graph(static=True))
 	player.advance(0.125, [1, 0.5])
 	np.testing.assert_allclose(player.pose([1, 0.5])[0], [[[1, 0, 0]]])
-	before = player.__dict__.copy()
+	before = playback_snapshot(player)
 	for dt, parameters in ((-1, [1, 0.5]), (0.1, [1]), (0.1, [np.nan, 0])):
 		with pytest.raises(ValueError): player.advance(dt, parameters)
-		assert player.__dict__ == before
+		assert playback_snapshot(player) == before
 	player.advance(0.125, [1, 0.5])
 	assert player.state == 1 and player.target_state is None and player.time == 0.25
 	np.testing.assert_allclose(player.pose([1, 0.5])[0], [[[2, 0, 0]]])
@@ -307,10 +312,10 @@ def test_static_and_degenerate_2d_states(x, y, expected):
 	np.testing.assert_allclose(player.pose([0, 0.25, 0])[0], [[[expected, 0, 0]]])
 	assert player.time == 2.1
 	player.advance(0.125, [1, 0.25, 0])
-	before = player.__dict__.copy()
+	before = playback_snapshot(player)
 	for dt, parameters in ((-1, [1, 0, 0]), (0.1, [1, 0]), (0.1, [1, np.nan, 0])):
 		with pytest.raises(ValueError): player.advance(dt, parameters)
-		assert player.__dict__ == before
+		assert playback_snapshot(player) == before
 	player.reset(2, 5.5)
 	assert player.time == 5.5 and player.target_state is None and player.speed == 1
 

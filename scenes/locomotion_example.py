@@ -2,36 +2,40 @@
 
 Run: python main.py scenes/locomotion_example.py [--frames 120]
 """
+from dataclasses import replace
 import numpy as np
 from pathlib import Path
 
-from graaal.Animation.SkeletalAnimation import Clip
+from graaal.Animation.SkeletalAnimation import Clip, Skeleton
+from scenes.animation_dummy import dummy_material_mesh, load_dummy
 from scenes.root_motion_example import Movement, crossfade
-from scenes.simple_animation_example import load_greenman
 
 
 CITY_PERIOD = 500.0
 CHARACTER_X = -2.0
 
 
-def make_locomotion_clips(named_clips):
-	"""Add a linear root track to Greenman's in-place walk animation."""
-	clips = dict(named_clips)
-	idle, walk = clips["1_idle"], clips["2_move"]
-	result = {0: idle}
-	for clip_id, speed in ((1, 1.5), (2, 4.0)):
-		translation = walk.translation.copy()
-		times = np.arange(len(translation), dtype=np.float32) / walk.fps
-		# Keep the root on the street centerline: forward is world -Z, not +X.
-		translation[:, 0, 0] = walk.translation[0, 0, 0]
-		translation[:, 0, 2] = walk.translation[0, 0, 2] + times * speed
-		result[clip_id] = Clip(translation, walk.rotation, walk.scale, walk.fps)
-	return result
+def make_locomotion_clips(rig, primitive, named_clips):
+	"""Add a trajectory root above the animated hips of the in-place clips."""
+	rig = Skeleton(np.r_[-1, rig.parents + 1], np.vstack(([0, 0, 0], rig.translation)),
+		np.vstack(([0, 0, 0, 1], rig.rotation)), np.vstack(([1, 1, 1], rig.scale)),
+		np.concatenate((np.eye(4)[None], rig.inverse_bind)))
+	vertices = primitive.vertices.copy()
+	vertices["joints"] += 1
+	clips = {}
+	for clip_id, ((_, clip), speed) in enumerate(zip(named_clips, (0.0, 1.5, 4.0), strict=True)):
+		frames = len(clip.translation)
+		trajectory = np.zeros((frames, 1, 3), dtype=np.float32)
+		trajectory[:, 0, 2] = np.arange(frames, dtype=np.float32) * (speed / clip.fps)
+		rotation = np.broadcast_to(rig.rotation[0], (frames, 1, 4))
+		scale = np.broadcast_to(rig.scale[0], (frames, 1, 3))
+		clips[clip_id] = Clip(np.concatenate((trajectory, clip.translation), axis=1),
+			np.concatenate((rotation, clip.rotation), axis=1), np.concatenate((scale, clip.scale), axis=1), clip.fps)
+	return rig, replace(primitive, vertices=vertices), clips
 
 
 def run_scene():
 	from imgui_bundle import imgui
-	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.DrawBatches import DrawBatches, RenderShader, ShaderPass
 	from graaal.ECS import ECS, Scheduler
 	from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
@@ -40,8 +44,8 @@ def run_scene():
 	from graaal.UI.ImGui import ImGui
 	from graaal.RenderContext.Geometry import make_cube_mesh
 	from graaal.DrawBatches.InstanceData import MESH_INSTANCE_DTYPE, pack_quaternion, pack_rgba8_srgb, pack_scale
-	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
-	from graaal.Math import Camera, Vec3
+	from graaal.Materials.MaterialRenderer import MaterialRenderer
+	from graaal.Math import Camera, Quaternion, Vec3
 	from graaal.Animation.PosePalette import PosePalette
 	from graaal.RenderContext import RenderContext, RenderPipeline, Shader
 	from graaal.Animation.RootMotion import RootMotion
@@ -51,14 +55,12 @@ def run_scene():
 	from graaal.UI.rendering_settings import RenderingSettings
 	from scenes.example_overlay import ExampleOverlay
 
-	rig, vertices, indices, named_clips = load_greenman()
-	clips = make_locomotion_clips(named_clips)
+	rig, primitive, clips = make_locomotion_clips(*load_dummy())
 	RenderContext.init_window(1100, 760, "Root-motion locomotion | F: rendering | P: profiler | Space: pause", required_gpu_features=["indirect-first-instance"], optional_gpu_features=["timestamp-query"])
-	shader = DefaultMaterialShader(default_material={"base_color": (0.22, 0.65, 0.25, 1), "roughness": 0.65})
-	mesh = MaterialMesh(vertices, shader, indices=indices, bounds=((0, 1, 0), (4, 4, 4)))
+	mesh, textures = dummy_material_mesh(primitive)
 	palette = SkinMatrixBuffer(len(rig.parents))
 	poses = PosePalette(palette)
-	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette)
+	renderer = MaterialRenderer(meshes=[mesh], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
 	city_shader = Shader(filepath=str(Path(__file__).parent / "shaders" / "complex.shader"))
 	city_uniforms = city_shader.uniform_buffer()
 	city_bindings = (city_shader.bind_group(0, uniforms=city_uniforms),)
@@ -97,27 +99,28 @@ def run_scene():
 	city.write_instances(instances[city.instance_order])
 	city_visibility = city.create_visibility().all_visible()
 	city_samples = 1
-	camera = Camera((CHARACTER_X, 2.6, 10), (CHARACTER_X, 1, 0), (0, 1, 0), 45, near=0.05, far=250)
+	camera = Camera((CHARACTER_X + 1.5, 1.9, 5.5), (CHARACTER_X, 0.9, 0), (0, 1, 0), 45, near=0.05, far=250)
 	world = ECS()
 	world.register(SkeletonRef, ClipPlayer, Movement, MaterialInstance, MaterialTransform)
 	entity = world.create()[0]
-	world.add(entity, SkeletonRef(0), ClipPlayer(0, extract_root_motion=True), Movement(), MaterialInstance(mesh), MaterialTransform(position=Vec3(CHARACTER_X, 0, 0)))
+	transform = MaterialTransform(position=Vec3(CHARACTER_X, 0, 0), rotation=Quaternion.from_y_rotation(np.pi))
+	world.add(entity, SkeletonRef(0), ClipPlayer(1, extract_root_motion=True), Movement(), MaterialInstance(mesh), transform)
 	root_motions = {(0, clip_id): RootMotion(rig, clip) for clip_id, clip in clips.items()}
 	animation = EcsAnimationAdapter(world, {0: rig}, clips, root_motions=root_motions)
 	materials = EcsMaterialAdapter(renderer, world)
 	settings = RenderingSettings(renderer, visible=False, position=(370, 12), camera=camera)
 	overlay = ExampleOverlay(settings, renderer=renderer, profiler_position=(370, 12))
 	presenter = ResolutionPresenter(target_format=renderer.transparency.target_format)
-	playing, selected = True, 0
+	playing, selected = True, 1
+	labels = ("Rest", "Walk", "Run")
 	fixed_dt, accumulator = 1 / 60, 0.0
 
 	def accept_movement(world, commands, dt):
 		for batch in animation.root_motion_batches:
 			movement = world.get(Movement)[batch.entities]
 			transforms = world.get(MaterialTransform)[batch.entities]
-			# The synthetic root track advances along -Z. Movement.x is the
-			# distance into the current repeating city block (not world X).
-			requested = -batch.matrices[:, 2, 3].astype(np.float32)
+			# Character-local +Z points down the street along world -Z.
+			requested = batch.matrices[:, 2, 3].astype(np.float32)
 			distance = (movement.x + requested) % CITY_PERIOD
 			position = transforms.position.copy()
 			position[:, 2] = -distance
@@ -144,16 +147,16 @@ def run_scene():
 		imgui.set_next_window_size((330, 360), imgui.Cond_.first_use_ever)
 		imgui.begin("Root-motion locomotion")
 		try:
-			imgui.text_wrapped("Greenman's in-place walk uses forward root motion. The 500-unit city loops seamlessly, without a movement boundary.")
+			imgui.text_wrapped("The in-place walk and run use a separate forward root-motion track.")
 			player = world.get(ClipPlayer)[[entity]]
-			for clip_id, label in enumerate(("Idle", "Walk", "Run")):
+			for clip_id, label in enumerate(labels):
 				if clip_id: imgui.same_line()
 				if imgui.button(label) and not player.transitioning[0]:
 					crossfade(world, entity, clip_id)
 					selected = clip_id
 			_, playing = imgui.checkbox("Playing (Space)", playing)
 			movement = world.get(Movement)[[entity]]
-			imgui.text(f"Selected: {('Idle', 'Walk', 'Run')[selected]}")
+			imgui.text(f"Selected: {labels[selected]}")
 			imgui.text(f"Distance within loop: {movement.x[0]:.2f} / {CITY_PERIOD:.0f}")
 			imgui.text(f"Last requested: {movement.requested[0]:.4f}")
 			imgui.text(f"Last accepted: {movement.accepted[0]:.4f}")
@@ -176,8 +179,8 @@ def run_scene():
 				poses.update(animation.batches)
 				materials.sync()
 				character_z = float(world.get(MaterialTransform)[[entity]].position[0, 2])
-				camera.position = Vec3(CHARACTER_X, 2.6, character_z + 10)
-				camera.target = Vec3(CHARACTER_X, 1, character_z)
+				camera.position = Vec3(CHARACTER_X + 1.5, 1.9, character_z + 5.5)
+				camera.target = Vec3(CHARACTER_X, 0.9, character_z)
 				commands = overlay.commands("locomotion_example")
 				window_size = RenderContext.window_dimensions
 				render_size = settings.render_size(window_size)

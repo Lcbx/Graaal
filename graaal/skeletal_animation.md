@@ -249,6 +249,82 @@ See [animation_graph_example.py](../scenes/animation_graph_example.py) for an EC
 locomotion controller and an independent masked upper-body layer compiled from
 one definition.
 
+### Batched runtime graph playback
+
+`graaal.Animation.AnimationGraphPlayback.AnimationGraphPlayback` owns a fixed
+batch of independent clocks for a compiled graph, without ECS or graphics:
+
+```python
+from graaal.Animation.AnimationGraphPlayback import AnimationGraphPlayback
+
+player = AnimationGraphPlayback(graph, count)
+parameters = np.tile(graph.parameter_defaults, (count, 1))
+player.advance(dt, parameters)
+local_pose = player.pose(parameters)
+# For a graph with a single sample slot:
+output = graph.input_plan.evaluate(graph.clips, (), parameters[:, graph.weight_columns], poses=[local_pose])
+```
+
+Clip, 1D and 2D states can coexist in one batch. Selection, sampling and fades
+operate on groups of compatible states rather than looping over characters.
+2D poses blend horizontally, then vertically, before the state fade. The
+returned local TRS arrays own their storage and survive later player calls.
+Supply additional layer poses in compiled sample-slot order, then apply masks,
+additive layers and in-place operations through `input_plan`. Plans retain their
+usual reusable-output lifetime; root-motion inputs remain application-owned.
+See [animation_graph_batch_example.py](../scenes/animation_graph_batch_example.py)
+for synchronized locomotion with a masked layer and final skin matrices.
+
+`advance` accepts a nonnegative scalar `dt` or a `(count,)` array, allowing
+individual rows to pause with zero time steps. A zero step can still select an
+edge. Parameters must have shape `(count, len(graph.parameter_defaults))`;
+omitting them uses the compiled defaults. `pose` uses the parameters supplied
+to that call, so live blend changes need no clock reset.
+
+`reset(states=None, times=0, *, speeds=1, rows=None)` seeks all or selected unique
+integer row indices, cancels their fades and sets nonnegative playback speeds.
+States are compiled integer IDs; omitted states use `graph.initial_state`.
+Each value can be scalar or aligned with the selected rows. Clip clocks wrap;
+blend clocks retain unwrapped seconds. Speed changes clip time, while fades
+advance in `dt` seconds. All clips loop; reverse playback is not supported by
+this controller.
+
+`states`, `times`, `speeds`, `target_states`, `target_times`, `target_speeds`,
+`elapsed` and `durations` are read-only array snapshots. A target state of `-1`
+means no active fade. Failed advances/resets preserve every row. Each advance
+selects at most one edge per row, never interrupts an active fade and promotes
+without restarting target time. Explicit marker mappings use clip or blend
+reference clocks; transition sync ends at promotion, retaining the endpoint
+target speed. Fixed-reference synchronization inside a blend remains active.
+Requested root motion, entity identity and ECS integration are application-owned.
+
+To receive gameplay events, pass `event_tracks={state_id: track}` when creating
+the player. Use `graph.state_ids` to look up compiled IDs. The player snapshots
+each `EventTrack` independently of the tracks passed to `compile(sync_tracks=...)`.
+For clip states, use the clip duration. For synchronized blends, use the
+reference clip duration. For unsynchronized blends, supply a positive event cycle
+duration in state-clock seconds. Each state reads its own track as parameters
+change which clips contribute to the pose.
+
+```python
+moving = graph.state_ids["moving"]
+player = AnimationGraphPlayback(graph, count, event_tracks={moving: moving_events})
+for event in player.advance(dt, parameters):
+	print(event.row, event.state, event.name, event.offset, event.role, event.weight)
+```
+
+`advance` returns an immutable tuple of `GraphEvent` records. `offset` is seconds
+from the start of the tick and `weight` is the state's fade weight at that time.
+Records are ordered by row and tick offset, with source first at equal offsets
+and authored order at ties within a track. Traversal excludes the interval start
+and includes its end. The player keeps the event cursor continuous across clip
+wraps. During synchronized fades, matching markers share a tick timestamp.
+Resets and zero steps produce no crossings. Both states emit during fades,
+and the target retains its role for the rest of the tick
+after promotion. The application decides how to handle overlapping events.
+
+### Named blend selectors
+
 Each `graph.blend_spaces[name]` stores a parameter column and an ordered clip
 axis. Call `ids, weights = graph.blend_spaces[name].select(parameter_rows)` with
 finite `(instances, parameter_columns)` rows. The existing `blend_space_1d`

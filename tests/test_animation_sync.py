@@ -30,6 +30,17 @@ def test_mapping_times_feed_existing_clip_pair_sampler():
 	np.testing.assert_allclose(pose[0][:, 0, 0], [1, 2])
 
 
+def test_wrapped_decimal_marker_uses_the_exact_forward_and_reverse_intervals():
+	mapping = SyncMapping(EventTrack(1, [0, 0.2], ["a", "b"]), EventTrack(2, [0, 0.25], ["a", "b"]))
+	starts = [np.nextafter(1.2, -np.inf), 1.2, np.nextafter(1.2, np.inf)]
+	times, rates = mapping.map(starts)
+	assert times[0] < times[1] == 0.25 < times[2]
+	np.testing.assert_array_equal(rates, [1.25, 2.1875, 2.1875])
+	reverse_times, reverse_rates = mapping.map(starts, reverse=True)
+	assert reverse_times[1] == 0.25
+	np.testing.assert_array_equal(reverse_rates, [1.25, 1.25, 2.1875])
+
+
 def test_advance_preserves_phase_across_markers_loops_and_reverse():
 	source = EventTrack(2, [0.2, 0.7, 1.7], ["left", "right", "lift"])
 	target = EventTrack(4, [0.5, 1, 3], ["right", "lift", "left"])

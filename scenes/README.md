@@ -32,10 +32,19 @@ cleans up the context afterward.
 | `material_example.py` | Shared material dictionaries, per-instance overrides, rim lighting and animated stripes. Space orbits; M toggles MSAA; D changes a default material; F opens settings; P opens the performance profiler. |
 | `postprocessing_example.py` | Drive forward or backward with W/S or Up/Down, look with A/D or Left/Right, and adjust maximum blur, acceleration boost and vignette exponent in the panel. Space toggles blur. |
 | `msaa_example.py` | Minimal full-window rotating triangle; 1 selects single sampling and 4 selects 4x MSAA. |
-| `simple_animation_example.py` | Three Greenman ECS players sharing a mesh with independent GPU skinning and material rendering. Keys 1–4 select clips for all; Space pauses. |
+| `simple_animation_example.py` | Three ECS players share the textured dummy mesh with independent GPU skinning. Keys 1–3 select rest pose, Walking and Running for all. Space pauses. |
 | `mixing_animation_example.py` | Compare a manually weighted clip blend with an ECS crossfade. Choose clips, adjust playback and fade settings in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
 | `layered_animation_example.py` | Compare a base clip with a masked override or additive layer. Adjust the clips, bone mask, layer weight and playback speeds in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
-| `locomotion_example.py` | Greenman crossfades between idle, walk and run using synthetic root translation. Adjust the movement boundary and compare requested and accepted displacement in ImGui. |
+| `locomotion_example.py` | The dummy crossfades between rest, walk and run. A separate root track moves it through the looping city. Compare requested and accepted displacement in ImGui. |
+
+The four rendered animation scenes use [dummy_rigged.glb](resources/dummy_rigged.glb)
+and baked clips from [Walking.fbx](resources/Walking.fbx) and
+[Running.fbx](resources/Running.fbx). If you edit the source assets, rebuild the
+clip bundle with Blender from the repository root:
+
+```powershell
+blender --background --factory-startup --python-exit-code 1 --python tools/bake_dummy_animations.py
+```
 
 These files are runnable examples rather than a stable scene API. For reusable
 components, see the [engine guide](../graaal/README.md), [ECS reference](../graaal/ECS_API.md),
@@ -51,6 +60,7 @@ Run headless examples as `python -m scenes.<name>`:
 | `animation_events_example` | Forward/reverse playback and scheduled footstep-event consumption | Core |
 | `root_motion_example` | Idle/walk/run crossfades with requested and boundary-accepted movement | Core |
 | `animation_graph_example` | Compiled conditional states and a masked upper-body layer for two characters | Core |
+| `animation_graph_batch_example` | Standalone batched graph playback, synchronized 1D states and a masked upper-body layer | Core |
 | `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK and normal alignment | Core |
 | `physics_headless_example` | Standalone native self-test, batched boxes, snapshots and events; no ECS | `physics` |
 | `physics_locomotion_example` | Root-motion acceptance against a native shape sweep; blocking only | `physics` |
