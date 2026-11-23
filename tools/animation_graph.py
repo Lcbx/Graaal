@@ -48,6 +48,7 @@ class GraphWindow:
 		self.last_tick = time.monotonic()
 		self.graph, self.parameters, self.target_state = None, None, None
 		self.parameter_entries, self.bindings = {}, {}
+		self.state_parameter_window = None
 		self.transition_window = None
 		self.blend_space_window = None
 		self.blend_grid_window = None
@@ -72,11 +73,11 @@ class GraphWindow:
 		ttk.Button(toolbar, text="Load project", command=self.load_project).pack(side="left", padx=(0, 5))
 		ttk.Button(toolbar, text="Save project", command=self.save_project).pack(side="left", padx=(0, 5))
 		ttk.Button(toolbar, text="Compile draft", command=self.compile_draft).pack(side="left")
+		ttk.Button(toolbar, text="Edit states / parameters", command=self.open_states_parameters).pack(side="left", padx=5)
 		ttk.Button(toolbar, text="Edit transitions", command=self.open_transitions).pack(side="left", padx=5)
 		ttk.Button(toolbar, text="Edit sync markers", command=self.open_sync_markers).pack(side="left", padx=5)
 		ttk.Button(toolbar, text="Edit 1D blends", command=self.open_blend_spaces).pack(side="left", padx=5)
 		ttk.Button(toolbar, text="Edit 2D grids", command=self.open_blend_grids).pack(side="left", padx=5)
-		ttk.Checkbutton(toolbar, text="Preview graph in viewport", variable=self.preview_enabled, command=self.change_preview).pack(side="left", padx=10)
 		clock_row = ttk.Frame(self.window, padding=(8, 0, 8, 8))
 		clock_row.pack(fill="x")
 		ttk.Label(clock_row, text="Clip").pack(side="left")
@@ -86,6 +87,7 @@ class GraphWindow:
 		self.clip_box.bind("<<ComboboxSelected>>", self.change_clip)
 		self.play_button = ttk.Button(clock_row, text="Play", command=self.toggle_play)
 		self.play_button.pack(side="left", padx=5)
+		ttk.Checkbutton(clock_row, text="Preview graph in viewport", variable=self.preview_enabled, command=self.change_preview).pack(side="left", padx=10)
 		self.clock = tk.DoubleVar(value=0)
 		self.clock_scale = ttk.Scale(clock_row, from_=0, to=max(animation.clip.duration for animation in animations), variable=self.clock, command=self.change_time)
 		self.clock_scale.pack(side="left", fill="x", expand=True, padx=5)
@@ -197,7 +199,7 @@ class GraphWindow:
 		except (OSError, ValueError, TypeError) as exc:
 			self.status.set(f"Cannot load project: {exc}")
 			return
-		for form in (self.transition_window, self.blend_space_window, self.blend_grid_window, self.sync_marker_window):
+		for form in (self.state_parameter_window, self.transition_window, self.blend_space_window, self.blend_grid_window, self.sync_marker_window):
 			if form is not None: form.close()
 		for animation, (events, sync) in zip(self.animations, timelines): animation.events, animation.sync_markers = events, sync
 		self.editor.delete("1.0", "end")
@@ -207,6 +209,19 @@ class GraphWindow:
 		self.apply_definition(definition, graph)
 		self.project_path = Path(path)
 		self.status.set(f"Loaded graph and markers from {path}.")
+
+	def open_states_parameters(self):
+		if self.state_parameter_window is not None:
+			self.state_parameter_window.window.lift()
+			return
+		try:
+			text = self.editor.get("1.0", "end-1c")
+			definition, _ = self.compile_definition(json.loads(text))
+		except (ValueError, TypeError) as exc:
+			self.status.set(f"Cannot edit states and parameters: {exc}")
+			return
+		from .animation_graph_forms import StateParameterWindow
+		self.state_parameter_window = StateParameterWindow(self, definition.data, text)
 
 	def open_transitions(self):
 		if self.transition_window is not None:

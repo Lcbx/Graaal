@@ -50,6 +50,52 @@ def set_draft(editor, data):
 	editor.compile_draft()
 
 
+def test_preview_toggle_fits_at_minimum_window_width(window):
+	width, height = window.window.minsize()
+	window.window.geometry(f"{width}x{height}")
+	window.window.deiconify()
+	window.window.update()
+	toggle = next(
+		widget for row in window.window.winfo_children() for widget in row.winfo_children()
+		if isinstance(widget, window.ttk.Checkbutton) and widget.cget("text") == "Preview graph in viewport"
+	)
+	assert window.window.winfo_width() == width
+	assert toggle.winfo_ismapped()
+	assert toggle.winfo_width() >= toggle.winfo_reqwidth()
+
+
+def test_state_parameter_form_rebinds_rules_and_writes_only_the_draft(window):
+	graph = window.graph
+	window.open_states_parameters()
+	form = window.state_parameter_window
+	form.trees["parameters"].selection_set("advance")
+	form.select("parameters")
+	form.edit("parameters", "remove")
+	assert "Cannot stage edit" in form.status.get()
+	form.names["parameters"].set("go")
+	form.edit("parameters", "update")
+	assert all(rule["conditions"][0]["parameter"] == "go" for rule in form.data["transitions"])
+	form.trees["states"].selection_set("0: idle")
+	form.select("states")
+	form.names["states"].set("rest")
+	form.edit("states", "update")
+	assert form.data["initial_state"] == "rest"
+	assert form.data["transitions"][0]["source"] == "rest"
+	assert form.data["transitions"][-1]["target"] == "rest"
+	form.names["states"].set("another")
+	form.edit("states", "add")
+	form.edit("states", "initial")
+	assert form.data["initial_state"] == "another"
+	form.apply()
+	assert window.graph is graph
+	window.compile_draft()
+	assert list(window.graph.parameter_columns) == ["go"]
+	assert window.graph.initial_state == window.graph.state_ids["another"]
+	window.editor.insert("end", " ")
+	form.apply()
+	assert "JSON draft changed" in form.status.get()
+
+
 def test_project_save_keeps_live_preview_and_load_restores_draft_and_markers(window, tmp_path):
 	editor = window
 	editor.animations[0].events.add(0.25, "step")

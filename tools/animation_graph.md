@@ -15,7 +15,7 @@ setting `advance` above `0.5` selects a transition to the next clip in the cycle
 Choose a state in the list or diagram to inspect it in the viewport. The graph
 clock can be scrubbed or played independently of the timeline tool.
 
-Edit states, transition conditions, masks and layered tasks in the draft, then
+Edit graph settings in the draft or the structured forms, then
 choose **Compile draft**. Validation uses
 [`AnimationGraphDefinition`](../graaal/skeletal_animation.md#editable-graph-definitions)
 and identifies invalid fields/tasks. Successful compilation pauses and resets the preview
@@ -25,6 +25,13 @@ Compilation does not save files. Use **Save project** to persist the current dra
 and all event/sync markers in a JSON sidecar. **Load project** validates and applies
 a project for the open asset. See [authoring projects](animation_project.md) for
 the shared format and replacement rules.
+
+Choose **Edit states / parameters** to add, update or remove states and parameter
+defaults. A state can use a clip, a 1D blend or a 2D blend. Select a state and
+choose **Set initial state** to change the starting state. Renaming a state or
+parameter updates its references. Remove references in the relevant form or
+draft before removing a referenced item. **Write states and parameters to draft**
+validates and writes the edits. Compile the draft to apply them to the preview.
 
 Choose **Edit transitions** to configure rules in a form using the current valid
 JSON draft. Select a rule to edit its source, target and fade duration, or choose
@@ -37,8 +44,8 @@ matching rule wins. **Remove selected** removes a staged rule.
 edit. It preserves the other graph fields and leaves the compiled preview alone;
 choose **Compile draft** to apply it. Closing the form discards changes that have
 not been written. If the JSON text changes while the form is open, writing is
-blocked: close and reopen the form to use the latest draft. Parameters and states
-are chosen from the draft; add new ones in JSON before opening the form.
+blocked; close and reopen the form to use the latest draft. Parameters and states
+are chosen from the draft.
 
 Edit preview parameter values and choose **Apply parameters / evaluate conditions**
 to inspect the first matching transition and its configured duration. The
@@ -63,7 +70,8 @@ slider is disabled in automatic mode. All preview clips loop, including targets
 after promotion; marker synchronization ends when the fade completes, retaining
 the target speed at that endpoint. Static clips can still transition.
 
-To use a named blend space as a state, replace that state's `clip` entry in JSON:
+To use a named blend space as a state, choose it in the state form or use its
+binding in JSON.
 
 ```json
 "states": {

@@ -81,3 +81,7 @@ stub or a list of references and call sites. Regression tests are in
 - [Authoring projects](animation_project.md): explicitly save/load graph definitions and markers in shared JSON sidecar files.
 
 Both tools use the shared asset loader and CPU preview; neither requires the other to run.
+
+## Physics tools
+
+- [Ragdoll tuner](ragdoll_tuner.md): edit per-bone colliders, mass, hard and soft limits, and neutral springs in a live physics preview.

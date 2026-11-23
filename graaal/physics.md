@@ -424,6 +424,27 @@ the rendering skeleton. Shapes and masses determine native inertias; the example
 keeps body damping, floor friction and self collision enabled. The example's
 `--view` mode replays the collider poses for visual inspection.
 
+### Powered ragdoll observations and motor actions
+
+`graaal.PhysicsRagdollControl.ragdoll_observations` gathers one ordered batch of
+bone UIDs from a native world. It copies body pose and velocity, parent-local
+joint state, authored mass-weighted body centers, current support contacts,
+reference rotations and previous actions. Supply the active contact pairs for
+that tick and the body IDs that count as support. This calculation uses the physical
+center offsets of the authored symmetric shapes. It expects positive bone masses.
+
+`apply_ragdoll_motors(handles, reference, action, max_offset=..., max_strength=...)`
+queues pose targets and per-bone torque caps. Each action row has a three-component
+rotation vector in reference-local radians and a strength fraction. The offset
+magnitude and strength are independently bounded. The root retains its reference
+orientation and zero joint strength. The application owns root forces, mode
+changes, native ticks and passive torque submission.
+
+The [active ragdoll example](../scenes/active_ragdoll_example.py) combines the
+motor and passive paths in a bounded standing probe. It uses a native upright
+spring and a bounded horizontal force at the pelvis when the feet have support.
+`--no-balance` measures tracking with the root freely simulated.
+
 ## Character controllers
 
 Register `PhysicsCharacter` and `CharacterState` alongside the usual body and
@@ -518,10 +539,11 @@ the interval. Queue teleports through `character_commands` to reset this history
 
 ### Animation and ragdoll hand-off
 
-The [character example](../scenes/character_example.py) compiles idle/walk states
-and an in-place pose plan using `AnimationGraphDefinition`. The existing ECS
-animation clock supplies `RootMotionBatch` requests; their horizontal distance
-over the fixed interval becomes requested controller speed. Gameplay placement
+The [character example](../scenes/character_example.py) compiles an idle state
+and a marker-synchronized 1D locomotion blend with an in-place pose plan.
+`EcsAnimationGraphAdapter` supplies character-space root motion and per-owner
+footstep events. The horizontal movement over the fixed interval becomes
+requested controller speed. Gameplay placement
 comes from accepted native motion, so a wall can reduce actual velocity to zero
 while animation still requests movement. Post-physics batched rays, excluding
 the character, drive foot IK only on grounded, valid upward-facing hits. The

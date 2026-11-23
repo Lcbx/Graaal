@@ -1,20 +1,28 @@
 """Headless ECS pre/post-physics pose tasks over an analytic terrain query.
 
-Run: python -m scenes.foot_ik_example
+Run: python -m scenes.foot_ik_example [--plant]
 """
+import argparse
+from dataclasses import field
+
 import numpy as np
 
 from graaal.ECS import ECS, Scheduler, component
 from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, SkeletonRef
+from graaal.Animation.InverseKinematics import foot_plant
 from graaal.Animation.PoseTasks import PoseOp, PosePlan
 from graaal.Animation.RootMotion import RootMotion
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
+from graaal.Math import Vec3
 
 
 @component
 class Character:
 	x: np.float32 = 0
 	ik_weight: np.float32 = 1
+	locked: bool = False
+	anchor: Vec3 = field(default_factory=lambda: Vec3(0, 0, 0))
+	anchor_normal: Vec3 = field(default_factory=lambda: Vec3(0, 1, 0))
 
 
 def terrain_height(x):
@@ -27,7 +35,7 @@ def terrain_normal(x):
 	return np.column_stack((-0.25 * np.cos(x), np.ones_like(x), np.zeros_like(x)))
 
 
-def create_demo(ground_query=None):
+def create_demo(ground_query=None, *, plant=False):
 	"""Optional ground_query(world_points) returns heights and normals per foot."""
 	rig = Skeleton([-1, 0, 1], [[0, 2, 0], [0, -1, 0], [0, -1, 0]], [[0, 0, 0, 1]] * 3, np.ones((3, 3)), np.tile(np.eye(4), (3, 1, 1)))
 	translations = np.tile(rig.translation, (3, 1, 1))
@@ -63,13 +71,23 @@ def create_demo(ground_query=None):
 			target = model[:, 2, :3, 3].copy()
 			points = target.copy()
 			points[:, 0] += character.x
+			query_points = points
+			if plant:
+				stance = (character.ik_weight > 0) & (world.get(ClipPlayer)[owners].time < 0.75)
+				query_points = np.where((stance & character.locked)[:, None], character.anchor, points)
 			if ground_query is None:
-				height, normal = terrain_height(points[:, 0]), terrain_normal(points[:, 0])
+				height, normal = terrain_height(query_points[:, 0]), terrain_normal(query_points[:, 0])
 			else:
-				height, normal = ground_query(points)
+				height, normal = ground_query(query_points)
 			valid = np.isfinite(height) & np.all(np.isfinite(normal), axis=1) & (np.linalg.norm(normal, axis=1) > 1e-6)
-			target[valid, 1] = height[valid]
+			points[valid, 1] = height[valid]
 			normal = np.where(valid[:, None], normal, [0, 1, 0])
+			if plant:
+				stance &= valid
+				points, normal = foot_plant(points, normal, stance, character.locked, character.anchor, character.anchor_normal)
+				character.assign(locked=stance, anchor=points, anchor_normal=normal)
+			points[:, 0] -= character.x
+			target = points
 			pole = root + [0, 0, 1]
 			frames["goals"].append(((target, pole), (normal,)))
 			frames["ground_hits"].append(valid)
@@ -90,8 +108,8 @@ def create_demo(ground_query=None):
 	return world, entities, animation, schedule, frames
 
 
-def run_scene():
-	world, entities, animation, schedule, frames = create_demo()
+def run_scene(*, plant=False):
+	world, entities, animation, schedule, frames = create_demo(plant=plant)
 	for tick in range(8):
 		schedule.run(0.25, fixed_steps=1, fixed_dt=0.25)
 		for owners, matrices in frames["batches"]:
@@ -101,4 +119,6 @@ def run_scene():
 
 
 if __name__ == "__main__":
-	run_scene()
+	parser = argparse.ArgumentParser(description=__doc__)
+	parser.add_argument("--plant", action="store_true", help="hold each supported foot during the stance window")
+	run_scene(plant=parser.parse_args().plant)

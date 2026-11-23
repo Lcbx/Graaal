@@ -53,8 +53,8 @@ components, see the [engine guide](../graaal/README.md), [ECS reference](../graa
 
 ## Headless animation and physics
 
-Run the animation examples as `python -m scenes.<name>`. Add `--headless` for
-the physics examples when you want simulation results in the terminal.
+Run the examples as `python -m scenes.<name>`. Add `--headless` to the physics
+viewers when you want simulation results in the terminal.
 
 | Module | Demonstrates | Extra |
 | --- | --- | --- |
@@ -62,12 +62,13 @@ the physics examples when you want simulation results in the terminal.
 | `root_motion_example` | Idle/walk/run crossfades with requested and boundary-accepted movement | Core |
 | `animation_graph_example` | Compiled conditional states and a masked upper-body layer for two characters | Core |
 | `animation_graph_batch_example` | Standalone batched graph playback, synchronized 1D states and a masked upper-body layer | Core |
-| `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK and normal alignment | Core |
+| `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK, normal alignment and optional `--plant` | Core |
 | `physics_headless_example` | Standalone native self-test, batched boxes, snapshots and events; no ECS | `physics` |
 | `physics_locomotion_example` | Root-motion acceptance against a native shape sweep; blocking only | `physics` |
 | `physics_queries_example` | Batched collision rays driving foot IK, owner lookup and sweeps | `physics` |
 | `physics_joints_example` | Hinge/slider limits, motor reversal and a breakable attachment | `physics` |
 | `passive_ragdoll_example` | Python-authored 13-body humanoid with feet/ankles, passive neutral/limit forces and bounded zero-gravity/drop/stair/impact checks; no ECS or renderer | `physics` |
+| `active_ragdoll_example` | Headless powered pose tracking, support observations and root-assisted standing balance. `--no-balance` runs tracking alone | `physics` |
 
 Install the native backend with `python -m pip install -e ".[physics]"`.
 `physics_headless_example` defaults to 120 ticks at 120 Hz; use `--ticks`,
@@ -100,13 +101,26 @@ python -m scenes.passive_ragdoll_example --headless --scenario zero_gravity --fr
 
 `--scenario` also accepts `drop`, `stairs` and `impact`. `--height` and `--mass`
 scale the example asset from 1.8 m/70 kg; its gains scale with mass times length
-squared. All runs use 120 Hz lockstep, zero active motor strength and no root
-anchoring. Body damping, floor friction and self collision remain enabled;
-`--no-passive` disables only Python neutral/soft-limit forces. The stair case
-starts just above the highest step with a 1.2 m/s velocity toward descending steps.
-The impact case queues an off-centre chest impulse at `min(120, frames // 3)`
+squared. Simulations use 120 Hz lockstep and zero active motor strength.
+`--no-passive` disables the Python neutral spring and soft-limit torques.
+At the built-in size, the stair case starts just above the highest step
+with a 1.2 m/s velocity toward descending steps.
+The impact case queues an off-centre chest impulse at `min(24, frames // 3)`
 and records its immediate linear/angular velocity changes without advancing time.
-The reported impact point offset is relative to the chest joint origin.
+The impulse uses the root when a tuned rig has no bone named `chest`. The
+reported impact point offset is relative to the struck bone's joint origin.
+
+Use `--tuning PATH` in any viewing mode or headless to load a
+[ragdoll tuner project](../tools/ragdoll_tuner.md) or native
+`RagdollSettings.as_dict()` JSON. Tuner projects supply their saved neutral pose
+and passive gains. Native settings start with the rest pose and zero passive
+gains. The loaded rig keeps its saved dimensions and masses, so `--height` and
+`--mass` apply only to the built-in humanoid.
+
+```sh
+python -m scenes.passive_ragdoll_example --tuning rig.tuning.json --scenario stairs
+python -m scenes.passive_ragdoll_example --tuning rig.tuning.json --headless --scenario all
+```
 
 The optional JSON report owns final positions/orientations after shutdown and
 includes pose error, anchor separation, contact-record counts, peak velocities,
@@ -126,7 +140,7 @@ The viewer records each scenario the first time it is selected and loops it at
 120 simulated ticks per second. In a window, `--output` writes the last viewed
 scenario's report when you close it.
 Press Space to pause or resume and R to restart. Blue marks the left limbs and
-orange marks the right. Capsules, spheres and boxes follow the collider poses.
+orange marks the right. Capsules, spheres, boxes and cylinders follow the collider poses.
 To play a scenario with the skinned dummy, install the `assets` extra and get a
 copy of `dummy_rigged.glb` from the scene author. The viewer uses this rig's
 specific joint layout.
@@ -138,7 +152,9 @@ python -m scenes.passive_ragdoll_example --scenario zero_gravity --model "path/t
 ```
 
 Model mode draws the dummy and terrain. The mesh follows the simulated pelvis
-position and joint rotations while keeping the dummy's bone lengths.
+position and joint rotations while keeping the dummy's bone lengths. Tuning
+files used with `--model` must keep the built-in humanoid's bone names, parents,
+and order.
 Add `--no-passive` to inspect the same scenario with only native constraints
 and damping, or add `--offscreen` for a bounded render check.
 
@@ -160,7 +176,10 @@ described in the [physics guide](../graaal/physics.md).
 
 The physics viewers share [window, offscreen and draw helpers](physics_viewing_utils.py).
 The live examples call those helpers from their own loops. The replay examples
-use the playback helper to draw sampled poses.
+use the playback helper to draw sampled poses. The [passive ragdoll example](passive_ragdoll_example.py)
+owns its scenario selector and dummy model playback. It shares
+[collider geometry and pose calculations](physics_geometry.py) with the
+[ragdoll tuner](../tools/ragdoll_tuner.md).
 
 ## Rendering and transparency settings
 

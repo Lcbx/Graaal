@@ -296,7 +296,26 @@ selects at most one edge per row, never interrupts an active fade and promotes
 without restarting target time. Explicit marker mappings use clip or blend
 reference clocks; transition sync ends at promotion, retaining the endpoint
 target speed. Fixed-reference synchronization inside a blend remains active.
-Requested root motion, entity identity and ECS integration are application-owned.
+
+Pass `root_motions={clip_id: RootMotion(rig, clip)}` for every clip used by a
+state. All tracks must use the same skeleton root. Each advance publishes
+read-only character-space deltas in `player.root_motion`. A blend uses the
+selected clips' actual clock intervals and weights. A fade blends interval
+deltas at its mean progress and composes any remaining target motion after
+promotion. `pose(parameters, in_place=True)` holds that root at its reference
+TRS. Use the raw pose with an authored in-place task when layer order matters.
+
+To bind a compiled graph to ECS, register `GraphPlayer` from
+`graaal.EcsAdapters.EcsAnimationGraph` and add `GraphPlayer(graph_id)` to each
+owner. Create one `EcsAnimationGraphAdapter(world, graph_id, graph, ...)` per
+graph, passing its optional root motion and event tracks. Supply parameters in
+`adapter.entities()` order and call `adapter.update(dt, parameters)` to get
+local TRS in that order. Surviving handles retain their state and clocks when
+the query changes. `adapter.events` publishes full entity handles, while
+`adapter.playback.root_motion` publishes requested movement aligned with
+`adapter.owners`, the last update's handle snapshot.
+The caller uses native controller or gameplay results for accepted motion.
+See the [character example](../scenes/character_example.py).
 
 To receive gameplay events, pass `event_tracks={state_id: track}` when creating
 the player. Use `graph.state_ids` to look up compiled IDs. The player snapshots
@@ -553,6 +572,33 @@ For automatic allocation and release from complete pose snapshots, use
 ordering and lifetime requirements. The lower-level palette API remains usable
 directly for custom pipelines.
 
+### Crowd pose compute pass
+
+`BakedClipPool(rig, clips, fps=30)` bakes positive uniform-scale clips into
+packed model-space transforms. Clips are indexed in sequence order, and their
+endpoints are retained. Use in-place clip poses in this pool if the application
+already applies extracted root movement. `pool.crossfade_position_error(ids,
+times, weights)` reports per-sample maximum bone-position error in rig units
+against an exact local-space pair. Sample the transition phases and poses your
+application uses before choosing its crowd eligibility threshold.
+
+`CrowdPosePass(pool, palette, max_instances)` from
+`graaal.RenderPasses.CrowdPose` records one batch before the material draws.
+Allocate the owner ranges in a `SkinMatrixBuffer` first. Call
+`crowd.record(commands, owners, ids, times, weights)` with one to four samples
+per owner, clamped clip times, and normalized weights. The compute pass writes
+directly into those palette ranges. Each batch uses one rig and shares the
+palette with disjoint CPU-evaluated ranges. Submit before calling `record`
+again on the same pass, and release ranges after their use by recorded work.
+The palette's CPU mirror does not contain compute results. Call `crowd.close()`
+to release the pass's buffers.
+
+The application chooses CPU and compute owners, handles clip wrapping and
+evaluates gameplay clocks, events, root movement, IK and layered hero poses.
+Model-space blending trades accuracy for throughput, particularly for dissimilar
+poses. Use the measurements in the [animation status](../implementation_plans/skeletal_animation_current.md)
+to interpret the performance and error of the example workload.
+
 ## Skinned glTF import
 
 `load_skinned_gltf(path, node=None, fps=30)` from `graaal.Animation.SkeletalGltf` loads
@@ -698,8 +744,13 @@ local axis points along each supplied model-space direction, such as a terrain
 normal. Its position stays fixed and descendants follow the rotation. The bone
 and all ancestors require positive uniform local scale. A weight of zero keeps
 the original local rotation; partial weights interpolate rotations. This aligns
-one axis and does not constrain twist, plant feet or perform a terrain query.
-The headless foot IK example combines the IK and axis-alignment pose tasks.
+one axis. Use `limit_twist(rotations, reference, axis, minimum, maximum)` to
+clamp signed local twist in radians while preserving swing. Use
+`foot_plant(targets, normals, stance, locked, anchors, anchor_normals)` to keep
+world-space position and normal goals through a caller-defined supported stance.
+Retain the returned anchors and stance per foot. Clear locks on teleports and
+convert the goals into model space before solving. The headless foot IK example
+combines the IK and axis-alignment pose tasks and shows planting with `--plant`.
 
 ## Animation events
 

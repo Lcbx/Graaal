@@ -1,6 +1,37 @@
-"""CPU geometry shared by the physics example viewers."""
+"""CPU geometry shared by the physics viewers and ragdoll tuner."""
 
 import numpy as np
+
+
+def collider_poses(positions, orientations, offsets, shape_rotations):
+	"""Compose xyzw bone poses with their bone-local collider transforms."""
+	from graaal.Math import Quaternion
+
+	centers = positions + np.einsum("...ij,...j->...i", Quaternion.matrix_batch(orientations), offsets)
+	return centers, Quaternion.multiply_batch(orientations, shape_rotations)
+
+
+def collider_bounds(bones, positions, orientations):
+	"""Return the world-space AABB of each collider for one pose or a batch."""
+	from graaal.Math import Quaternion
+
+	centers, rotations = collider_poses(positions, orientations, [bone.shape_offset for bone in bones], [bone.shape_rotation for bone in bones])
+	axes = Quaternion.matrix_batch(rotations)
+	extents = []
+	for i, bone in enumerate(bones):
+		axis = axes[..., i, :, :]
+		kind, size = bone.shape.kind.name, bone.shape.params
+		if kind == "BOX":
+			extent = np.abs(axis) @ (np.asarray(size[:3]) / 2)
+		elif kind == "CAPSULE":
+			extent = size[0] + np.abs(axis[..., :, 1]) * size[1] / 2
+		elif kind == "CYLINDER":
+			extent = np.linalg.norm(axis[..., :, (0, 2)], axis=-1) * size[0] + np.abs(axis[..., :, 1]) * size[1] / 2
+		else:  # Sphere
+			extent = np.full(axis.shape[:-1], size[0])
+		extents.append(extent)
+	half_sizes = np.stack(extents, axis=-2)
+	return centers - half_sizes, centers + half_sizes
 
 
 def cube_vertices():
@@ -18,19 +49,34 @@ def cube_vertices():
 	return vertices.reshape(-1)
 
 
-def rounded_vertices(template, radius, cylinder_length):
-	u = np.linspace(0, 2 * np.pi, 25)
-	v = np.concatenate((np.linspace(0, np.pi / 2, 9), np.linspace(np.pi / 2, np.pi, 9)))
+def rounded_vertices(template, radius, cylinder_length, *, segments=24, rings=8):
+	u = np.linspace(0, 2 * np.pi, segments + 1)
+	v = np.concatenate((np.linspace(0, np.pi / 2, rings + 1), np.linspace(np.pi / 2, np.pi, rings + 1)))
 	u, v = np.meshgrid(u, v)
 	normals = np.stack((np.sin(v) * np.cos(u), np.cos(v), np.sin(v) * np.sin(u)), axis=-1)
 	grid = np.zeros(u.shape, dtype=template.dtype)
 	grid["position"], grid["normal"] = normals * radius, normals
 	# Duplicate the equator to connect the two hemispheres with a cylinder.
-	grid["position"][:9, :, 1] += cylinder_length / 2
-	grid["position"][9:, :, 1] -= cylinder_length / 2
+	grid["position"][:rings + 1, :, 1] += cylinder_length / 2
+	grid["position"][rings + 1:, :, 1] -= cylinder_length / 2
 	grid["uv"] = np.stack((u / (2 * np.pi), v / np.pi), axis=-1)
 	return np.stack((grid[:-1, :-1], grid[1:, 1:], grid[1:, :-1],
 		grid[:-1, :-1], grid[:-1, 1:], grid[1:, 1:]), axis=2).reshape(-1)
+
+
+def cylinder_vertices(radius, length, *, segments=24):
+	angles = np.arange(segments) * (2 * np.pi / segments)
+	top = np.column_stack((radius * np.cos(angles), np.full(segments, length / 2), radius * np.sin(angles)))
+	points = np.concatenate((top, top * [1, -1, 1], [[0, length / 2, 0], [0, -length / 2, 0]]))
+	a = np.arange(segments)
+	b = (a + 1) % segments
+	triangles = np.concatenate((
+		np.column_stack((a, b, b + segments)),
+		np.column_stack((a, b + segments, a + segments)),
+		np.column_stack((np.full(segments, 2 * segments), b, a)),
+		np.column_stack((np.full(segments, 2 * segments + 1), a + segments, b + segments)),
+	))
+	return triangle_vertices(points, triangles)
 
 
 def skinned_boxes(asset, cube):

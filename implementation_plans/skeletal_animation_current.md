@@ -10,11 +10,11 @@ logs; validation evidence is scoped below.
 | --- | --- | --- |
 | 1: foundation | Immutable skeletons/clips, batched CPU sampling/FK/skin matrices, glTF subset importer, ECS playback, CPU material bridge, shared GPU skinning and palette lifecycle | Broader asset support and measured allocation improvements |
 | 2: transitions/root motion | Crossfades, named events, root extraction, clip-pair samples, separate advancement/finalization, bounded and native collision examples | Movement reconciliation policy remains application-owned |
-| 3: GPU crowd evaluator | Not started; GPU vertex skinning already exists | Baked clip pool, compute evaluator, transition validator and tiering |
-| 4: graphs | PosePlan, masks/additive layers, 1D/2D selectors, ordered AND-condition states, optional ECS clip-state adapter, editable definitions, pose-input plans and standalone batched clip/1D/2D graph playback with state events | Graph root motion and ECS blend-state integration |
-| 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, pre/post-physics plans, collision queries and ragdoll targets | Foot locking/twist constraints and crowd overrides |
+| 3: GPU crowd evaluator | Packed clip baking, CPU reference, clip-pair error measurements and a compute pass writing shared skin palettes | Graph-level eligibility, automatic tiering and crowd overrides |
+| 4: graphs | Pose plans, masks/additive layers, 1D/2D selectors, editable definitions, clip-state and graph ECS adapters, batched playback with events and root motion | Weighted cycle timing |
+| 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, stance locks, local twist limits, collision queries and ragdoll targets | Integration with full locomotion authoring and crowd overrides |
 | 6: advanced | Not started | Warping, skeleton LOD, exact GPU evaluator, GPU IK and debugging |
-| 7: tools | Headless event/graph authoring, Tk timeline, CPU-skinned preview, graph JSON/transition/blend-space forms, sync markers, manual/automatic clip and 1D/2D blend-state playback and explicit JSON project persistence | Remaining forms and material-rendered preview |
+| 7: tools | Headless event/graph authoring, Tk timeline, CPU-skinned preview, state/parameter/transition/blend-space forms, sync markers, manual/automatic clip and 1D/2D blend-state playback and explicit JSON project persistence | Forms for layers and masks, material-rendered preview |
 
 ## Integration choices to preserve
 
@@ -53,7 +53,7 @@ logs; validation evidence is scoped below.
   Forms and JSON projects retain the optional reference. Fades blend state poses
   before authored layers through a compiled pose-input plan, preserving nested
   quaternion blending. Explicit transition mappings use clip or blend-reference
-  clocks; ECS graph control and weighted cycle timing remain deferred. 2D states
+  clocks. Weighted cycle timing remains deferred. 2D states
   blend horizontal pairs before the vertical blend, independent of authored
   layer weights. Clip, 1D and 2D state bindings remain separate.
 - Standalone batched graph playback owns a fixed set of independent state/fade
@@ -62,15 +62,18 @@ logs; validation evidence is scoped below.
   emits independent local TRS arrays. Clock snapshots are read-only; invalid
   updates preserve all rows. Optional state event tracks report crossings
   with row, state, tick offset and fade weight. State clocks drive events,
-  including fixed references for synchronized blends. Root motion and ECS
-  identity are application-owned. The authoring preview retains its single-row API.
+  including fixed references for synchronized blends. Optional root tracks
+  generate character-space deltas over the traversed clip intervals. The ECS
+  adapter retains full handles and routes events in query order. The authoring
+  preview retains its single-row API.
 
 ## Examples and validation evidence
 
 See the [scene catalog](../scenes/README.md) for playback, mixing, layers,
 root motion, graphs, IK, physics locomotion and native character/ragdoll examples.
-The native character scene now supplies sliding/steps/jumping through its
-controller; the simpler shape-sweep locomotion example demonstrates blocking only.
+The native character scene supplies a synchronized walk/brisk blend, idle fades
+and per-owner footstep events. Its controller handles sliding, steps and jumping.
+The simpler shape-sweep locomotion example demonstrates blocking.
 
 Regression coverage includes hierarchy/ownership validation, quaternion signs,
 loop/reverse/event boundaries, transition promotion, root frames, long synchronized
@@ -119,10 +122,24 @@ through promotion, and that corresponding sync markers keep the source first
 at equal tick offsets. Adjacent events and reverse interval boundaries retain
 their authored order.
 
-`python -m scenes.benchmarks.benchmark_animation --entities 64 256 1024 --bones 12 60 --repeat 10`
-measures controller, pose and combined CPU cost; see the
-[benchmark guide](../scenes/benchmarks/README.md). Keep the GPU crowd evaluator
-deferred until target workloads justify its extra backend.
+`python -m scenes.benchmarks.benchmark_animation --entities 1000 10000 50000 --bones 12 --repeat 4`
+measures controller, pose and combined CPU cost. The Greenman idle/move
+crossfade probe used a real 12-bone rig and a Vulkan RTX 5060 Ti palette.
+Median controller, pose and palette-submit CPU times were 0.49/4.66/0.66 ms
+at 1k, 5.25/58.55/8.40 ms at 10k, and 26.69/311.55/46.54 ms at 50k. The
+palette measurement includes validation, copies and queue submission. See the
+[benchmark guide](../scenes/benchmarks/README.md) for timing conventions.
+
+`BakedClipPool` used 22,080 bytes for the two clips at 30 Hz. Four sampled
+0.25 s idle-to-move fades peaked at 1.4–1.9% of bind joint height in the CPU
+reference. The GPU pass matches the CPU reference and can write beside CPU
+palette ranges. The compute probe used two equally weighted samples per
+instance. Over ten measured passes, median CPU staging and recording took
+0.41/2.71/15.10 ms and GPU compute took 0.004/0.041/0.198 ms at 1k/10k/50k
+instances. These GPU timestamps bracket the compute pass. Draw-inclusive
+frame timing and broader transition validation remain open. Use the
+[crowd roadmap](skeletal_animation_pipeline.md#gpu-pose-evaluation-for-crowds-and-distant-characters)
+for tier acceptance criteria.
 
 Documentation audit: consolidated delivery history and validation counts into
 capabilities, remaining work and maintenance contracts; API details remain in

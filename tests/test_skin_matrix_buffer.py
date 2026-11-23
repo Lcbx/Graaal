@@ -14,6 +14,7 @@ def test_skin_matrix_allocation_recycling_and_batch_validation():
 	palette = SkinMatrixBuffer(5)
 	assert palette.acquire(np.uint64(0), 2) == 0
 	assert palette.acquire(np.uint64(1), 1) == 2
+	np.testing.assert_array_equal(palette.ranges([1, 0, 1]), [[2, 1], [0, 2], [2, 1]])
 	assert palette.acquire(np.uint64(2), 2) == 3
 	palette.release(0)
 	palette.release(1)
