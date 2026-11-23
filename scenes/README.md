@@ -163,7 +163,7 @@ These physics scenes also support windows through `python main.py scenes/<name>.
 | Scene | Behavior and controls | Bounded headless run |
 | --- | --- | --- |
 | `physics_example` | Falling cubes, obstacles, moving platform and a sensor tinted by box occupancy; render interpolation between 120 Hz ticks | `python -m scenes.physics_example --headless --frames 240` |
-| `river_crossing_example` | 48 dummies walk or run at individual speeds. Water-sensor overlap switches them to a shorter, wider horizontal capsule and selects a graph state that blends [in-place](resources/Swimming_in_place.fbx) and [forward](resources/Swimming.fbx) swimming by pace. Dummies yield when another capsule blocks their lane and teleport back when their spawn is clear. | `python -m scenes.river_crossing_example --headless` |
+| `river_crossing_example` | 48 dummies walk or run at individual speeds. Water-sensor overlap switches them to a horizontal capsule and blends [in-place](resources/Swimming_in_place.fbx) and [forward](resources/Swimming.fbx) swimming by pace. Dummies yield to blocked lanes. The GPU evaluates eligible land poses and the CPU evaluates swimming and fades. Use `--cpu-poses` for a CPU pose comparison or `--rows` to vary crowd size. | `python -m scenes.river_crossing_example --headless` |
 | `ragdoll_example` | Eight-second animated/powered/limp/recovery cycle; procedural skinned boxes show the native humanoid | `python -m scenes.ragdoll_example --headless --frames 960` |
 | `character_example` | Animated native controller, collision foot IK, triggers and ragdoll hand-off; WASD moves, Space jumps, R falls, G requests recovery, T resumes the scripted hurdle-jump cycle | `python -m scenes.character_example --headless --frames 960` |
 

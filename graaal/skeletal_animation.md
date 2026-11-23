@@ -314,6 +314,8 @@ local TRS in that order. Surviving handles retain their state and clocks when
 the query changes. `adapter.events` publishes full entity handles, while
 `adapter.playback.root_motion` publishes requested movement aligned with
 `adapter.owners`, the last update's handle snapshot.
+Use `adapter.advance(dt, parameters)` to publish the same clocks, root motion
+and events when evaluating poses separately. It returns the entity events.
 The caller uses native controller or gameplay results for accepted motion.
 See the [character example](../scenes/character_example.py).
 
@@ -535,7 +537,7 @@ For CPU material rendering, pass the deformed vertices to `MaterialRenderer.upda
 
 ## GPU skin matrices
 
-`SkinMatrixBuffer(capacity)` owns one fixed-size GPU storage buffer of row-major
+`SkinMatrixBuffer(capacity)` owns a fixed-size GPU storage buffer of row-major
 3x4 float32 matrices. With an initialized RenderContext, allocate one contiguous
 range per persistent owner and write batches from the CPU evaluator:
 
@@ -558,6 +560,15 @@ acquired range before a shader reads it. The caller must use full generational
 handles for ECS owners and ensure prior GPU work has finished using a range
 before releasing or overwriting it. Validate indices and normalized weights
 before dispatching shaders.
+
+For a batch whose owners occupy scattered ranges, use
+`palette.record_write(commands, owners, matrices)`. It uploads the poses
+together and records one copy per contiguous palette range. Record the copies
+before any pass that needs those matrices. The staging buffer is reused, so
+submit the recorded commands before calling `record_write` again on the same
+palette or closing it. The [river crossing scene](../scenes/river_crossing_example.py)
+records these copies and the crowd compute pass before drawing from the shared
+palette.
 
 The reusable `graaal/shaders/skinning.shaderlib` defines `SkinMatrix` and
 `skin_vertex`: pass four palette entries and their weights to obtain a position
@@ -582,6 +593,42 @@ times, weights)` reports per-sample maximum bone-position error in rig units
 against an exact local-space pair. Sample the transition phases and poses your
 application uses before choosing its crowd eligibility threshold.
 
+`validate_crowd_graph` from `graaal.Animation.CrowdGraphValidation` extends that
+comparison to the base poses of a compiled graph. Build the pool with clips in
+compiled ID order and pass a maximum bone-position error in rig units.
+
+```python
+from graaal.Animation.BakedClipPool import BakedClipPool
+from graaal.Animation.CrowdGraphValidation import validate_crowd_graph
+
+pool = BakedClipPool(graph.plan.skeleton, tuple(graph.clips[i] for i in range(len(graph.clips))))
+report = validate_crowd_graph(graph, pool, error_budget=0.02 * character_height,
+	phase_samples=32, playback_rates=(0.75, 1.0, 1.25))
+```
+
+The report lists states by name and transitions in authored order. Each result
+includes the sample count, maximum error over evaluated samples, the count of
+rows requiring more than four samples, and an `eligible` flag. Rows combine
+identical clip IDs and times before checking the limit. Eligibility requires
+every sampled row to fit the limit and the measured maximum to meet the budget.
+
+The sweep samples authored axis knots, blend interiors, defaults, start phases
+and fade progress. Unsynchronized spaces sample each participating cycle and
+additional relative phases for unequal durations. Transition sampling preserves
+marker synchronization and varies the requested playback rates. It isolates
+each edge from guards and priority so the validator can vary parameters during
+the fade. The result covers the sampled base poses. Applications account for
+authored layers, root anchoring and IK separately.
+
+`CrowdGraphRouter(report)` from `graaal.Animation.CrowdGraphSamples` partitions
+the current playback rows with `cpu_rows, crowd = router.split(playback,
+parameters)`. The result uses the same phase mapping and sample packing as the
+validator. The router sends ineligible poses and rows exceeding the sample
+limit to the CPU. For an ECS graph, `adapter.owners[crowd.rows]` gives the full
+owner handles for the crowd pass. Sample exact local poses for `cpu_rows`
+with `playback.remap(cpu_rows).pose(parameters[cpu_rows])` and write their skin
+matrices into the same palette. Both paths use the existing playback clocks.
+
 `CrowdPosePass(pool, palette, max_instances)` from
 `graaal.RenderPasses.CrowdPose` records one batch before the material draws.
 Allocate the owner ranges in a `SkinMatrixBuffer` first. Call
@@ -593,8 +640,10 @@ again on the same pass, and release ranges after their use by recorded work.
 The palette's CPU mirror does not contain compute results. Call `crowd.close()`
 to release the pass's buffers.
 
-The application chooses CPU and compute owners, handles clip wrapping and
-evaluates gameplay clocks, events, root movement, IK and layered hero poses.
+The application owns evaluator selection, gameplay clocks, events, root
+movement, IK and layered hero poses. The
+[river crossing](../scenes/river_crossing_example.py) shows graph routing with
+the CPU and compute writers sharing a palette.
 Model-space blending trades accuracy for throughput, particularly for dissimilar
 poses. Use the measurements in the [animation status](../implementation_plans/skeletal_animation_current.md)
 to interpret the performance and error of the example workload.

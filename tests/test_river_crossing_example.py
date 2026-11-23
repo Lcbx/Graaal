@@ -5,7 +5,7 @@ from graaal.Animation.AnimationGraphPlayback import state_sample
 from graaal.EcsAdapters.EcsPhysics import Collider
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from scenes.animation_dummy import load_dummy
-from scenes.river_crossing_example import CLEARANCE, DUMMY_RADIUS, FADE_TIME, FINISH, FIXED_DT, HEADLESS_TICKS, LAND_COLLIDER, RIVER_WIDTH, SWIM_COLLIDER, SWIM_LENGTH, SWIM_RADIUS, create_demo
+from scenes.river_crossing_example import CLEARANCE, DUMMY_RADIUS, FADE_TIME, FINISH, FIXED_DT, HEADLESS_TICKS, LAND_COLLIDER, RIVER_WIDTH, SWIM_COLLIDER, SWIM_LENGTH, SWIM_RADIUS, create_demo, record_graph_poses
 
 
 def test_crowd_swims_between_sensor_shores_and_teleports_to_spawn():
@@ -101,3 +101,64 @@ def test_crowd_swims_between_sensor_shores_and_teleports_to_spawn():
 			if np.all(returned): break
 	assert checked_swim_capsule and np.all(returned) and np.any(treaded)
 	assert 0 < np.count_nonzero(paused) < len(dummies)
+
+
+def test_river_routes_gpu_and_cpu_poses_through_the_same_palette():
+	pytest.importorskip("pyjoltphysics")
+	pytest.importorskip("pygltflib")
+	pytest.importorskip("wgpu")
+	from graaal.Animation.BakedClipPool import BakedClipPool
+	from graaal.Animation.CrowdGraphSamples import CrowdGraphRouter
+	from graaal.Animation.CrowdGraphValidation import validate_crowd_graph
+	from graaal.Animation.SkeletalAnimation import model_matrices, skin_matrices
+	from graaal.RenderContext import RenderContext
+	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+	from graaal.RenderPasses.CrowdPose import CrowdPosePass
+	from scenes.physics_viewing_utils import viewing_target
+
+	rig, _, clips = load_dummy(swimming=True)
+	_, owners, physics, _, animation, parameters, _ = create_demo(rig, clips, row_count=1)
+	graph = animation.playback.graph
+	pool = BakedClipPool(rig, tuple(graph.clips[i] for i in range(len(graph.clips))))
+	budget = 0.035
+	router = CrowdGraphRouter(validate_crowd_graph(graph, pool, error_budget=budget))
+	water = graph.parameter_columns["in_water"]
+	pace = graph.parameter_columns["swim_blend"]
+	with physics, viewing_target("River pose routing", offscreen=True):
+		palette = SkinMatrixBuffer(len(owners) * pool.bones)
+		crowd = CrowdPosePass(pool, palette, len(owners))
+		try:
+			for owner in owners: palette.acquire(owner, pool.bones)
+
+			def draw_pose(expected_cpu):
+				cpu, batch = router.split(animation.playback, parameters)
+				assert cpu.tolist() == expected_cpu
+				assert sorted(np.r_[cpu, batch.rows]) == list(range(len(owners)))
+				models = model_matrices(rig, *animation.playback.pose(parameters))
+				gpu = pool.model(batch.clip_ids, batch.times, batch.weights)
+				assert np.max(np.linalg.norm(gpu[..., :3, 3] - models[batch.rows, :, :3, 3], axis=-1)) <= budget
+				models[batch.rows] = gpu
+				commands = RenderContext.commands("river pose routing")
+				record_graph_poses(commands, animation, parameters, palette, router=router, crowd=crowd)
+				RenderContext.submit(commands.finish())
+				actual = np.frombuffer(RenderContext.device.queue.read_buffer(palette.buffer.handle), dtype=np.float32)
+				expected = skin_matrices(rig, models)
+				np.testing.assert_allclose(actual.reshape(expected.shape), expected, atol=3e-6)
+				return models[0, :, :3, 3]
+
+			before = draw_pose([])
+			start_time = animation.playback.times[0]
+			parameters[[0, 2], water] = 1
+			parameters[[0, 2], pace] = (0.5, 0.8)
+			animation.advance(0, parameters)
+			assert animation.playback.times[0] == start_time
+			assert np.max(np.linalg.norm(draw_pose([0, 2]) - before, axis=-1)) <= budget
+			animation.advance(FADE_TIME, parameters)
+			assert animation.playback.states[0] == graph.state_ids["swim"]
+			draw_pose([0, 2])
+			parameters[[0, 2], water] = 0
+			animation.advance(FADE_TIME, parameters)
+			draw_pose([])
+		finally:
+			crowd.close()
+			palette.close()

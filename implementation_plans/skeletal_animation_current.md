@@ -10,7 +10,7 @@ logs; validation evidence is scoped below.
 | --- | --- | --- |
 | 1: foundation | Immutable skeletons/clips, batched CPU sampling/FK/skin matrices, glTF subset importer, ECS playback, CPU material bridge, shared GPU skinning and palette lifecycle | Broader asset support and measured allocation improvements |
 | 2: transitions/root motion | Crossfades, named events, root extraction, clip-pair samples, separate advancement/finalization, bounded and native collision examples | Movement reconciliation policy remains application-owned |
-| 3: GPU crowd evaluator | Packed clip baking, CPU reference, clip-pair error measurements and a compute pass writing shared skin palettes | Graph-level eligibility, automatic tiering and crowd overrides |
+| 3: GPU crowd evaluator | Packed clip baking, CPU reference, sampled graph eligibility, CPU/GPU graph routing and a compute pass writing shared skin palettes | Automatic tiering and crowd overrides |
 | 4: graphs | Pose plans, masks/additive layers, 1D/2D selectors, editable definitions, clip-state and graph ECS adapters, batched playback with events and root motion | Weighted cycle timing |
 | 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, stance locks, local twist limits, collision queries and ragdoll targets | Integration with full locomotion authoring and crowd overrides |
 | 6: advanced | Not started | Warping, skeleton LOD, exact GPU evaluator, GPU IK and debugging |
@@ -137,9 +137,45 @@ palette ranges. The compute probe used two equally weighted samples per
 instance. Over ten measured passes, median CPU staging and recording took
 0.41/2.71/15.10 ms and GPU compute took 0.004/0.041/0.198 ms at 1k/10k/50k
 instances. These GPU timestamps bracket the compute pass. Draw-inclusive
-frame timing and broader transition validation remain open. Use the
+frame timing and broader asset validation remain open. Use the
 [crowd roadmap](skeletal_animation_pipeline.md#gpu-pose-evaluation-for-crowds-and-distant-characters)
 for tier acceptance criteria.
+
+The graph eligibility validator compares the baked CPU reference with exact
+base poses for clip, 1D and 2D states and authored fades. Tests cover the
+four-sample limit, merging identical inputs, edge order and synchronized fade
+clocks. With the river dummy's 30 Hz pool, 32 phase samples and playback rates
+of 0.58×, 1.0× and 1.60×, the 2% height budget was 3.52 cm. The maximum sampled
+errors for stand, walk and run were 0.05, 1.04 and 0.54 cm. The swim state
+reached 38.44 cm and the largest fade error was 58.22 cm on swim to walk.
+
+The river scene advances the ECS graph at fixed ticks and routes rendered poses
+at draw time. Stand, walk and run usually use the crowd pass. The CPU evaluates
+the swim state and fades. Both write disjoint owner ranges in one palette before
+the material draw. Tests check clock and event parity, GPU palette values, and
+the position error when switching evaluators at the start of a shoreline fade.
+Mixed frames upload CPU matrices in one staging write and copy them into their
+palette ranges before the crowd dispatch. GPU readback tests cover coalescing,
+untouched ranges between copies and staging reuse on the next submission.
+
+Before batching, exact pose and matrix evaluation at one representative tick
+fell from 4.39 ms to 3.47 ms with hybrid routing, which took 0.16 ms. The 89
+CPU owners spanned 24 separate palette upload ranges.
+
+The upload comparison used 144 dummies at 640×480 offscreen on an NVIDIA GeForce
+RTX 5060 Ti (Vulkan). Each trial began after an 850-tick preroll and five warm-up
+frames. Each of the three trials per mode measured 12 frames from the fixed
+update through GPU completion. Hybrid frames dispatched 51–59 owners on the GPU.
+Both hybrid modes used the same poses and palette layout.
+
+| Pose mode | CPU palette uploads per frame | Median pose preparation and recording across trials (ms) | Median full frame across trials (ms) |
+| --- | --- | --- | --- |
+| CPU only | 1 | 5.18–6.03 | 10.94–12.68 |
+| Hybrid with direct uploads | 24–30 | 5.40–6.30 | 11.23–12.95 |
+| Hybrid with staged copies | 1 | 5.44–5.59 | 11.21–11.69 |
+
+Staged copies lowered median frame time relative to direct uploads in two of
+three rounds. The frame-time ranges overlapped across all three modes.
 
 Documentation audit: consolidated delivery history and validation counts into
 capabilities, remaining work and maintenance contracts; API details remain in

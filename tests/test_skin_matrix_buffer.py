@@ -102,3 +102,41 @@ def test_skin_matrix_batch_coalesces_adjacent_ranges(monkeypatch):
 	raw = RenderContext.device.queue.read_buffer(palette.buffer.handle)
 	actual = np.frombuffer(raw, dtype=np.float32).reshape(4, 3, 4)
 	np.testing.assert_allclose(actual[:, 0, 3], [10, 10, 11, 11])
+
+
+def test_recorded_skin_batch_uploads_once_and_preserves_gaps(monkeypatch):
+	RenderContext.setup_graphics_backend(True)
+	palette = SkinMatrixBuffer(8)
+	try:
+		for owner in (10, 11, 12, 13): palette.acquire(owner, 2)
+		palette.write([12], np.full((1, 2, 3, 4), 12, dtype=np.float32))
+		poses = np.broadcast_to(np.array([13, 11, 10], dtype=np.float32)[:, None, None, None], (3, 2, 3, 4))
+		commands = RenderContext.commands("staged skin matrices")
+		copy = Mock(wraps=commands.copy_buffer)
+		monkeypatch.setattr(commands, "copy_buffer", copy)
+		upload = Mock(wraps=RenderContext.device.queue.write_buffer)
+		monkeypatch.setattr(RenderContext.device.queue, "write_buffer", upload)
+		with pytest.raises(ValueError, match="No skin range"):
+			palette.record_write(commands, [13, 11, 99], poses)
+		upload.assert_not_called()
+		copy.assert_not_called()
+
+		palette.record_write(commands, [13, 11, 10], poses)
+		upload.assert_called_once()
+		assert copy.call_count == 2
+
+		def read():
+			raw = RenderContext.device.queue.read_buffer(palette.buffer.handle)
+			return np.frombuffer(raw, dtype=np.float32).reshape(8, 3, 4)
+
+		np.testing.assert_array_equal(read()[:, 0, 0], [0, 0, 0, 0, 12, 12, 0, 0])
+		RenderContext.submit(commands.finish())
+		np.testing.assert_array_equal(read()[:, 0, 0], [10, 10, 11, 11, 12, 12, 13, 13])
+
+		commands = RenderContext.commands("next skin matrix batch")
+		palette.record_write(commands, [11], poses[:1] + 10)
+		RenderContext.submit(commands.finish())
+		np.testing.assert_array_equal(read()[:, 0, 0], [10, 10, 23, 23, 12, 12, 13, 13])
+		np.testing.assert_array_equal(palette.buffer.content, read())
+	finally:
+		palette.close()

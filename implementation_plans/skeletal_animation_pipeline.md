@@ -3,7 +3,8 @@
 Current delivery status: [status snapshot](skeletal_animation_current.md).
 Implemented APIs: [animation guide](../graaal/skeletal_animation.md).
 Esoterica informs behavior and phases; NumPy, WGPU and Graaal's ECS determine
-storage and execution. The crowd evaluator below remains proposed.
+storage and execution. The crowd section records the implemented evaluator and
+design targets for routing, tiering and overrides.
 
 ## Architecture and conventions
 
@@ -52,8 +53,8 @@ See the [tool guides](../tools/README.md) for available controls.
 The packed clip pool and one-skeleton compute pass are available. See the
 [crowd API](../graaal/skeletal_animation.md#crowd-pose-compute-pass) for the
 supported interface and the [status snapshot](skeletal_animation_current.md)
-for measurements and remaining work. Automatic tiering and overrides below
-are design targets.
+for measurements and remaining work. Runtime graph routing uses measured
+eligibility. Automatic distance-based tiering and overrides are design targets.
 
 The CPU evaluator costs roughly `N x B` NumPy work per frame plus Python dispatch overhead, so it will top out at some character count. A GPU path batches Python work into a gather, an upload and a few dispatches; gathered/uploaded data still scales with `N`. The idea is to bake clips into a GPU-resident pool, mix them in a compute pass, and let the CPU modify the result through overrides.
 
@@ -143,7 +144,12 @@ The shortening is the same artifact as a vertex-space crossfade between two skin
 
 **Not supported on this path:** additive layers (they need local-space deltas), hard bone masks (a pose discontinuity at the mask boundary), IK and procedural work. Soft per-bone weight masks are possible because bones are independent. Anything else means the CPU tier.
 
-**Bake-time validator.** For every authored transition, compute the maximum bone-position error between this approximation and the exact local-space blend over the blend duration. Mark transitions below a threshold (start around 1 - 2% of character height and tune visually) as crowd-eligible. Characters whose active transition is ineligible stay on the CPU tier, or use a shorter fade.
+**Graph eligibility validator.** `validate_crowd_graph` compares the approximate
+and exact base poses at sampled phases and parameter values for every state and
+authored transition. It reports the maximum sampled bone-position error and
+counts poses that exceed the four-sample limit. Start around 1–2% of character
+height and tune visually. Runtime routing can use these results as an input
+when choosing CPU and GPU owners.
 
 For 10,000 characters × 60 bones × two samples, estimate 2.4 million
 16-byte sample loads and 29 MB of skin-matrix writes per evaluation. Benchmark

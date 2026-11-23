@@ -86,18 +86,18 @@ def make_animation_graph(rig, named_clips):
 	return definition.compile(rig, clips), travel / forward.duration
 
 
-def create_demo(rig, named_clips):
+def create_demo(rig, named_clips, *, row_count=ROWS):
 	import pyjoltphysics as pj
 
 	graph, authored_swim_speed = make_animation_graph(rig, named_clips)
 	world = ECS()
 	world.register(MaterialTransform, Collider, RigidBody, GraphPlayer)
-	dummies = world.create(LANES * ROWS)
+	dummies = world.create(LANES * row_count)
 	river = world.create()[0]
 	world.add(dummies, MaterialTransform(), Collider(LAND_COLLIDER), RigidBody(motion=1, group=1, mask=3), GraphPlayer(0))
 	world.add(river, MaterialTransform(position=WATER_SENSOR_POSITION), Collider(WATER_SENSOR, sensor=True), RigidBody(motion=0, group=2, mask=1))
 	rng = np.random.default_rng(27)
-	lanes, rows = np.tile(np.arange(LANES), ROWS), np.repeat(np.arange(ROWS), LANES)
+	lanes, rows = np.tile(np.arange(LANES), row_count), np.repeat(np.arange(row_count), LANES)
 	start = np.zeros((len(dummies), 3), dtype=np.float32)
 	start[:, 0] = (lanes - (LANES - 1) / 2) * 1.9 + rng.uniform(-0.22, 0.22, len(dummies))
 	start[:, 1] = DUMMY_CENTER
@@ -122,13 +122,12 @@ def create_demo(rig, named_clips):
 	moving = parameters[:, graph.parameter_columns["moving"]]
 	swim_blend = parameters[:, graph.parameter_columns["swim_blend"]]
 	animation = EcsAnimationGraphAdapter(world, 0, graph)
-	animation.update(0)
+	animation.advance(0)
 	rows = np.searchsorted(dummies, animation.owners)
 	initial_states = np.where(land_speed < RUN_THRESHOLD, graph.state_ids["walk"], graph.state_ids["run"])
 	durations = np.array([graph.clips[graph.state_clips[state]].duration for state in (graph.state_ids["walk"], graph.state_ids["run"])])
 	initial_times = rng.random(len(dummies)) * np.where(land_speed < RUN_THRESHOLD, durations[0], durations[1])
 	animation.playback.reset(initial_states[rows], initial_times[rows], speeds=playback_rate[rows])
-	pose = animation.update(0, parameters[rows])
 	shapes = {
 		LAND_COLLIDER: pj.Shape.capsule(DUMMY_RADIUS, DUMMY_HEIGHT - 2 * DUMMY_RADIUS),
 		WATER_SENSOR: pj.Shape.box((RIVER_LENGTH, 4, RIVER_WIDTH)),
@@ -183,15 +182,14 @@ def create_demo(rig, named_clips):
 		swimming[:] = np.isin(dummies, physics.entities_of(overlaps))
 
 	def advance_animation(world, commands, dt):
-		nonlocal pose
 		in_water[:] = swimming
 		moving[:] = (pause_left == 0) & ~waiting_at_finish
 		swim_blend[:] = accepted_pace
 		rows = np.searchsorted(dummies, animation.entities())
-		pose = animation.update(dt, parameters[rows])
+		animation.advance(dt, parameters[rows])
 
 	def current_pose():
-		return pose
+		return animation.playback.pose(parameters[np.searchsorted(dummies, animation.owners)])
 
 	schedule = Scheduler(world)
 	schedule.add("move", move_crowd, phase="fixed_update")
@@ -205,7 +203,7 @@ def create_demo(rig, named_clips):
 	return world, dummies, physics, schedule, animation, parameters, current_pose
 
 
-def add_landscape(world, ground, water):
+def add_landscape(world, ground, water, *, bank_length=40):
 	from graaal.EcsAdapters.EcsMaterials import MaterialInstance
 
 	grass = {"base_color": (0.18, 0.31, 0.11, 1)}
@@ -218,7 +216,7 @@ def add_landscape(world, ground, water):
 		world.add(world.create()[0], MaterialInstance(mesh, material), MaterialTransform(position=position, scale=scale))
 
 	for bank in (-1, 1):
-		box(ground, grass, (0, -1, bank * (RIVER_WIDTH / 2 + 22)), (RIVER_LENGTH, 2, 40))
+		box(ground, grass, (0, -1, bank * (RIVER_WIDTH / 2 + 2 + bank_length / 2)), (RIVER_LENGTH, 2, bank_length))
 		box(ground, sand, (0, -1, bank * (RIVER_WIDTH / 2 + 1)), (RIVER_LENGTH, 2, 2))
 	box(ground, bed, (0, -2.1, 0), (RIVER_LENGTH, 1, RIVER_WIDTH))
 	box(water, river, (0, WATER_HEIGHT - 0.03, 0), (RIVER_LENGTH, 0.06, RIVER_WIDTH))
@@ -227,19 +225,42 @@ def add_landscape(world, ground, water):
 		box(water, ripple, (x, WATER_HEIGHT + 0.015, z), (rng.uniform(0.5, 3), 0.01, rng.uniform(0.04, 0.12)))
 
 
-def run_scene(*, offscreen=False, frames=None):
+def record_graph_poses(commands, animation, parameters, palette, *, router=None, crowd=None):
+	"""Populate the scene's palette from exact poses and crowd samples before drawing."""
+	playback, owners = animation.playback, animation.owners
+	if router is None:
+		cpu_rows = np.arange(playback.count)
+	else:
+		cpu_rows, batch = router.split(playback, parameters)
+	if len(cpu_rows):
+		mixed = len(cpu_rows) < playback.count
+		cpu = playback.remap(cpu_rows) if mixed else playback
+		rig = playback.graph.plan.skeleton
+		model = model_matrices(rig, *cpu.pose(parameters[cpu_rows]))
+		matrices = skin_matrices(rig, model)
+		if mixed: palette.record_write(commands, owners[cpu_rows], matrices)
+		else: palette.write(owners[cpu_rows], matrices)
+	if router is not None and len(batch.rows):
+		crowd.record(commands, owners[batch.rows], batch.clip_ids, batch.times, batch.weights)
+
+
+def run_scene(*, offscreen=False, frames=None, row_count=ROWS, crowd_poses=True):
+	from graaal.Animation.BakedClipPool import BakedClipPool
+	from graaal.Animation.CrowdGraphSamples import CrowdGraphRouter
+	from graaal.Animation.CrowdGraphValidation import validate_crowd_graph
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
 	from graaal.RenderContext import RenderContext
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
+	from graaal.RenderPasses.CrowdPose import CrowdPosePass
 	from scenes.animation_dummy import dummy_material_mesh
 	from scenes.physics_geometry import cube_vertices
-	from scenes.physics_viewing_utils import draw_frame, has_blue_pixels, read_pixels, viewing_target
+	from scenes.physics_viewing_utils import has_blue_pixels, read_pixels, viewing_target
 
 	rig, primitive, clips = load_dummy(swimming=True)
-	world, dummies, physics, schedule, animation, _, current_pose = create_demo(rig, clips)
+	world, dummies, physics, schedule, animation, parameters, _ = create_demo(rig, clips, row_count=row_count)
 	with physics, viewing_target("River crossing", window_size=(1100, 760), offscreen=offscreen) as output:
 		mesh, textures = dummy_material_mesh(primitive, include_white=True)
 		cube = cube_vertices()
@@ -247,12 +268,21 @@ def run_scene(*, offscreen=False, frames=None):
 		water = MaterialMesh(cube, DefaultMaterialShader(transparent=True, default_material={"texture_layer": 1}))
 		world.register(MaterialInstance)
 		world.add(dummies, MaterialInstance(mesh))
-		add_landscape(world, ground, water)
+		spawn_z = world.get(MaterialTransform)[dummies].position[:, 2].min()
+		add_landscape(world, ground, water, bank_length=max(40, -spawn_z - RIVER_WIDTH / 2))
 		bones = len(rig.parents)
 		palette = SkinMatrixBuffer(len(dummies) * bones)
+		router = crowd = None
 		try:
 			for dummy in dummies:
 				palette.acquire(dummy, bones)
+			if crowd_poses:
+				graph = animation.playback.graph
+				pool = BakedClipPool(rig, tuple(graph.clips[i] for i in range(len(graph.clips))))
+				rates = np.array([LAND_SPEED_RANGE[0], RUN_THRESHOLD, LAND_SPEED_RANGE[1]]) / RUN_THRESHOLD
+				error_budget = 0.02 * float(np.ptp(primitive.vertices["position"][:, 1]))
+				router = CrowdGraphRouter(validate_crowd_graph(graph, pool, error_budget=error_budget, phase_samples=32, playback_rates=rates))
+				crowd = CrowdPosePass(router.pool, palette, len(dummies))
 			renderer = MaterialRenderer(meshes=[mesh, ground, water], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
 			camera = Camera((15, 10, -5), (0, 0, -2), (0, 1, 0), 50, near=0.1, far=120)
 			accumulator, displayed = 0.0, 0
@@ -263,6 +293,7 @@ def run_scene(*, offscreen=False, frames=None):
 				return position, rotation, scale
 
 			drawing = EcsMaterialAdapter(renderer, world, transform_source=render_transforms)
+			poses_dirty = True
 			if offscreen and frames is None: frames = 1
 			while frames is None or displayed < frames:
 				if not offscreen and not RenderContext.window_loop(): break
@@ -270,22 +301,29 @@ def run_scene(*, offscreen=False, frames=None):
 				steps, accumulator = advance_fixed_steps(accumulator, elapsed, TICK_HZ)
 				if steps:
 					schedule.run(elapsed, fixed_steps=steps, fixed_dt=FIXED_DT)
-				if steps or displayed == 0:
-					model = model_matrices(rig, *current_pose())
-					palette.write(animation.owners, skin_matrices(rig, model))
-				drawing.sync()
-				draw_frame(renderer, camera, output, "river_crossing")
+					poses_dirty = True
+				size = output.size[:2] if output is not None else RenderContext.window_dimensions
+				if min(size) > 0:
+					commands = RenderContext.commands("river_crossing")
+					if poses_dirty:
+						rows = np.searchsorted(dummies, animation.owners)
+						record_graph_poses(commands, animation, parameters[rows], palette, router=router, crowd=crowd)
+						poses_dirty = False
+					drawing.sync()
+					renderer.record(commands, size, camera, output.color_attachment() if output is not None else RenderContext.screen())
+					RenderContext.submit(commands.finish())
 				displayed += 1
 			if offscreen:
 				if not has_blue_pixels(read_pixels(output)): raise RuntimeError("River crossing rendered no water pixels")
 				print(f"River crossing rendered {displayed} offscreen frames")
 		finally:
+			if crowd is not None: crowd.close()
 			palette.close()
 
 
-def run_headless(ticks=HEADLESS_TICKS):
+def run_headless(ticks=HEADLESS_TICKS, *, row_count=ROWS):
 	rig, _, clips = load_dummy(swimming=True)
-	world, dummies, physics, schedule, animation, _, _ = create_demo(rig, clips)
+	world, dummies, physics, schedule, animation, _, _ = create_demo(rig, clips, row_count=row_count)
 	transforms = world.get(MaterialTransform)
 	swim = animation.playback.graph.state_ids["swim"]
 	previous_z = transforms[dummies].position[:, 2]
@@ -309,7 +347,10 @@ if __name__ == "__main__":
 	mode.add_argument("--headless", action="store_true")
 	mode.add_argument("--offscreen", action="store_true")
 	parser.add_argument("--frames", type=int)
+	parser.add_argument("--rows", type=int, default=ROWS, help="rows of dummies per lane")
+	parser.add_argument("--cpu-poses", action="store_true", help="evaluate all rendered poses on the CPU")
 	args = parser.parse_args()
 	if args.frames is not None and args.frames <= 0: parser.error("--frames must be positive")
-	if args.headless: run_headless(HEADLESS_TICKS if args.frames is None else args.frames)
-	else: run_scene(offscreen=args.offscreen, frames=args.frames)
+	if args.rows < 1: parser.error("--rows must be positive")
+	if args.headless: run_headless(HEADLESS_TICKS if args.frames is None else args.frames, row_count=args.rows)
+	else: run_scene(offscreen=args.offscreen, frames=args.frames, row_count=args.rows, crowd_poses=not args.cpu_poses)
