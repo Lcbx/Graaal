@@ -55,6 +55,27 @@ def has_blue_pixels(pixels):
 	return np.any((rgb[..., 2] > rgb[..., 0] + 20) & (rgb[..., 2] > 80))
 
 
+def ragdoll_collider_instances(bones, cube, box_mesh, shader):
+	"""Build one draw instance per authored collider in native bone order."""
+	from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh
+	from scenes.physics_geometry import cylinder_vertices, rounded_vertices
+
+	parts = []
+	blue_bone = next((i for i, bone in enumerate(bones) if bone.name.endswith("_l")), 0)
+	for i, bone in enumerate(bones):
+		color = (0.12, 0.56, 0.92, 1) if i == blue_bone or bone.name.endswith("_l") else (0.96, 0.40, 0.13, 1) if bone.name.endswith("_r") else (0.78, 0.83, 0.91, 1)
+		kind, size = bone.shape.kind.name, bone.shape.params
+		if kind == "BOX":
+			mesh, scale = box_mesh, size[:3]
+		elif kind == "CYLINDER":
+			mesh, scale = MaterialMesh(cylinder_vertices(*size[:2]), shader), (1, 1, 1)
+		else:
+			mesh = MaterialMesh(rounded_vertices(cube, size[0], size[1] if kind == "CAPSULE" else 0), shader)
+			scale = (1, 1, 1)
+		parts.append(DrawInstance(mesh, material={"base_color": color}, scale=scale))
+	return parts
+
+
 def play_frames(renderer, camera, output, update, *, label, sample_count, sample_hz, offscreen_samples=None, check_frame=None,
 		before_frame=None, draw_overlay=None):
 	"""Loop samples at their source rate, or draw selected samples offscreen.
@@ -104,7 +125,7 @@ def play_frames(renderer, camera, output, update, *, label, sample_count, sample
 			cursor = (cursor + min(RenderContext.frame_time, 0.1) * sample_hz) % (last + sample_hz)
 
 
-def view_poses(title, camera, samples, moving, *, sample_hz, static=(), offscreen=False, check_frame=None):
+def view_poses(title, camera, samples, moving, *, sample_hz, static=(), offscreen=False, offscreen_samples=None, check_frame=None):
 	"""Replay positions and orientations for a fixed list of direct draw instances."""
 	from graaal.Materials.MaterialRenderer import MaterialRenderer
 
@@ -115,4 +136,4 @@ def view_poses(title, camera, samples, moving, *, sample_hz, static=(), offscree
 
 	with viewing_target(f"{title} | Space: pause, R: restart", offscreen=offscreen) as output:
 		renderer = MaterialRenderer([*moving, *static])
-		play_frames(renderer, camera, output, update, label=title, sample_count=len(samples), sample_hz=sample_hz, check_frame=check_frame)
+		play_frames(renderer, camera, output, update, label=title, sample_count=len(samples), sample_hz=sample_hz, offscreen_samples=offscreen_samples, check_frame=check_frame)

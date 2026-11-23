@@ -164,12 +164,13 @@ These physics scenes also support windows through `python main.py scenes/<name>.
 | --- | --- | --- |
 | `physics_example` | Falling cubes, obstacles, moving platform and a sensor tinted by box occupancy; render interpolation between 120 Hz ticks | `python -m scenes.physics_example --headless --frames 240` |
 | `river_crossing_example` | 48 dummies walk or run at individual speeds. Water-sensor overlap switches them to a shorter, wider horizontal capsule and selects a graph state that blends [in-place](resources/Swimming_in_place.fbx) and [forward](resources/Swimming.fbx) swimming by pace. Dummies yield when another capsule blocks their lane and teleport back when their spawn is clear. | `python -m scenes.river_crossing_example --headless` |
-| `ragdoll_example` | Eight-second animated/powered/limp/recovery cycle; procedural skinned boxes show the native humanoid | `python -m scenes.ragdoll_example --headless --frames 960` |
+| `ragdoll_example` | Eight-second animation, joint-only balance, shove, limp and recovery replay on the authored humanoid. `--standing` shows ten seconds of continuous ankle balance | `python -m scenes.ragdoll_example --headless --frames 960` |
 | `character_example` | Animated native controller, collision foot IK, triggers and ragdoll hand-off; WASD moves, Space jumps, R falls, G requests recovery, T resumes the scripted hurdle-jump cycle | `python -m scenes.character_example --headless --frames 960` |
 
 Rendered modes need the rendering/scene dependencies as well as `physics`.
 Use `python -m scenes.<name> --offscreen --frames N` for a bounded GPU check
-(for example, 2 frames for bodies or 6 for skinning). Gameplay uses the latest
+(for example, 2 frames for bodies or 6 for skinning). For the ragdoll replay,
+`--frames` sets the number of recorded 120 Hz physics ticks. Gameplay uses the latest
 physics tick; presentation interpolates without changing that state. Recovery
 requires standing clearance. Native physics and active-balancing plans are
 described in the [physics guide](../graaal/physics.md).
@@ -177,9 +178,15 @@ described in the [physics guide](../graaal/physics.md).
 The physics viewers share [window, offscreen and draw helpers](physics_viewing_utils.py).
 The live examples call those helpers from their own loops. The replay examples
 use the playback helper to draw sampled poses. The [passive ragdoll example](passive_ragdoll_example.py)
-owns its scenario selector and dummy model playback. It shares
+owns its scenario selector and dummy model playback. Both ragdoll replays use
+the same authored collider draw instances. They share
 [collider geometry and pose calculations](physics_geometry.py) with the
 [ragdoll tuner](../tools/ragdoll_tuner.md).
+
+Run `python -m scenes.ragdoll_example --standing` to watch the joint-only
+controller from the [standing tool](../tools/README.md#ragdoll-standing-task).
+Press Space to pause and R to restart. The default replay adds a scripted
+shove and a kinematic animation hand-off after the fall.
 
 ## Rendering and transparency settings
 

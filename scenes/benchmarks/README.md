@@ -157,6 +157,30 @@ overflow counters before interpreting performance. Results and thread scaling
 depend on the machine; [current local measurements](../../implementation_plans/active_ragdolls.md#backend-validation-status)
 do not establish runtime or GPU frame rate.
 
+## Ragdoll push recovery
+
+```powershell
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --checkpoint build/standing-residual-tilt025.zip --report build/ragdoll-push-recovery.json
+```
+
+Install the `physics` extra to evaluate classical ankle balance. `--checkpoint`
+adds a [residual PPO policy](../../tools/README.md#ragdoll-standing-task) trained
+with `--support-area` and requires Stable-Baselines3. The default grid applies
+0.5, 1, and 2 N·s to the pelvis or chest center of mass in world ±X and ±Z at
+2 seconds. Each cell uses the same 10 starts with tilt up to 0.025 rad and
+spin up to 0.1 rad/s. Use `--seed`, `--episodes` and `--impulses` to set the
+first seed, the number of starts per cell and the impulse magnitudes.
+
+A fall or an incomplete one-second standing hold before the push fails the
+trial. A passing recovery completes a fresh one-second standing hold within
+five seconds of the push. Recovery time includes the hold. A step is a foot
+losing floor contact and landing at least 2 cm horizontally from its last
+planted position, measured at 120 Hz. Step counts cover the post-push period
+through recovery, fall or timeout. The report includes overall and per-cell
+success rates, average recovery times for successful trials, and individual
+outcomes, times and step counts. With `--report`, the full report goes to the
+given file and the overall comparison goes to stdout.
+
 ## Transparency
 
 | Script | Output / purpose |

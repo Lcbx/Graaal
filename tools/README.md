@@ -85,3 +85,92 @@ Both tools use the shared asset loader and CPU preview; neither requires the oth
 ## Physics tools
 
 - [Ragdoll tuner](ragdoll_tuner.md): edit per-bone colliders, mass, hard and soft limits, and neutral springs in a live physics preview.
+- [Ragdoll standing task](#ragdoll-standing-task): compare passive, fixed-pose and ankle feedback baselines, train PPO, and evaluate saved policies.
+
+### Ragdoll standing task
+
+The passive and joint-tracking baselines require the `physics` extra.
+
+```sh
+python -m tools.ragdoll_standing --initial-angular-speed 0.1 --episodes 8
+```
+
+The task advances Jolt at 120 Hz and holds each joint action for two ticks.
+The pelvis is free of root springs and applied balance forces. By default the
+policy controls a bounded rotation offset and motor strength per joint.
+`--action-space compact` keeps the motor caps fixed and controls only joint
+axes with sufficient travel, giving the built-in rig 30 outputs instead of 48.
+`--stance tuned` starts in a shallow knee bend with flat soles and uses that
+pose as the motor reference. An episode succeeds if it reaches the time limit
+without a non-foot contact with the floor, a drop below 70% of its starting
+pelvis height, or a tilt more than 60 degrees from upright in the pelvis or chest.
+Settled success also requires continuous foot support, near-reference height,
+an upright pelvis and chest, and low center-of-mass speed for the final second.
+`--tuning PATH` accepts a ragdoll tuner project using the built-in humanoid's
+bone names, parent relationships and order.
+
+Training and checkpoint evaluation also require
+[Stable-Baselines3](https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html).
+
+```sh
+python -m pip install "stable-baselines3>=2.7,<3"
+python -m tools.ragdoll_standing --stance tuned --action-space compact --seconds 10 --workers 8 --seed 77 --steps 65536 --output standing-quiet.zip
+python -m tools.ragdoll_standing --stance tuned --action-space compact --seconds 10 --workers 8 --seed 77 --steps 185344 --vary-start --initial-angular-speed 0.1 --resume standing-quiet.zip --output standing-varied.zip
+python -m tools.ragdoll_standing --stance tuned --action-space compact --seconds 10 --vary-start --initial-angular-speed 0.1 --checkpoint standing-varied.zip --eval-seed 50000 --episodes 30
+```
+
+With `--workers`, each parallel worker owns a separate Jolt world and resets
+its own episode when it falls or reaches the time limit. `--steps` counts
+policy steps across all workers. `--resume` restores the PPO model, optimizer,
+and training step count, then collects new rollouts from freshly seeded worlds.
+
+The starting spin direction is seeded. `--vary-start` also samples the pose
+tilt and spin magnitude. Use `--max-start-tilt` with `--vary-start` to set the
+upper tilt in radians (default 0.025). A value of zero keeps the reference
+stance and still samples spin. The same seed gives the same spin at each tilt
+setting. All controllers use the same evaluation seeds, starting at
+`--eval-seed` or 10,000 beyond the training seed by default.
+The report includes completion and settled-success rates, elapsed time,
+minimum pelvis height, drift, contact foot slip, pose error and reward.
+
+`--support-area` adds a signed support margin observation and replaces the
+foot-midpoint penalty with a penalty near or outside the estimated support
+area. It uses projected soles of contacting box feet and reports the mean
+first exit time across episodes with a recorded exit. Use the same action
+space and support-area setting when resuming or evaluating a checkpoint.
+
+`--ankle-balance` evaluates a third baseline for rigs with box feet. It
+keeps fixed-pose motor targets on the other joints and uses bounded,
+equal-and-opposite foot and shin torques to shift estimated foot pressure.
+The feedback uses current center-of-mass position and velocity, the ankle
+positions, and foot contacts. The model assumes the contacting feet share
+the rig's weight evenly and uses the reference sole bounds to limit the
+pressure shift. This comparison uses the same unassisted pelvis as the other
+baselines.
+
+```sh
+python -m tools.ragdoll_standing --ankle-balance --stance tuned --support-area --seconds 10 --vary-start --max-start-tilt 0 --initial-angular-speed 0.1 --eval-seed 52000 --episodes 30
+```
+
+`--action-space residual` trains or evaluates four PPO outputs for horizontal
+torque on the two ankles. Each foot's correction is capped at 10 N m.
+It applies only with floor contact. The combined correction and classical
+feedback go through the same sole bounds and ankle torque caps. Zero outputs
+reproduce the classical controller, which is included in the comparison.
+The report includes mean commanded residual torque per ankle before contact
+gating and pressure clipping.
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space residual --support-area --seconds 10 --vary-start --max-start-tilt 0 --initial-angular-speed 0.1 --workers 8 --seed 77 --steps 65536 --output standing-residual-flat.zip
+python -m tools.ragdoll_standing --stance tuned --action-space residual --support-area --seconds 10 --vary-start --max-start-tilt 0.005 --initial-angular-speed 0.1 --workers 8 --seed 77 --steps 40960 --resume standing-residual-flat.zip --output standing-residual-tilt005.zip
+```
+
+Use the same action space and support-area setting when loading a residual
+checkpoint. For the final curriculum stage, evaluate with its maximum tilt.
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space residual --support-area --seconds 10 --vary-start --max-start-tilt 0.025 --initial-angular-speed 0.1 --eval-seed 54100 --episodes 30 --checkpoint build/standing-residual-tilt025.zip
+```
+
+Use the [push-recovery benchmark](../scenes/benchmarks/README.md#ragdoll-push-recovery)
+to compare a residual checkpoint with classical ankle balance after a push.

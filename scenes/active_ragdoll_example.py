@@ -9,9 +9,10 @@ import numpy as np
 
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import joint_limit_torques, joint_spring_torques
-from graaal.PhysicsRagdollControl import apply_ragdoll_motors, ragdoll_observations
+from graaal.PhysicsRagdollControl import apply_ragdoll_motors
 from scenes.passive_ragdoll_example import make_humanoid
 from scenes.physics_utils import joint_error
+from scenes.ragdoll_control import STANDING_MOTOR_CAPS, observe_ragdoll
 
 
 def standing_action(observation, feet, chest, *, balance=True):
@@ -44,7 +45,7 @@ def run_scene(*, frames=480, impulse=3.0, balance=True, motors=True):
 	reference = settings.rest_rotations
 	feet = [settings.bone_index(name) for name in ("foot_l", "foot_r")]
 	chest = settings.bone_index("chest")
-	strength = np.array([0, 160, 35, 30, 18, 30, 18, 180, 140, 100, 180, 140, 100]) if motors else 0
+	strength = STANDING_MOTOR_CAPS if motors else 0
 	with pj.World(pj.WorldSettings(tick_hz=120, threads=1, allow_sleeping=False)) as world:
 		floor, _ = world.add_bodies(pj.BodyBatch.boxes([(0, -0.5, 0)], size=(8, 1, 8), motion=pj.MotionType.STATIC, friction=0.8))
 		handle = world.add_ragdoll(settings, (0, 0, 0), mode=pj.RagdollMode.POWERED)
@@ -53,10 +54,7 @@ def run_scene(*, frames=480, impulse=3.0, balance=True, motors=True):
 		world.flush()
 
 		def observe(action):
-			events = world.drain_events()
-			active = events[(events["kind"] == pj.EventKind.CONTACT) & np.isin(events["phase"], (pj.EventPhase.BEGIN, pj.EventPhase.PERSIST))]
-			pairs = np.column_stack((active["a"], active["b"]))
-			return ragdoll_observations(world, uids, settings, pairs, reference, action, support_bodies=floor)
+			return observe_ragdoll(world, uids, settings, world.drain_events(), reference, action, floor=floor)
 
 		observation = observe(previous)
 		min_height, support_ticks, peak_force = float(observation.position[0, 0, 1]), 0, 0.0

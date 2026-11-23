@@ -14,9 +14,9 @@ import numpy as np
 
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import joint_limit_torques, joint_spring_torques, ragdoll_limit_parameters
-from scenes.physics_geometry import collider_bounds, collider_poses, cube_vertices, cylinder_vertices, rounded_vertices
+from scenes.physics_geometry import collider_bounds, collider_poses, cube_vertices
 from scenes.physics_utils import joint_error
-from scenes.physics_viewing_utils import add_viewing_options, has_blue_pixels, play_frames, viewing_target
+from scenes.physics_viewing_utils import add_viewing_options, has_blue_pixels, play_frames, ragdoll_collider_instances, viewing_target
 
 
 SCENARIOS = ("zero_gravity", "drop", "stairs", "impact")
@@ -273,7 +273,6 @@ def run_viewer(scenario, *, offscreen=False, frames=960, height=None, mass=None,
 		if not path.is_file():
 			raise FileNotFoundError(f"Dummy model was not found at '{path}'. Supply your copy of dummy_rigged.glb with --model PATH or place it at '{DEFAULT_DUMMY_MODEL}'.")
 
-	import pyjoltphysics as pj
 	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
@@ -336,20 +335,7 @@ def run_viewer(scenario, *, offscreen=False, frames=960, height=None, mass=None,
 				palette.acquire(owner, bones)
 		else:
 			palette = None
-			body_parts = []
-			blue_bone = next((i for i, bone in enumerate(settings.bones) if bone.name.endswith("_l")), 0)
-			for i, bone in enumerate(settings.bones):
-				color = (0.12, 0.56, 0.92, 1) if i == blue_bone or bone.name.endswith("_l") else (0.96, 0.40, 0.13, 1) if bone.name.endswith("_r") else (0.78, 0.83, 0.91, 1)
-				if bone.shape.kind == pj.ShapeKind.BOX:
-					mesh, scale = box_mesh, bone.shape.params[:3]
-				elif bone.shape.kind == pj.ShapeKind.CYLINDER:
-					mesh, scale = MaterialMesh(cylinder_vertices(*bone.shape.params[:2]), shader), (1, 1, 1)
-				else:
-					radius = bone.shape.params[0]
-					cylinder_length = bone.shape.params[1] if bone.shape.kind == pj.ShapeKind.CAPSULE else 0
-					mesh = MaterialMesh(rounded_vertices(cube, radius, cylinder_length), shader)
-					scale = (1, 1, 1)
-				body_parts.append(DrawInstance(mesh, material={"base_color": color}, scale=scale))
+			body_parts = ragdoll_collider_instances(settings.bones, cube, box_mesh, shader)
 		meshes = [box_mesh, *(part.mesh for part in body_parts)]
 		renderer = MaterialRenderer(body_parts + terrain(scenario), meshes=meshes, skin_palette=palette)
 		eye, target, far = camera_points(scenario)

@@ -324,9 +324,10 @@ its physical bones. `body_uids`/`body_owners` remain regular one-body ownership
 maps. Removal events retain bone identity for a surviving owner until dispatch;
 deleted owners resolve to `WORLD_ENTITY` and bone -1.
 
-See [ragdoll_example.py](../scenes/ragdoll_example.py) for the prefab humanoid,
-ECS animation clock, powered push, limp fall, blended recovery and the existing
-GPU skin palette. Its skinned boxes visualize the authored capsule volumes.
+See [ragdoll_example.py](../scenes/ragdoll_example.py) for the authored humanoid,
+ECS animation clock, joint-only standing, powered shove, limp fall and blended
+recovery. It builds a final skin batch per tick and replays the native poses
+with the shared collider viewer.
 Native frame, limit, mode, ownership and interpolation regressions are in
 [test_physics_ragdoll.py](../tests/test_physics_ragdoll.py).
 

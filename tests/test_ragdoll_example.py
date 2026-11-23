@@ -3,14 +3,14 @@
 import numpy as np
 import pytest
 
-from graaal.Animation.SkeletalAnimation import skin_vertices
-
-
 def test_native_ragdoll_demo_animation_push_fall_and_recovery():
 	pj = pytest.importorskip("pyjoltphysics")
+	from scenes.passive_ragdoll_example import HUMANOID_NAMES
 	from scenes.ragdoll_example import create_demo
-	ecs, owner, floor, physics, schedule, state, asset = create_demo()
+	_, owner, _, physics, schedule, state, asset = create_demo()
 	with physics:
+		assert tuple(bone.name for bone in asset.settings.bones) == HUMANOID_NAMES
+		assert asset.settings.root_force == asset.settings.root_torque == 0
 		stages, heights, velocities = {}, {}, {}
 		for tick in range(840):
 			schedule.run(1 / 120, fixed_steps=1, fixed_dt=1 / 120)
@@ -29,10 +29,23 @@ def test_native_ragdoll_demo_animation_push_fall_and_recovery():
 		assert heights[839] == pytest.approx(heights[119], abs=0.01)
 		assert velocities[180] > velocities[179] + 1
 		assert physics.world.latest().ragdolls.mode[0] == pj.RagdollMode.KINEMATIC
-		# Procedural demo geometry uses the same joint/weight layout as imported meshes.
-		from scenes.ragdoll_example import skinned_boxes
-		from scenes.physics_example import cube_vertices
-		vertices = skinned_boxes(asset, cube_vertices())
-		deformed, normals = skin_vertices(vertices["position"], vertices["normal"], vertices["joints"], vertices["weights"], state["batches"][0].matrices[0])
-		assert np.isfinite(deformed).all() and np.isfinite(normals).all()
 	assert physics.world.latest().count == 0
+
+
+def test_native_ragdoll_demo_standing_mode_uses_foot_support_and_holds_its_stance():
+	pj = pytest.importorskip("pyjoltphysics")
+	from scenes.ragdoll_example import TICK_HZ, create_demo
+	_, _, _, physics, schedule, state, asset = create_demo(standing=True)
+	with physics:
+		feet = [asset.settings.bone_index(name) for name in ("foot_l", "foot_r")]
+		assert all(asset.settings.bones[i].strength == 0 for i in feet)
+		dt = 1 / TICK_HZ
+		for tick in range(10 * TICK_HZ):
+			schedule.run(dt, fixed_steps=1, fixed_dt=dt)
+			observation = state["observation"]
+			assert observation.position[0, 0, 1] > 0.9
+			if tick >= 9 * TICK_HZ:
+				assert observation.contacts[0, feet].any()
+				assert np.linalg.norm(observation.center_of_mass_velocity[0, [0, 2]]) < 0.05
+		assert physics.world.latest().ragdolls.mode[0] == pj.RagdollMode.POWERED
+		assert state["stage"] == "powered"
