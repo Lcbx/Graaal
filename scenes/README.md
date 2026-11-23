@@ -37,7 +37,7 @@ cleans up the context afterward.
 | `layered_animation_example.py` | Compare a base clip with a masked override or additive layer. Adjust the clips, bone mask, layer weight and playback speeds in ImGui; Space pauses, F opens rendering settings and P opens the profiler. |
 | `locomotion_example.py` | The dummy crossfades between rest, walk and run. A separate root track moves it through the looping city. Compare requested and accepted displacement in ImGui. |
 
-The four rendered animation scenes use [dummy_rigged.glb](resources/dummy_rigged.glb)
+These rendered animation scenes use [dummy_rigged.glb](resources/dummy_rigged.glb)
 and baked clips from [Walking.fbx](resources/Walking.fbx) and
 [Running.fbx](resources/Running.fbx). If you edit the source assets, rebuild the
 clip bundle with Blender from the repository root:
@@ -147,6 +147,7 @@ These physics scenes also support windows through `python main.py scenes/<name>.
 | Scene | Behavior and controls | Bounded headless run |
 | --- | --- | --- |
 | `physics_example` | Falling cubes, obstacles, moving platform and a sensor tinted by box occupancy; render interpolation between 120 Hz ticks | `python -m scenes.physics_example --headless --frames 240` |
+| `river_crossing_example` | 48 dummies walk or run at individual speeds. Water-sensor overlap selects a graph state that blends [in-place](resources/Swimming_in_place.fbx) and [forward](resources/Swimming.fbx) swimming by pace. Dummies pause independently and teleport back from the far bank. | `python -m scenes.river_crossing_example --headless` |
 | `ragdoll_example` | Eight-second animated/powered/limp/recovery cycle; procedural skinned boxes show the native humanoid | `python -m scenes.ragdoll_example --headless --frames 960` |
 | `character_example` | Animated native controller, collision foot IK, triggers and ragdoll hand-off; WASD moves, Space jumps, R falls, G requests recovery, T resumes the scripted hurdle-jump cycle | `python -m scenes.character_example --headless --frames 960` |
 

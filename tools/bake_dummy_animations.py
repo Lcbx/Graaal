@@ -65,7 +65,7 @@ def bake(filename, local_rest, model_rest, hips_rest):
 def main():
 	names, *rest = target_rest()
 	data = {"joints": names}
-	for name in ("Walking", "Running"):
+	for name in ("Walking", "Running", "Swimming_in_place", "Swimming"):
 		for key, array in zip(("hips", "rotation", "fps"), bake(f"{name}.fbx", *rest)):
 			data[f"{name}_{key}"] = array
 	np.savez_compressed(RESOURCES / "dummy_animations.npz", **data)

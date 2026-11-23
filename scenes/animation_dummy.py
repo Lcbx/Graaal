@@ -14,7 +14,7 @@ ANIMATIONS = ASSET.with_name("dummy_animations.npz")
 UNIT_SCALE = 0.1
 
 
-def load_dummy():
+def load_dummy(*, swimming=False):
 	from pygltflib import GLTF2
 
 	asset = load_skinned_gltf(ASSET)
@@ -29,7 +29,8 @@ def load_dummy():
 	joint_names = [gltf.nodes[i].name for i in asset.joint_nodes]
 	with np.load(ANIMATIONS) as data:
 		if data["joints"].tolist() != joint_names: raise ValueError("Baked animations do not match the dummy rig")
-		for name in ("Walking", "Running"):
+		names = ("Walking", "Running", "Swimming_in_place", "Swimming") if swimming else ("Walking", "Running")
+		for name in names:
 			rotation = data[f"{name}_rotation"]
 			translation = np.tile(rig.translation, (len(rotation), 1, 1))
 			translation[:, 0] = data[f"{name}_hips"] * UNIT_SCALE
@@ -38,7 +39,7 @@ def load_dummy():
 	return rig, primitive, clips
 
 
-def dummy_material_mesh(primitive):
+def dummy_material_mesh(primitive, *, include_white=False):
 	from PIL import Image
 	from pygltflib import GLTF2
 	from graaal.Assets import gltf_image_bytes
@@ -53,9 +54,11 @@ def dummy_material_mesh(primitive):
 	with Image.open(BytesIO(gltf_image_bytes(gltf, gltf.images[image_id], ASSET.parent))) as image:
 		image.thumbnail((1024, 1024))
 		pixels = np.array(image.convert("RGBA"))
-	records = np.zeros(1, dtype=MATERIAL_DTYPE)
+	images = [pixels]
+	if include_white: images.append(np.full((1, 1, 4), 255, dtype=np.uint8))
+	records = np.zeros(len(images), dtype=MATERIAL_DTYPE)
 	records["base_color"] = pbr.baseColorFactor
-	textures = build_material_texture_array([pixels], records, (1024, 1024))
+	textures = build_material_texture_array(images, records, (1024, 1024))
 	shader = DefaultMaterialShader(default_material={"base_color": pbr.baseColorFactor, "roughness": pbr.roughnessFactor})
 	mesh = MaterialMesh(primitive.vertices, shader, indices=primitive.indices, bounds=((0, 0.9, 0), (2.5, 2.5, 2.5)))
 	return mesh, textures
