@@ -586,7 +586,7 @@ class EcsPhysicsAdapter:
 			position[kept], rotation[kept] = state.position[state.found], state.orientation[state.found]
 			linear[kept], angular[kept] = state.linear_velocity[state.found], state.angular_velocity[state.found]
 		kwargs = {name: values[name][spawn] for name in _BODY_FIELDS}
-		shape_scale, shape_offset, shape_rotation = scale[spawn].copy(), np.zeros((len(spawn), 3)), np.tile((0, 0, 0, 1), (len(spawn), 1))
+		shape_scale, shape_offset, shape_rotation = scale[spawn].copy(), np.zeros((len(spawn), 3)), np.tile((0.0, 0.0, 0.0, 1.0), (len(spawn), 1))
 		for row, target in enumerate(spawn):
 			parts = geometry[target][0]
 			if len(parts) == 1:

@@ -10,9 +10,9 @@ import argparse
 import numpy as np
 
 from graaal.Animation.AnimationGraph import AnimationGraphDefinition
-from graaal.Animation.AnimationGraphPlayback import AnimationGraphPlayback
 from graaal.Animation.SkeletalAnimation import Clip, model_matrices, sample_clip, skin_matrices, subtree_mask
 from graaal.ECS import ECS, Scheduler
+from graaal.EcsAdapters.EcsAnimationGraph import EcsAnimationGraphAdapter, GraphPlayer
 from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from scenes.animation_dummy import load_dummy
@@ -21,20 +21,27 @@ from scenes.physics_utils import advance_fixed_steps
 
 TICK_HZ = 60
 FIXED_DT = 1 / TICK_HZ
+HEADLESS_TICKS = 3600
 LANES, ROWS = 12, 4
+DUMMY_RADIUS, DUMMY_HEIGHT = 0.25, 1.8
+DUMMY_CENTER = DUMMY_HEIGHT / 2
+SWIM_RADIUS, SWIM_LENGTH = 0.30, 1.6
+LAND_COLLIDER, WATER_SENSOR, SWIM_COLLIDER = range(3)
+WATER_SENSOR_POSITION = (0, -0.7, 0)
+UPRIGHT, HORIZONTAL = (0, 0, 0, 1), (np.sqrt(0.5), 0, 0, np.sqrt(0.5))
 RIVER_WIDTH, RIVER_LENGTH = 12.0, 100.0
 WATER_HEIGHT, SWIM_DEPTH = -0.14, 1.55
 FINISH = 13.0
 FADE_TIME = 0.35
+YIELD_TIME, CLEARANCE = 0.8, 0.08
 LAND_SPEED_RANGE = (1.3, 3.6)
 RUN_THRESHOLD = 2.25
-SWIM_SPEED_FACTOR = 0.6
 
 
 def make_animation_graph(rig, named_clips):
 	clips = dict(named_clips)
-	# The graph inherits one playback rate per dummy. Retiming preserves each gait's cadence.
-	for name, nominal_speed in (("Walking", 1.5), ("Running", 4.0), ("Swimming_in_place", 1.45 / SWIM_SPEED_FACTOR)):
+	# The graph inherits one playback rate per dummy. Retiming preserves each land gait's cadence.
+	for name, nominal_speed in (("Walking", 1.5), ("Running", 4.0)):
 		clip = clips[name]
 		clips[name] = Clip(clip.translation, clip.rotation, clip.scale, clip.fps * RUN_THRESHOLD / nominal_speed)
 	# Keep the bind-pose stance and lower both arms using a mid-stride walk sample.
@@ -52,7 +59,9 @@ def make_animation_graph(rig, named_clips):
 	# Keep average head height consistent at the waterline as the torso pitches forward.
 	head_height = [model_matrices(rig, clip.translation, clip.rotation, clip.scale)[:, 5, 1, 3].mean() for clip in (tread, forward)]
 	translation[:, 0, 1] += head_height[0] - head_height[1]
-	clips["Swimming"] = Clip(translation, forward.rotation, forward.scale, (len(translation) - 1) / tread.duration)
+	clips["Swimming"] = Clip(translation, forward.rotation, forward.scale, forward.fps)
+	# Both poses share the forward stroke's cycle so their phases stay aligned during a pause.
+	clips["Swimming_in_place"] = Clip(tread.translation, tread.rotation, tread.scale, (len(tread.translation) - 1) / forward.duration)
 
 	conditions = {
 		"stand": [("in_water", "==", 0), ("moving", "==", 0)],
@@ -74,81 +83,116 @@ def make_animation_graph(rig, named_clips):
 		"sample_slots": ["locomotion"],
 		"tasks": [{"name": "locomotion", "op": "sample", "slot": "locomotion"}],
 	})
-	return definition.compile(rig, clips)
+	return definition.compile(rig, clips), travel / forward.duration
 
 
 def create_demo(rig, named_clips):
 	import pyjoltphysics as pj
 
-	graph = make_animation_graph(rig, named_clips)
+	graph, authored_swim_speed = make_animation_graph(rig, named_clips)
 	world = ECS()
-	world.register(MaterialTransform, Collider, RigidBody)
+	world.register(MaterialTransform, Collider, RigidBody, GraphPlayer)
 	dummies = world.create(LANES * ROWS)
 	river = world.create()[0]
-	world.add(dummies, MaterialTransform(), Collider(0), RigidBody(motion=1, group=1, mask=2))
-	world.add(river, MaterialTransform(position=(0, -0.7, 0)), Collider(1, sensor=True), RigidBody(motion=0, group=2, mask=1))
+	world.add(dummies, MaterialTransform(), Collider(LAND_COLLIDER), RigidBody(motion=1, group=1, mask=3), GraphPlayer(0))
+	world.add(river, MaterialTransform(position=WATER_SENSOR_POSITION), Collider(WATER_SENSOR, sensor=True), RigidBody(motion=0, group=2, mask=1))
 	rng = np.random.default_rng(27)
 	lanes, rows = np.tile(np.arange(LANES), ROWS), np.repeat(np.arange(ROWS), LANES)
 	start = np.zeros((len(dummies), 3), dtype=np.float32)
 	start[:, 0] = (lanes - (LANES - 1) / 2) * 1.9 + rng.uniform(-0.22, 0.22, len(dummies))
+	start[:, 1] = DUMMY_CENTER
 	start[:, 2] = -10.0 - rows * 2.5 - rng.uniform(0, 1.8, len(dummies))
+	nearby = np.abs(start[:, None, 0] - start[None, :, 0]) < 2 * max(DUMMY_RADIUS, SWIM_RADIUS)
+	np.fill_diagonal(nearby, False)
 	land_speed = rng.uniform(*LAND_SPEED_RANGE, len(dummies))
-	swim_speed = SWIM_SPEED_FACTOR * land_speed
-	forward_weight = np.interp(land_speed, LAND_SPEED_RANGE, (0.65, 1.0))
-	until_pause = rng.uniform(0.8, 6.0, len(dummies))
+	playback_rate = land_speed / RUN_THRESHOLD
+	swim_speed = authored_swim_speed * playback_rate
+	# Share the fraction of cruising speed between movement and the swim blend.
+	pace = np.ones(len(dummies))
+	accepted_pace = pace.copy()
 	pause_left = np.zeros(len(dummies))
+	waiting_at_finish = np.zeros(len(dummies), dtype=bool)
 	swimming = np.zeros(len(dummies), dtype=bool)
 	transforms = world.get(MaterialTransform)
+	colliders = world.get(Collider)
 	transforms[dummies].position = start
 	parameters = np.tile(graph.parameter_defaults, (len(dummies), 1))
 	parameters[:, graph.parameter_columns["land_speed"]] = land_speed
 	in_water = parameters[:, graph.parameter_columns["in_water"]]
 	moving = parameters[:, graph.parameter_columns["moving"]]
 	swim_blend = parameters[:, graph.parameter_columns["swim_blend"]]
-	animation = AnimationGraphPlayback(graph, len(dummies))
+	animation = EcsAnimationGraphAdapter(world, 0, graph)
+	animation.update(0)
+	rows = np.searchsorted(dummies, animation.owners)
 	initial_states = np.where(land_speed < RUN_THRESHOLD, graph.state_ids["walk"], graph.state_ids["run"])
 	durations = np.array([graph.clips[graph.state_clips[state]].duration for state in (graph.state_ids["walk"], graph.state_ids["run"])])
 	initial_times = rng.random(len(dummies)) * np.where(land_speed < RUN_THRESHOLD, durations[0], durations[1])
-	animation.reset(initial_states, initial_times, speeds=land_speed / RUN_THRESHOLD)
-	physics = EcsPhysicsAdapter(world, {0: pj.Shape.sphere(0.17), 1: pj.Shape.box((RIVER_LENGTH, 4, RIVER_WIDTH))},
-		settings=pj.WorldSettings(tick_hz=TICK_HZ, threads=1), interpolate=True)
+	animation.playback.reset(initial_states[rows], initial_times[rows], speeds=playback_rate[rows])
+	pose = animation.update(0, parameters[rows])
+	shapes = {
+		LAND_COLLIDER: pj.Shape.capsule(DUMMY_RADIUS, DUMMY_HEIGHT - 2 * DUMMY_RADIUS),
+		WATER_SENSOR: pj.Shape.box((RIVER_LENGTH, 4, RIVER_WIDTH)),
+		SWIM_COLLIDER: pj.Shape.capsule(SWIM_RADIUS, SWIM_LENGTH - 2 * SWIM_RADIUS),
+	}
+	physics = EcsPhysicsAdapter(world, shapes, settings=pj.WorldSettings(tick_hz=TICK_HZ, threads=1), interpolate=True)
+	water_filter = physics.query_filter(group=2, mask=1)
 
 	def move_crowd(world, commands, dt):
-		pause_left[:] = np.maximum(pause_left - dt, 0)
-		until_pause[:] -= dt * (pause_left == 0)
-		start_pause = until_pause <= 0
-		pause_left[start_pause] = rng.uniform(0.5, 1.6, start_pause.sum())
-		until_pause[start_pause] = rng.uniform(2.0, 7.0, start_pause.sum())
 		pose = transforms[dummies]
 		position = pose.position
-		next_z = position[:, 2] + np.where(swimming, swim_speed, land_speed) * (pause_left == 0) * dt
-		finished = next_z >= FINISH
+		z = position[:, 2]
+		# Reserve the longer footprint on approach so the collider can switch with room to spare.
+		near_water = (np.abs(z) <= RIVER_WIDTH / 2 + SWIM_LENGTH) | swimming
+		half_length = np.where(near_water, SWIM_LENGTH / 2, DUMMY_RADIUS)
+		# The kinematic bodies follow targets, so keep their projected capsules apart along each lane.
+		separation = z[None, :] - z[:, None]
+		gap = separation - half_length[:, None] - half_length[None, :] - CLEARANCE
+		gap_ahead = np.min(np.where(nearby & (separation > 0), gap, np.inf), axis=1)
+		cruise_speed = np.where(swimming, swim_speed, land_speed)
+		pause_left[:] = np.maximum(pause_left - dt, 0)
+		braking_distance = cruise_speed * (0.5 * FADE_TIME * pace**2 + dt)
+		pause_left[(pause_left == 0) & (gap_ahead <= braking_distance)] = YIELD_TIME
+		step = dt / FADE_TIME
+		pace[:] += np.clip((pause_left == 0) - pace, -step, step)
+		travel = np.minimum(np.minimum(cruise_speed * pace * dt, np.maximum(gap_ahead, 0)), FINISH - z)
+		accepted_pace[:] = travel / (cruise_speed * dt)
+		next_z = z + travel
+		spawn_gap = np.abs(start[:, None, 2] - next_z[None, :]) - DUMMY_RADIUS - half_length[None, :]
+		spawn_blocked = np.any(nearby & (spawn_gap < CLEARANCE), axis=1)
+		waiting_at_finish[:] = (next_z >= FINISH) & spawn_blocked
+		recycle = (next_z >= FINISH) & ~spawn_blocked
 		position[:, 2] = next_z
-		depth = np.where(swimming, -SWIM_DEPTH, 0.0)
-		step = SWIM_DEPTH * dt / FADE_TIME
-		position[:, 1] += np.clip(depth - position[:, 1], -step, step)
-		if np.any(finished):
+		center = DUMMY_CENTER - swimming * SWIM_DEPTH
+		position[:, 1] += np.clip(center - position[:, 1], -SWIM_DEPTH * step, SWIM_DEPTH * step)
+		if np.any(recycle):
 			# Both the kinematic target and the teleport command apply during this tick.
-			position[finished] = start[finished]
-			physics.teleport(dummies[finished], start[finished])
-			until_pause[finished] = rng.uniform(0.8, 6.0, finished.sum())
+			position[recycle] = start[recycle]
+			physics.teleport(dummies[recycle], start[recycle])
+			pause_left[recycle] = 0
+			pace[recycle] = 1
 		pose.position = position
+		wanted = np.where(swimming, SWIM_COLLIDER, LAND_COLLIDER)
+		changed = colliders[dummies].shape != wanted
+		if np.any(changed):
+			orientations = np.where(swimming[changed, None], HORIZONTAL, UPRIGHT)
+			colliders[dummies[changed]].assign(shape=wanted[changed], rotation=orientations)
 
-	def update_water_overlap(world, commands, events):
-		other = np.where(events["entity_a"] == river, events["entity_b"], events["entity_a"])
-		owners, last = np.unique(other[::-1], return_index=True)
-		active = events["phase"][::-1][last] != pj.EventPhase.END
-		swimming[np.isin(dummies, owners[active])] = True
-		swimming[np.isin(dummies, owners[~active])] = False
+	def update_water_overlap(world, commands, dt):
+		# Collider swaps replace native bodies. Query the sensor volume against the live bodies.
+		overlaps = physics.overlap(WATER_SENSOR, WATER_SENSOR_POSITION, filter=water_filter)
+		swimming[:] = np.isin(dummies, physics.entities_of(overlaps))
 
 	def advance_animation(world, commands, dt):
+		nonlocal pose
 		in_water[:] = swimming
-		moving[:] = pause_left == 0
-		step = dt / FADE_TIME
-		swim_blend[:] += np.clip(moving * forward_weight - swim_blend, -step, step)
-		animation.advance(dt, parameters)
+		moving[:] = (pause_left == 0) & ~waiting_at_finish
+		swim_blend[:] = accepted_pace
+		rows = np.searchsorted(dummies, animation.entities())
+		pose = animation.update(dt, parameters[rows])
 
-	physics.subscribe(update_water_overlap, kind=pj.EventKind.TRIGGER, entity=river)
+	def current_pose():
+		return pose
+
 	schedule = Scheduler(world)
 	schedule.add("move", move_crowd, phase="fixed_update")
 	schedule.add("physics_sync", physics.reconcile, phase="fixed_update", after="move")
@@ -156,8 +200,9 @@ def create_demo(rig, named_clips):
 	schedule.add("physics_step", physics.step, phase="fixed_update", after="physics_input")
 	schedule.add("physics_output", physics.pull, phase="fixed_update", after="physics_step")
 	schedule.add("physics_events", physics.dispatch_events, phase="fixed_update", after="physics_output")
-	schedule.add("animation", advance_animation, phase="fixed_update", after="physics_events")
-	return world, dummies, physics, schedule, animation, parameters
+	schedule.add("water_overlap", update_water_overlap, phase="fixed_update", after="physics_events")
+	schedule.add("animation", advance_animation, phase="fixed_update", after="water_overlap")
+	return world, dummies, physics, schedule, animation, parameters, current_pose
 
 
 def add_landscape(world, ground, water):
@@ -194,7 +239,7 @@ def run_scene(*, offscreen=False, frames=None):
 	from scenes.physics_viewing_utils import draw_frame, has_blue_pixels, read_pixels, viewing_target
 
 	rig, primitive, clips = load_dummy(swimming=True)
-	world, dummies, physics, schedule, animation, parameters = create_demo(rig, clips)
+	world, dummies, physics, schedule, animation, _, current_pose = create_demo(rig, clips)
 	with physics, viewing_target("River crossing", window_size=(1100, 760), offscreen=offscreen) as output:
 		mesh, textures = dummy_material_mesh(primitive, include_white=True)
 		cube = cube_vertices()
@@ -211,7 +256,13 @@ def run_scene(*, offscreen=False, frames=None):
 			renderer = MaterialRenderer(meshes=[mesh, ground, water], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
 			camera = Camera((15, 10, -5), (0, 0, -2), (0, 1, 0), 50, near=0.1, far=120)
 			accumulator, displayed = 0.0, 0
-			drawing = EcsMaterialAdapter(renderer, world, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * TICK_HZ))
+
+			def render_transforms(owners):
+				position, rotation, scale = physics.render_transforms(owners, alpha=accumulator * TICK_HZ)
+				position[np.isin(owners, dummies), 1] -= DUMMY_CENTER
+				return position, rotation, scale
+
+			drawing = EcsMaterialAdapter(renderer, world, transform_source=render_transforms)
 			if offscreen and frames is None: frames = 1
 			while frames is None or displayed < frames:
 				if not offscreen and not RenderContext.window_loop(): break
@@ -220,8 +271,8 @@ def run_scene(*, offscreen=False, frames=None):
 				if steps:
 					schedule.run(elapsed, fixed_steps=steps, fixed_dt=FIXED_DT)
 				if steps or displayed == 0:
-					model = model_matrices(rig, *animation.pose(parameters))
-					palette.write(dummies, skin_matrices(rig, model))
+					model = model_matrices(rig, *current_pose())
+					palette.write(animation.owners, skin_matrices(rig, model))
 				drawing.sync()
 				draw_frame(renderer, camera, output, "river_crossing")
 				displayed += 1
@@ -232,11 +283,11 @@ def run_scene(*, offscreen=False, frames=None):
 			palette.close()
 
 
-def run_headless(ticks=2400):
+def run_headless(ticks=HEADLESS_TICKS):
 	rig, _, clips = load_dummy(swimming=True)
-	world, dummies, physics, schedule, animation, _ = create_demo(rig, clips)
+	world, dummies, physics, schedule, animation, _, _ = create_demo(rig, clips)
 	transforms = world.get(MaterialTransform)
-	swim = animation.graph.state_ids["swim"]
+	swim = animation.playback.graph.state_ids["swim"]
 	previous_z = transforms[dummies].position[:, 2]
 	swam = np.zeros(len(dummies), dtype=bool)
 	paused = swam.copy()
@@ -245,7 +296,7 @@ def run_headless(ticks=2400):
 		for _ in range(ticks):
 			schedule.run(FIXED_DT, fixed_steps=1, fixed_dt=FIXED_DT)
 			z = transforms[dummies].position[:, 2]
-			swam |= animation.states == swim
+			swam[np.searchsorted(dummies, animation.owners)] |= animation.playback.states == swim
 			paused |= z == previous_z
 			returned |= z < previous_z
 			previous_z = z
@@ -260,5 +311,5 @@ if __name__ == "__main__":
 	parser.add_argument("--frames", type=int)
 	args = parser.parse_args()
 	if args.frames is not None and args.frames <= 0: parser.error("--frames must be positive")
-	if args.headless: run_headless(2400 if args.frames is None else args.frames)
+	if args.headless: run_headless(HEADLESS_TICKS if args.frames is None else args.frames)
 	else: run_scene(offscreen=args.offscreen, frames=args.frames)
