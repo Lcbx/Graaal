@@ -21,6 +21,7 @@ from graaal.PhysicsRagdoll import RagdollAsset
 from graaal.Animation.PoseTasks import PosePlan
 from graaal.Animation.RootMotion import RootMotion
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
+from scenes.physics_utils import advance_fixed_steps
 
 
 def create_demo():
@@ -170,8 +171,9 @@ def create_demo():
 def run_headless(frames=960):
 	ecs, owner, environment, physics, schedule, state, asset = create_demo()
 	with physics:
+		fixed_dt = 1 / physics.world.settings.tick_hz
 		for _ in range(frames):
-			schedule.run(1 / 120, fixed_steps=1, fixed_dt=1 / 120)
+			schedule.run(fixed_dt, fixed_steps=1, fixed_dt=fixed_dt)
 			if not np.isfinite(state["batches"][0].matrices).all(): raise RuntimeError("nonfinite character palette")
 			if physics.world.tick % 120 == 0:
 				position = ecs.get(MaterialTransform)[[owner]].position[0]
@@ -206,8 +208,10 @@ def run_scene(*, offscreen=False, frames=None):
 		ecs.add(owner, MaterialInstance(mesh, {"base_color": (0.1, 0.65, 0.95, 1)}))
 		for entity, color in zip(environment[:3], ((0.3, 0.3, 0.35, 1), (0.65, 0.3, 0.15, 1), (0.4, 0.55, 0.3, 1))):
 			ecs.add(entity, MaterialInstance(ground, {"base_color": color}))
+		tick_hz = physics.world.settings.tick_hz
+		fixed_dt = 1 / tick_hz
 		accumulator, displayed = 0.0, 0
-		drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * 120))
+		drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * tick_hz))
 		camera = Camera((4, 4, 10), (-0.5, 1, 0), (0, 1, 0), 45, near=0.05, far=100)
 		size = (640, 480)
 		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
@@ -220,7 +224,7 @@ def run_scene(*, offscreen=False, frames=None):
 			else: return False
 			return True
 		if not offscreen: RenderContext.subscribe_event("char", on_char)
-		schedule.run(0, fixed_steps=1, fixed_dt=1 / 120)
+		schedule.run(0, fixed_steps=1, fixed_dt=fixed_dt)
 		if offscreen and frames is None: frames = 6
 		while frames is None or displayed < frames:
 			if not offscreen:
@@ -230,12 +234,10 @@ def run_scene(*, offscreen=False, frames=None):
 				if np.any(direction): state["auto"] = False
 				if not state["auto"]: state["direction"] = direction
 			elapsed = 1 / 60 if offscreen else min(RenderContext.frame_time, 0.1)
-			accumulator += elapsed
-			steps = int(accumulator * 120)
-			accumulator = max(0.0, accumulator - steps / 120)
-			schedule.run(elapsed, fixed_steps=steps, fixed_dt=1 / 120)
+			steps, accumulator = advance_fixed_steps(accumulator, elapsed, tick_hz)
+			schedule.run(elapsed, fixed_steps=steps, fixed_dt=fixed_dt)
 			batches = state["batches"]
-			if state["stage"] != "controller": batches = [PoseBatch(0, 0, np.array([owner]), physics.ragdoll_skin([owner], alpha=accumulator * 120))]
+			if state["stage"] != "controller": batches = [PoseBatch(0, 0, np.array([owner]), physics.ragdoll_skin([owner], alpha=accumulator * tick_hz))]
 			poses.update(batches)
 			drawing.sync()
 			commands = RenderContext.commands("character")

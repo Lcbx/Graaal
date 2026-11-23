@@ -12,6 +12,7 @@ import numpy as np
 
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import joint_limit_torques, joint_spring_torques, ragdoll_limit_parameters
+from scenes.physics_utils import joint_error
 
 
 def make_humanoid(*, height=1.8, mass=70.0):
@@ -70,12 +71,6 @@ def make_humanoid(*, height=1.8, mass=70.0):
 		damping=np.array([0, 0.05, 0.01, 0.02, 0.01, 0.02, 0.01, 0.08, 0.05, 0.006, 0.08, 0.05, 0.006]) * limit_scale,
 		max_torque=np.array([0, 2, 0.3, 0.4, 0.2, 0.4, 0.2, 3, 2, 0.25, 3, 2, 0.25]) * limit_scale)
 	return settings, neutral, spring, limit
-
-
-def joint_error(parents, orientations, neutral):
-	relative = Quaternion.multiply_batch(orientations[parents[1:]] * [-1, -1, -1, 1], orientations[1:])
-	error = Quaternion.multiply_batch(relative, neutral[1:] * [-1, -1, -1, 1])
-	return 2 * np.arctan2(np.linalg.norm(error[:, :3], axis=-1), np.abs(error[:, 3]))
 
 
 def terrain_boxes(scenario, scale):

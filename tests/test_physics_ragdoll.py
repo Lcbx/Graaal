@@ -390,10 +390,17 @@ def test_bone_events_removal_and_query_exclusion(setup, pj):
 		assert np.all(contacts[f"bone_{side}"][~owned] == -1)
 	seen = []
 	physics.subscribe(lambda world, commands, records: seen.extend(records), kind=pj.EventKind.CONTACT, entity=owner)
+	bones = physics.ragdolls[int(owner)].bones.copy()
 	ecs.remove(owner, PhysicsRagdoll)
 	events = tick(physics)
 	assert len(seen)
-	assert np.any((events["entity_a"] == owner) | (events["entity_b"] == owner))
+	ends = events[(events["kind"] == pj.EventKind.CONTACT) & (events["phase"] == pj.EventPhase.END)]
+	assert np.any((ends["entity_a"] == owner) | (ends["entity_b"] == owner))
+	for side in ("a", "b"):
+		owned = ends[f"entity_{side}"] == owner
+		indices = ends[f"bone_{side}"][owned]
+		assert np.all(indices >= 0)
+		np.testing.assert_array_equal(bones[indices], ends[side][owned])
 	assert physics.world.latest().count == 1
 	assert physics.raycast([4, 10, -3], [0, -1, 0], exclude=[floor]) is None
 

@@ -17,6 +17,7 @@ from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import RagdollAsset
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip_pairs
 from graaal.Animation.SkeletalGltf import SKINNED_VERTEX_DTYPE
+from scenes.physics_utils import advance_fixed_steps
 
 
 def create_demo():
@@ -99,8 +100,9 @@ def skinned_boxes(asset, cube):
 def run_headless(frames=960):
 	ecs, owner, floor, physics, schedule, state, asset = create_demo()
 	with physics:
+		fixed_dt = 1 / physics.world.settings.tick_hz
 		for _ in range(frames):
-			schedule.run(1 / 120, fixed_steps=1, fixed_dt=1 / 120)
+			schedule.run(fixed_dt, fixed_steps=1, fixed_dt=fixed_dt)
 			if not np.isfinite(state["batches"][0].matrices).all(): raise RuntimeError("nonfinite ragdoll palette")
 			if physics.world.tick % 120 == 0:
 				positions, _ = physics.ragdolls[int(owner)].pose()
@@ -137,17 +139,17 @@ def run_scene(*, offscreen=False, frames=None):
 		camera = Camera((4, 3, 7), (0, 0.9, 0), (0, 1, 0), 45, near=0.05, far=100)
 		size = (640, 480)
 		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
+		tick_hz = physics.world.settings.tick_hz
+		fixed_dt = 1 / tick_hz
 		accumulator, displayed = 0.0, 0
-		schedule.run(0, fixed_steps=1, fixed_dt=1 / 120)
+		schedule.run(0, fixed_steps=1, fixed_dt=fixed_dt)
 		if offscreen and frames is None: frames = 6
 		while frames is None or displayed < frames:
 			if not offscreen and not RenderContext.window_loop(): break
 			elapsed = 1 / 60 if offscreen else min(RenderContext.frame_time, 0.1)
-			accumulator += elapsed
-			steps = int(accumulator * 120)
-			accumulator = max(0.0, accumulator - steps / 120)
-			schedule.run(elapsed, fixed_steps=steps, fixed_dt=1 / 120)
-			poses.update([PoseBatch(0, 0, np.array([owner]), physics.ragdoll_skin([owner], alpha=accumulator * 120))])
+			steps, accumulator = advance_fixed_steps(accumulator, elapsed, tick_hz)
+			schedule.run(elapsed, fixed_steps=steps, fixed_dt=fixed_dt)
+			poses.update([PoseBatch(0, 0, np.array([owner]), physics.ragdoll_skin([owner], alpha=accumulator * tick_hz))])
 			drawing.sync()
 			commands = RenderContext.commands("ragdoll")
 			size = size if offscreen else RenderContext.window_dimensions

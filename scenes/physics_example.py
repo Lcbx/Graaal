@@ -13,6 +13,7 @@ from graaal.ECS import ECS, Scheduler
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
 from scenes.physics_geometry import cube_vertices
+from scenes.physics_utils import advance_fixed_steps
 
 
 def make_world():
@@ -64,10 +65,11 @@ def run_headless(ticks=240):
 	ecs, boxes, floor, obstacle, platform, sensor = make_world()
 	with EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, settings=pj.WorldSettings(threads=1)) as physics:
 		schedule = make_schedule(ecs, physics, platform)
+		fixed_dt = 1 / physics.world.settings.tick_hz
 		contacts = triggers = 0
 		inside = np.empty(0, dtype=np.uint32)
 		for _ in range(ticks):
-			schedule.run(1 / 120, fixed_steps=1, fixed_dt=1 / 120)
+			schedule.run(fixed_dt, fixed_steps=1, fixed_dt=fixed_dt)
 			events = physics.events
 			inside = update_sensor_occupants(physics, sensor, boxes, inside, events)
 			contacts += np.count_nonzero(events["kind"] == pj.EventKind.CONTACT)
@@ -102,8 +104,10 @@ def run_scene(*, offscreen=False, frames=None):
 		sensor_material = {"base_color": (0.1, 0.9, 0.3, 0.15), "alpha_mode": 2}
 		ecs.add(sensor, MaterialInstance(sensor_mesh, sensor_material))
 		renderer = MaterialRenderer(meshes=[mesh, sensor_mesh])
+		tick_hz = physics.world.settings.tick_hz
+		fixed_dt = 1 / tick_hz
 		accumulator, displayed = 0.0, 0
-		drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * 120))
+		drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * tick_hz))
 		schedule = make_schedule(ecs, physics, platform)
 		inside = np.empty(0, dtype=np.uint32)
 		def update_sensor(world, commands, dt):
@@ -121,10 +125,9 @@ def run_scene(*, offscreen=False, frames=None):
 		if offscreen and frames is None: frames = 1
 		while frames is None or displayed < frames:
 			if not offscreen and not RenderContext.window_loop(): break
-			accumulator += 1 / 60 if offscreen else min(RenderContext.frame_time, 0.1)
-			fixed_steps = int(accumulator * 120)
-			accumulator = max(0.0, accumulator - fixed_steps / 120)
-			schedule.run(1 / 60 if offscreen else RenderContext.frame_time, fixed_steps=fixed_steps, fixed_dt=1 / 120)
+			elapsed = 1 / 60 if offscreen else RenderContext.frame_time
+			fixed_steps, accumulator = advance_fixed_steps(accumulator, min(elapsed, 0.1), tick_hz)
+			schedule.run(elapsed, fixed_steps=fixed_steps, fixed_dt=fixed_dt)
 			drawing.sync()
 			commands = RenderContext.commands("physics")
 			size = size if offscreen else RenderContext.window_dimensions

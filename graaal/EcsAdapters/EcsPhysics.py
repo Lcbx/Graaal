@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import field, dataclass, fields
 from types import TracebackType, MappingProxyType
-from typing import cast, Any, Callable, Mapping, Self, Sequence, TYPE_CHECKING, get_type_hints
+from typing import cast, Any, Callable, Generic, Mapping, Self, Sequence, TYPE_CHECKING, TypeVar, get_type_hints
 
 from numpy.typing import ArrayLike
 import numpy as np
@@ -135,6 +135,38 @@ def _vectors(value: ArrayLike, count: int, width: int, name: str) -> np.ndarray:
 def _rotations(value: np.ndarray) -> None:
 	if not np.allclose(np.linalg.norm(value, axis=-1), 1, atol=1e-5):
 		raise ValueError("rotation must be a unit xyzw quaternion")
+
+
+def _lookup_uids(uids: ArrayLike, mapping: Mapping[int, int], missing: np.uint64 | np.int32) -> np.ndarray:
+	wanted = np.asarray(uids)
+	result = np.full(wanted.shape, missing, dtype=missing.dtype)
+	if wanted.size == 0: return result
+	if wanted.dtype.kind not in "iu": raise TypeError("body UIDs must be integers")
+	if np.any(wanted < 0) or np.any(wanted > 0xffffffff): raise ValueError("body UIDs must fit uint32")
+	if mapping:
+		keys = np.array(sorted(mapping), dtype=np.uint32)
+		values = np.array([mapping[int(key)] for key in keys], dtype=result.dtype)
+		indices = np.searchsorted(keys, wanted)
+		rows = np.minimum(indices, len(keys) - 1)
+		valid = (indices < len(keys)) & (keys[rows] == wanted)
+		result[valid] = values[rows[valid]]
+	return result
+
+
+def _character_feet(centers: np.ndarray, heights: ArrayLike) -> np.ndarray:
+	feet = centers.copy()
+	feet[..., 1] -= np.asarray(heights) * 0.5
+	return feet
+
+
+_Removals = TypeVar("_Removals")
+
+
+@dataclass(frozen=True)
+class _ReconcilePlan(Generic[_Removals]):
+	removals: _Removals
+	required_bodies: int
+	commit: Callable[[], bool]
 
 
 @dataclass(frozen=True)
@@ -297,10 +329,10 @@ class EcsPhysicsAdapter:
 		characters = self._plan_characters()
 		ragdolls = self._plan_ragdolls()
 		bodies = self._plan_bodies()
-		removed = np.empty(0, dtype=np.uint32) if bodies is None else bodies[0]
-		handles = [] if ragdolls is None else ragdolls[0]
-		character_ids = [] if characters is None else characters[0]
-		needed = sum(plan[1] for plan in (bodies, ragdolls, characters) if plan is not None)
+		removed = np.empty(0, dtype=np.uint32) if bodies is None else bodies.removals
+		handles = [] if ragdolls is None else ragdolls.removals
+		character_ids = [] if characters is None else characters.removals
+		needed = sum(plan.required_bodies for plan in (bodies, ragdolls, characters) if plan is not None)
 		freed = len(removed) + sum(len(handle.bones) for handle in handles) + len(character_ids)
 		capacity = self.world.settings.max_bodies
 		if self.world.reserved_bodies - freed + needed > capacity:
@@ -312,17 +344,22 @@ class EcsPhysicsAdapter:
 		if character_ids: self._seq(self.world.remove_characters(character_ids))
 		# Native additions reserve before queued removals free capacity.
 		if self.world.reserved_bodies + needed > capacity: self.world.flush()
-		ragdolls_changed = False if ragdolls is None else ragdolls[2]()
-		changed = False if bodies is None else bodies[2]()
-		characters_changed = False if characters is None else characters[2]()
-		return self._reconcile_joints(changed) or changed or ragdolls_changed or characters_changed
+		ragdolls_changed = ragdolls is not None and ragdolls.commit()
+		bodies_changed = bodies is not None and bodies.commit()
+		characters_changed = characters is not None and characters.commit()
+		return self._reconcile_joints(bodies_changed) or bodies_changed or ragdolls_changed or characters_changed
 
 	@property
 	def characters(self) -> Mapping[int, pj.Character]:
 		"""Read-only full owner -> native Character handles, including pending creations."""
 		return MappingProxyType({owner: record[1] for owner, record in self._characters.items()})
 
-	def _plan_characters(self) -> tuple[list[int], int, Callable[[], bool]] | None:
+	def _active_character_mask(self, owners: np.ndarray) -> np.ndarray:
+		active = self.ecs.has(owners, PhysicsCharacter) & self.ecs.has(owners, self.transform_type)
+		active[active] = self.ecs.get(PhysicsCharacter)[owners[active]].enabled
+		return active
+
+	def _plan_characters(self) -> _ReconcilePlan[list[int]] | None:
 		"""Validate controllers and return removed IDs, reservation count and commit."""
 		if self._character_query is None: return None
 		result = self._character_query.fetch()
@@ -355,7 +392,7 @@ class EcsPhysicsAdapter:
 				if owner not in self._characters: continue
 				row = cast(Any, rows.rows.get(self._characters[owner][1].id))
 				if row is not None:
-					positions[desired[owner][1]] = rows.position[row] - [0, rows.height[row] * 0.5, 0]
+					positions[desired[owner][1]] = _character_feet(rows.position[row], rows.height[row])
 					velocities[owner] = rows.velocity[row].copy()
 		def apply() -> bool:
 			if removed and self._character_history is not None:
@@ -377,14 +414,14 @@ class EcsPhysicsAdapter:
 				else: self._seq(handle.set_move((0, 0, 0)))
 			self._character_owners = {handle.id: owner for owner, (_, handle) in self._characters.items()}
 			return bool(removed or added)
-		return [self._characters[owner][1].id for owner in removed], len(added), apply
+		return _ReconcilePlan([self._characters[owner][1].id for owner in removed], len(added), apply)
 
 	@property
 	def ragdolls(self) -> Mapping[int, pj.Ragdoll]:
 		"""Read-only full owner -> native Ragdoll handles; use commands, never remove bones."""
 		return MappingProxyType({owner: record[1] for owner, record in self._ragdolls.items()})
 
-	def _plan_ragdolls(self) -> tuple[list[pj.Ragdoll], int, Callable[[], bool]] | None:
+	def _plan_ragdolls(self) -> _ReconcilePlan[list[pj.Ragdoll]] | None:
 		"""Validate ragdolls and return removed handles, addition count and commit."""
 		if self._ragdoll_query is None: return None
 		result = self._ragdoll_query.fetch()
@@ -429,7 +466,7 @@ class EcsPhysicsAdapter:
 			self._ragdoll_owners = {int(uid): owner for owner, record in self._ragdolls.items() for uid in record[1].bones}
 			self._bone_by_uid = {int(uid): i for record in self._ragdolls.values() for i, uid in enumerate(record[1].bones)}
 			return bool(removed or added)
-		return [self._ragdolls[owner][1] for owner in removed], needed, apply
+		return _ReconcilePlan([self._ragdolls[owner][1] for owner in removed], needed, apply)
 
 	def set_ragdoll_pose(self, entities: EntityLike, pose: Sequence[np.ndarray]) -> None:
 		"""Copy render-local animation targets in owner order, before prepare_inputs."""
@@ -480,7 +517,7 @@ class EcsPhysicsAdapter:
 		frame = self.transforms[owners]
 		return asset.skin(positions, orientations, base, position=frame.position, rotation=frame.rotation, weight=weight)
 
-	def _plan_bodies(self) -> tuple[np.ndarray, int, Callable[[], bool]] | None:
+	def _plan_bodies(self) -> _ReconcilePlan[np.ndarray] | None:
 		"""Validate bodies and return removed UIDs, addition count and commit.
 
 		Static poses change only through teleport. Shape/scale/motion/filter-bit
@@ -587,7 +624,7 @@ class EcsPhysicsAdapter:
 			self._owner_by_uid = dict(zip(map(int, uids), map(int, entities)))
 			self._token = token
 			return True
-		return removed, len(spawn), apply
+		return _ReconcilePlan(removed, len(spawn), apply)
 
 	@property
 	def joint_ids(self) -> Mapping[tuple[int, int], int]:
@@ -598,7 +635,7 @@ class EcsPhysicsAdapter:
 		if self.joints is None: return False
 		token = self.joints.version()
 		if not bodies_changed and token == self._joint_token: return False
-		assert self._joint_query is not None and self._joint_type is not None and self._joint_type is not None and self._joint_type is not None and self._joint_type is not None
+		assert self._joint_query is not None and self._joint_type is not None
 		result = self._joint_query.fetch()
 		selection = result[self._joint_type].selection
 		owners = self.joints.owner_ids(selection)
@@ -685,35 +722,15 @@ class EcsPhysicsAdapter:
 	def bone_indices_of(self, uids: ArrayLike) -> np.ndarray:
 		"""Resolve native physical bone indices, or -1 for other/unowned bodies."""
 		self._check()
-		return self._resolve_bones(uids, self._bone_by_uid)
-
-	def _resolve_bones(self, uids: ArrayLike, mapping: Mapping[int, int]) -> np.ndarray:
-		wanted = np.asarray(uids)
-		owners = self._resolve_owners(wanted, self._retired_bodies | self._owner_by_uid | self._ragdoll_owners)
-		result = np.full(wanted.shape, -1, dtype=np.int32)
-		if mapping:
-			keys = np.array(sorted(mapping), dtype=np.uint32)
-			values = np.array([mapping[int(key)] for key in keys], dtype=np.int32)
-			indices = np.searchsorted(keys, wanted)
-			rows = np.minimum(indices, len(keys) - 1)
-			valid = (indices < len(keys)) & (keys[rows] == wanted) & (owners != WORLD_ENTITY)
-			result[valid] = values[rows[valid]]
-		return result
+		bones = _lookup_uids(uids, self._bone_by_uid, np.int32(-1))
+		owners = self._resolve_owners(uids, self._ragdoll_owners)
+		bones[owners == WORLD_ENTITY] = -1
+		return bones
 
 	def _resolve_owners(self, uids: ArrayLike, mapping: Mapping[int, int]) -> np.ndarray:
-		wanted = np.asarray(uids)
-		if wanted.size == 0: return np.full(wanted.shape, WORLD_ENTITY, dtype=np.uint64)
-		if wanted.dtype.kind not in "iu": raise TypeError("body UIDs must be integers")
-		if np.any(wanted < 0) or np.any(wanted > 0xffffffff): raise ValueError("body UIDs must fit uint32")
-		result = np.full(wanted.shape, WORLD_ENTITY, dtype=np.uint64)
-		if mapping:
-			keys = np.array(sorted(mapping), dtype=np.uint32)
-			owners = np.array([mapping[int(key)] for key in keys], dtype=np.uint64)
-			indices = np.searchsorted(keys, wanted)
-			rows = np.minimum(indices, len(keys) - 1)
-			valid = (indices < len(keys)) & (keys[rows] == wanted)
-			result[valid] = owners[rows[valid]]
-		result[~self.ecs.is_alive(result.reshape(-1)).reshape(result.shape)] = WORLD_ENTITY
+		result = _lookup_uids(uids, mapping, WORLD_ENTITY)
+		if result.size:
+			result[~self.ecs.is_alive(result.reshape(-1)).reshape(result.shape)] = WORLD_ENTITY
 		return result
 
 	def query_filter(self, *, exclude: EntityLike=(), group: int=0xffffffff, mask: int=0xffffffff, triggers: bool=False, characters: bool=True) -> pj.QueryFilter:
@@ -795,8 +812,11 @@ class EcsPhysicsAdapter:
 		pair = np.isin(raw["kind"], (self.pj.EventKind.CONTACT, self.pj.EventKind.TRIGGER, self.pj.EventKind.CHARACTER))
 		events["entity_b"][pair] = self._resolve_owners(raw["b"][pair], owners)
 		bones = self._retired_bones | self._bone_by_uid
-		events["bone_a"][body_events] = self._resolve_bones(raw["a"][body_events], bones)
-		events["bone_b"][pair] = self._resolve_bones(raw["b"][pair], bones)
+		if bones:
+			live_body_a = body_events & (events["entity_a"] != WORLD_ENTITY)
+			live_body_b = pair & (events["entity_b"] != WORLD_ENTITY)
+			events["bone_a"][live_body_a] = _lookup_uids(raw["a"][live_body_a], bones, np.int32(-1))
+			events["bone_b"][live_body_b] = _lookup_uids(raw["b"][live_body_b], bones, np.int32(-1))
 		joint_owners = self._retired_joints | {record[0]: (key, record[2]["target"]) for key, record in self._joint_records.items()}
 		joint = raw["kind"] == self.pj.EventKind.JOINT
 		if joint_owners:
@@ -811,11 +831,7 @@ class EcsPhysicsAdapter:
 		self._retired_bones.clear()
 		self._retired_characters.clear()
 		own_commands = commands is None
-		commands = self.ecs.commands() if own_commands else commands
-		assert commands is not None
-		assert commands is not None
-		assert commands is not None
-		assert commands is not None
+		commands = self.ecs.commands() if commands is None else commands
 		for callback, kind, entity in tuple(self._subscriptions.values()):
 			# A prior callback may delete an owner; never route to its recycled slot.
 			live_a, live_b = self.ecs.is_alive(events["entity_a"]), self.ecs.is_alive(events["entity_b"])
@@ -823,9 +839,7 @@ class EcsPhysicsAdapter:
 			if kind is not None: selected &= events["kind"] == kind
 			if entity is not None: selected &= (live_a & (events["entity_a"] == entity)) | (live_b & (events["entity_b"] == entity))
 			if np.any(selected): callback(self.ecs, commands, events[selected])
-		if own_commands:
-			assert commands is not None
-			commands.flush()
+		if own_commands: commands.flush()
 		return self.events
 
 	def _update_settings(self, uids: np.ndarray, previous: np.ndarray, values: np.ndarray) -> None:
@@ -981,9 +995,7 @@ class EcsPhysicsAdapter:
 		while self._character_pending:
 			owners, ops, codes, data = self._character_pending[0]
 			if self._character_query is None: raise ValueError("enable characters before submitting character commands")
-			live = self.ecs.is_alive(owners) & self.ecs.has(owners, PhysicsCharacter) & self.ecs.has(owners, self.transform_type)
-			present = owners[live]
-			live[live] &= self.ecs.get(PhysicsCharacter)[present].enabled
+			live = self._active_character_mask(owners)
 			ids = np.array([self._characters[int(owner)][1].id if int(owner) in self._characters else 0 for owner in owners], dtype=np.uint32)
 			if np.any(live & (ids == 0)): raise ValueError("reconcile characters before submitting inputs")
 			if np.any(live):
@@ -1069,12 +1081,9 @@ class EcsPhysicsAdapter:
 		found = indices < len(rows)
 		if len(rows): found &= rows.id[np.minimum(indices, len(rows) - 1)] == ids
 		if snapshot.applied_seq >= self.last_seq and not found.all(): raise RuntimeError("owned character disappeared; remove controllers through ECS")
-		live = self.ecs.is_alive(owners) & self.ecs.has(owners, PhysicsCharacter) & self.ecs.has(owners, self.transform_type)
-		live[live] &= self.ecs.get(PhysicsCharacter)[owners[live]].enabled
-		selected = found & live
+		selected = found & self._active_character_mask(owners)
 		owners, ids, indices = owners[selected], ids[selected], indices[selected]
-		feet = rows.position[indices].copy()
-		feet[:, 1] -= rows.height[indices] * 0.5
+		feet = _character_feet(rows.position[indices], rows.height[indices])
 		self.transforms[owners].position = feet
 		state = self.ecs.has(owners, CharacterState)
 		if np.any(state):
@@ -1117,8 +1126,8 @@ class EcsPhysicsAdapter:
 			_, owners, _, previous, current = self._character_history
 			indices = np.searchsorted(owners, entities)
 			rows = np.minimum(indices, len(owners) - 1)
-			selected = (indices < len(owners)) & (owners[rows] == entities) & self.ecs.has(entities, PhysicsCharacter)
-			selected[selected] &= self.ecs.get(PhysicsCharacter)[entities[selected]].enabled
+			selected = (indices < len(owners)) & (owners[rows] == entities)
+			selected[selected] = self._active_character_mask(entities[selected])
 			if np.any(selected): position[selected] = previous[rows[selected]] * (1 - alpha) + current[rows[selected]] * alpha
 		return position, rotation, scale
 

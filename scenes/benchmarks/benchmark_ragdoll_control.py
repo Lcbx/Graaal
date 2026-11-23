@@ -12,6 +12,7 @@ import numpy as np
 from graaal.Diagnostics import inspect_physics
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import joint_limit_torques, joint_spring_torques, ragdoll_limit_parameters
+from scenes.physics_utils import joint_error
 
 
 def summary(samples):
@@ -24,13 +25,6 @@ def observations(world, uids):
 	rows = snapshot.rows_of(uids.ravel())
 	if np.any(rows < 0): raise RuntimeError("ragdoll observation contains missing bone UIDs")
 	return {name: getattr(snapshot, name)[rows].reshape(uids.shape + (width,)) for name, width in (("position", 3), ("orientation", 4), ("linear_velocity", 3), ("angular_velocity", 3))}
-
-
-def joint_error(parents, orientations, neutral):
-	"""Shortest relative joint error in radians, excluding the unanchored root."""
-	relative = Quaternion.multiply_batch(orientations[:, parents[1:]] * [-1, -1, -1, 1], orientations[:, 1:])
-	error = Quaternion.multiply_batch(relative, neutral[None, 1:] * [-1, -1, -1, 1])
-	return 2 * np.arctan2(np.linalg.norm(error[..., :3], axis=-1), np.abs(error[..., 3]))
 
 
 def benchmark(count, threads, warmup, repeat, *, passive=True, mode="limp", soft_limits=False):
