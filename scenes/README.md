@@ -53,8 +53,8 @@ components, see the [engine guide](../graaal/README.md), [ECS reference](../graa
 
 ## Headless animation and physics
 
-Run the animation examples as `python -m scenes.<name>`. Add `--headless` for
-the physics examples when you want simulation results in the terminal.
+Run the examples as `python -m scenes.<name>`. Add `--headless` to the physics
+viewers when you want simulation results in the terminal.
 
 | Module | Demonstrates | Extra |
 | --- | --- | --- |
@@ -62,12 +62,13 @@ the physics examples when you want simulation results in the terminal.
 | `root_motion_example` | Idle/walk/run crossfades with requested and boundary-accepted movement | Core |
 | `animation_graph_example` | Compiled conditional states and a masked upper-body layer for two characters | Core |
 | `animation_graph_batch_example` | Standalone batched graph playback, synchronized 1D states and a masked upper-body layer | Core |
-| `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK and normal alignment | Core |
+| `foot_ik_example` | Pre/post-physics pose plans with analytic terrain, two-bone IK, normal alignment and optional `--plant` | Core |
 | `physics_headless_example` | Standalone native self-test, batched boxes, snapshots and events; no ECS | `physics` |
 | `physics_locomotion_example` | Root-motion acceptance against a native shape sweep; blocking only | `physics` |
 | `physics_queries_example` | Batched collision rays driving foot IK, owner lookup and sweeps | `physics` |
 | `physics_joints_example` | Hinge/slider limits, motor reversal and a breakable attachment | `physics` |
 | `passive_ragdoll_example` | Python-authored 13-body humanoid with feet/ankles, passive neutral/limit forces and bounded zero-gravity/drop/stair/impact checks; no ECS or renderer | `physics` |
+| `active_ragdoll_example` | Headless powered pose tracking, support observations and root-assisted standing balance. `--no-balance` runs tracking alone | `physics` |
 
 Install the native backend with `python -m pip install -e ".[physics]"`.
 `physics_headless_example` defaults to 120 ticks at 120 Hz; use `--ticks`,

@@ -8,7 +8,7 @@ from numpy.typing import ArrayLike
 import numpy as np
 
 from ..Math import Quaternion
-from .SkeletalAnimation import model_matrices
+from .SkeletalAnimation import _rotations, model_matrices
 
 
 if TYPE_CHECKING:
@@ -143,6 +143,54 @@ def _validate_axis(axis: ArrayLike) -> np.ndarray:
 	length = np.linalg.norm(axis)
 	if not np.isfinite(length) or length == 0: raise ValueError("axis must be a finite nonzero 3D vector")
 	return axis / length
+
+
+def limit_twist(rotations: ArrayLike, reference: ArrayLike, axis: ArrayLike, minimum: float, maximum: float) -> np.ndarray:
+	"""Clamp twist in radians around a reference-local axis, preserving swing.
+
+	Rotations are (instances, 4) xyzw rows. Reference may be a single quaternion
+	or one per row. The signed range is [-pi, pi] with exact half turns mapped
+	to +pi. At a 180-degree swing around a perpendicular axis the twist is
+	undefined, so use zero as its input angle.
+	"""
+	turn = np.asarray(rotations)
+	if turn.ndim != 2 or turn.shape[1] != 4: raise ValueError("rotations must have shape (instances, 4)")
+	if not (-np.pi <= minimum <= maximum <= np.pi): raise ValueError("twist limits must satisfy -pi <= minimum <= maximum <= pi")
+	axis = _validate_axis(axis)
+	turn = _rotations(turn, turn.shape, "rotations")
+	ref = _rotations(np.broadcast_to(reference, turn.shape), turn.shape, "reference")
+	conjugate = np.array([-1, -1, -1, 1])
+	relative = Quaternion.multiply_batch(ref * conjugate, turn)
+	projected = np.sum(relative[:, :3] * axis, axis=1)
+	scalar = relative[:, 3]
+	flip = (scalar < 0) | ((scalar == 0) & (projected < 0))
+	projected = np.where(flip, -projected, projected)
+	undefined = np.hypot(projected, scalar) <= 1e-8
+	half = np.where(undefined, 0, np.arctan2(projected, np.abs(scalar)))
+	twist_inverse = np.column_stack((-np.sin(half)[:, None] * axis, np.cos(half)))
+	clamped = np.clip(half, minimum * 0.5, maximum * 0.5)
+	correction = Quaternion.multiply_batch(twist_inverse, np.column_stack((np.sin(clamped)[:, None] * axis, np.cos(clamped))))
+	return Quaternion.multiply_batch(turn, correction)
+
+
+def foot_plant(targets: ArrayLike, normals: ArrayLike, stance: ArrayLike, locked: ArrayLike, anchors: ArrayLike, anchor_normals: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+	"""Retain world-space foot goals for rows still in a supported stance.
+
+	Positions and surface normals are (feet, 3) rows. `locked` identifies the
+	previous stance. Pass this tick's stance and returned goals as next tick's
+	lock state and anchors. Clear a row's lock on teleports or owner changes.
+	"""
+	targets, normals, anchors, anchor_normals = (np.asarray(value, dtype=np.float64) for value in (targets, normals, anchors, anchor_normals))
+	stance, locked = np.asarray(stance), np.asarray(locked)
+	if targets.ndim != 2 or targets.shape[1] != 3 or any(value.shape != targets.shape for value in (normals, anchors, anchor_normals)):
+		raise ValueError("foot goals and anchors must have shape (feet, 3)")
+	if any(value.shape != (len(targets),) or value.dtype.kind != "b" for value in (stance, locked)):
+		raise ValueError("stance and locked must be boolean rows aligned with the feet")
+	keep = (stance & locked)[:, None]
+	position = np.where(keep, anchors, targets)
+	normal = np.where(keep, anchor_normals, normals)
+	if not np.isfinite(position).all() or not np.isfinite(normal).all(): raise ValueError("resolved foot goals must be finite")
+	return position, normal
 
 
 def align_bone_axis(skeleton: Skeleton, pose: Sequence[ArrayLike], bone: SupportsIndex, axis: ArrayLike, directions: ArrayLike, *, weight: ArrayLike=1.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

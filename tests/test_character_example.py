@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from graaal.EcsAdapters.EcsPhysics import CharacterState
-from graaal.EcsAdapters.EcsAnimation import ClipPlayer
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
 from graaal.Animation.SkeletalAnimation import model_matrices
@@ -102,23 +101,44 @@ def test_manual_handoff_preserves_motion_and_recovers_near_physical_root():
 		assert np.linalg.norm(accepted[[0, 2]] - velocity[[0, 2]]) < 0.5
 
 
-def test_merged_graph_crossfades_between_idle_and_walk_without_a_second_clock():
+def test_character_crossfades_between_idle_and_synchronized_locomotion():
 	pytest.importorskip("pyjoltphysics")
 	from scenes.character_example import create_demo
 	ecs, owner, environment, physics, schedule, state, asset = create_demo()
 	state["auto"] = False
+	animation = state["animation"]
 	with physics:
 		advance(schedule, 30)
 		state["direction"] = np.zeros(3)
 		advance(schedule, 30)
-		assert ecs.get(ClipPlayer)[[owner]].clip_id[0] == 0
-		assert not ecs.get(ClipPlayer)[[owner]].transitioning[0]
+		assert animation.playback.states[0] == animation.playback.graph.state_ids["idle"]
+		assert animation.playback.target_states[0] == -1
 		assert state["accepted_speed"] < 0.01
 		state["direction"] = np.array([1, 0, 0])
 		advance(schedule, 30)
-		assert ecs.get(ClipPlayer)[[owner]].clip_id[0] == 1
+		assert animation.playback.states[0] == animation.playback.graph.state_ids["locomotion"]
 		assert state["requested_speed"] > 1.9
 		assert state["accepted_speed"] > 1.9
+		state["pace"] = 1
+		advance(schedule)
+		assert state["requested_speed"] == pytest.approx(3, abs=0.001)
+
+
+def test_character_routes_footsteps_and_collision_limits_requested_graph_motion():
+	pytest.importorskip("pyjoltphysics")
+	from scenes.character_example import create_demo
+	ecs, owner, _, physics, schedule, state, _ = create_demo()
+	state["auto"] = False
+	ecs.get(MaterialTransform)[[owner]].position = (2, 0, 0)
+	with physics:
+		for _ in range(121):
+			advance(schedule)
+			if state["animation"].events: break
+		event, = state["animation"].events
+		assert (event.entity, event.name) == (owner, "right_step")
+		assert state["requested_speed"] == pytest.approx(2, abs=0.001)
+		assert state["accepted_speed"] < 0.05
+		assert ecs.get(MaterialTransform)[[owner]].position[0, 0] < 3
 
 
 def test_recovery_waits_until_the_standing_capsule_has_clearance():

@@ -49,6 +49,13 @@ class SkinMatrixBuffer:
 		"""Return (base, bone_count) for an allocated owner."""
 		return self._ranges[_uint(owner, "owner")]
 
+	def ranges(self, owners: ArrayLike) -> np.ndarray:
+		"""Return (base, bone_count) rows in the requested owner order."""
+		ids = np.asarray(owners)
+		if ids.ndim != 1 or ids.dtype.kind not in "iu" or np.any(ids < 0):
+			raise ValueError("owners must be a one-dimensional array of nonnegative integers")
+		return np.asarray([self._ranges[owner] for owner in ids.tolist()], dtype=np.uint32).reshape(-1, 2)
+
 	def release(self, owner: SupportsIndex) -> None:
 		"""Release a range for reuse; previously uploaded bytes are not cleared."""
 		allocation = self._ranges.pop(_uint(owner, "owner"))

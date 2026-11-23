@@ -1,6 +1,7 @@
 """Batched graph clocks and local poses, independent of ECS and graphics."""
 
 from collections.abc import Iterator, Mapping
+from copy import copy
 from dataclasses import dataclass
 from operator import index
 from typing import SupportsIndex
@@ -11,6 +12,7 @@ from numpy.typing import ArrayLike
 from .AnimationEvents import EventTrack
 from .AnimationGraph import CompiledAnimationGraph
 from .AnimationSync import BlendSpaceSync, SyncMapping
+from .RootMotion import RootMotion, _blend_deltas
 from .SkeletalAnimation import blend_poses, sample_clip_pairs
 
 
@@ -122,17 +124,19 @@ def state_clock_clip(graph: CompiledAnimationGraph, state: int | None) -> int | 
 	return None
 
 
-def state_sample(graph: CompiledAnimationGraph, state: int, times: np.ndarray, parameters: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-	"""Select clip pairs and sample times for a clip or 1D blend state."""
-	if state in graph.state_blend_spaces_2d: raise ValueError("2D blend states require state_pose()")
+def _state_pair(graph: CompiledAnimationGraph, state: int, parameters: np.ndarray) -> tuple[np.ndarray, np.ndarray, BlendSpaceSync | None]:
 	if state in graph.state_blend_spaces:
 		space = graph.blend_spaces[graph.state_blend_spaces[state]]
 		ids, weights = space.select(parameters)
-		sync = space.sync
-	else:
-		ids = np.full((len(times), 2), graph.state_clips[state], dtype=np.int64)
-		weights = np.tile([1.0, 0.0], (len(times), 1))
-		sync = None
+		return ids, weights, space.sync
+	ids = np.full((len(parameters), 2), graph.state_clips[state], dtype=np.int64)
+	return ids, np.tile([1.0, 0.0], (len(parameters), 1)), None
+
+
+def state_sample(graph: CompiledAnimationGraph, state: int, times: np.ndarray, parameters: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+	"""Select clip pairs and sample times for a clip or 1D blend state."""
+	if state in graph.state_blend_spaces_2d: raise ValueError("2D blend states require state_pose()")
+	ids, weights, sync = _state_pair(graph, state, parameters)
 	return ids, sample_times(graph, ids, times, sync), weights
 
 
@@ -148,6 +152,21 @@ def state_pose(graph: CompiledAnimationGraph, state: int, times: np.ndarray, par
 	return sample_clip_pairs(skeleton, graph.clips, *state_sample(graph, state, times, parameters))
 
 
+def _sample_deltas(motions: Mapping[int, RootMotion], ids: np.ndarray, start: np.ndarray, end: np.ndarray, sync: BlendSpaceSync | None) -> np.ndarray:
+	result = np.empty(ids.shape + (4, 4), dtype=np.float64)
+	shape = (len(ids),) + (1,) * (ids.ndim - 1)
+	starts, ends = (np.broadcast_to(times.reshape(shape), ids.shape) for times in (start, end))
+	for clip in np.unique(ids):
+		selected = ids == clip
+		lo, hi = starts[selected], ends[selected]
+		if sync is not None:
+			mapping = sync.mappings[int(clip)]
+			mapped = mapping.map(lo)[0]
+			lo, hi = mapped, mapping.advance(lo, hi, mapped)
+		result[selected] = motions[int(clip)].character_delta(lo, hi)
+	return result
+
+
 class AnimationGraphPlayback:
 	"""Own a fixed batch of clip/1D/2D state clocks and noninterruptible fades.
 
@@ -155,7 +174,8 @@ class AnimationGraphPlayback:
 	clocks retain unwrapped seconds. Explicit transition sync uses clip or fixed
 	reference clocks, stops at promotion and retains the endpoint target speed.
 	Optional event tracks are keyed by compiled state ID and read its clock.
-	Root motion, layers and entity identity are application-owned.
+	Optional root tracks extract character-space motion. Applications own
+	accepted movement, layer composition and entity identity.
 	"""
 	states: np.ndarray
 	times: np.ndarray
@@ -167,8 +187,9 @@ class AnimationGraphPlayback:
 	durations: np.ndarray
 	_event_times: np.ndarray
 	_target_event_times: np.ndarray
+	root_motion: np.ndarray | None = None
 
-	def __init__(self, graph: CompiledAnimationGraph, count: SupportsIndex, *, event_tracks: Mapping[int, EventTrack] | None = None) -> None:
+	def __init__(self, graph: CompiledAnimationGraph, count: SupportsIndex, *, event_tracks: Mapping[int, EventTrack] | None = None, root_motions: Mapping[int, RootMotion] | None = None) -> None:
 		if isinstance(count, (bool, np.bool_)): raise ValueError("count must be a nonnegative integer")
 		try: count = index(count)
 		except TypeError as exc: raise ValueError("count must be a nonnegative integer") from exc
@@ -182,6 +203,20 @@ class AnimationGraphPlayback:
 		event_clips = {self._clock_clips[state] for state in self._event_tracks}
 		self._inverse_sync = {pair: SyncMapping(mapping.target, mapping.source)
 			for pair, mapping in graph.sync_mappings.items() if pair[1] in event_clips}
+		self._motions = {} if root_motions is None else dict(root_motions)
+		self._motion_reference: RootMotion | None = None
+		if root_motions is not None:
+			participants = set(graph.state_clips.values())
+			for spaces, states in ((graph.blend_spaces, graph.state_blend_spaces), (graph.blend_spaces_2d, graph.state_blend_spaces_2d)):
+				for name in states.values(): participants.update(spaces[name].clip_ids.flat)
+			for clip in sorted(participants):
+				motion = self._motions.get(clip)
+				if not isinstance(motion, RootMotion) or motion.clip is not graph.clips[clip] or motion.skeleton is not graph.plan.skeleton:
+					raise ValueError(f"Missing or incompatible root motion for clip {clip}")
+				if self._motion_reference is not None and self._motion_reference.root != motion.root:
+					raise ValueError("Graph root motion must use the same root for each state clip")
+				self._motion_reference = motion
+			if self._motion_reference is not None: self._motion_reference._reference()
 		self.reset()
 
 	def _install(self, values: Mapping[str, np.ndarray]) -> None:
@@ -206,6 +241,34 @@ class AnimationGraphPlayback:
 			raise ValueError("parameters must be finite (instances, graph parameters) rows")
 		return parameters
 
+	def _defaults(self, count: int) -> dict[str, np.ndarray]:
+		values = {
+			"states": np.full(count, self.graph.initial_state, dtype=np.int64),
+			"times": np.zeros(count), "speeds": np.ones(count),
+			"target_states": np.full(count, -1, dtype=np.int64),
+			"target_times": np.zeros(count), "target_speeds": np.ones(count),
+			"elapsed": np.zeros(count), "durations": np.zeros(count),
+		}
+		if self._event_tracks:
+			values.update(_event_times=np.zeros(count), _target_event_times=np.zeros(count))
+		if self._motion_reference is not None:
+			values["root_motion"] = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
+		return values
+
+	def remap(self, rows: ArrayLike) -> "AnimationGraphPlayback":
+		"""Copy clocks in the requested row order, using -1 for new instances."""
+		rows = np.asarray(rows)
+		if rows.shape == (0,): rows = rows.astype(np.int64)
+		if rows.ndim != 1 or rows.dtype.kind not in "iu" or np.any(rows < -1) or np.any(rows >= self.count):
+			raise ValueError("rows must contain instance indices or -1")
+		result = copy(self)
+		result.count = len(rows)
+		values = self._defaults(result.count)
+		keep = rows >= 0
+		for name, value in values.items(): value[keep] = getattr(self, name)[rows[keep]]
+		result._install(values)
+		return result
+
 	def reset(self, states: ArrayLike | None = None, times: ArrayLike = 0.0, *, speeds: ArrayLike = 1.0, rows: ArrayLike | None = None) -> None:
 		"""Seek all or selected rows, cancel their fades and set nonnegative speeds.
 
@@ -227,21 +290,14 @@ class AnimationGraphPlayback:
 			raise ValueError("states must contain valid compiled state IDs")
 		times = self._times(states, _row(times, len(rows), "times"))
 		speeds = _row(speeds, len(rows), "speeds")
-		values = {
-			"states": np.full(self.count, self.graph.initial_state, dtype=np.int64),
-			"times": np.zeros(self.count), "speeds": np.ones(self.count),
-			"target_states": np.full(self.count, -1, dtype=np.int64),
-			"target_times": np.zeros(self.count), "target_speeds": np.ones(self.count),
-			"elapsed": np.zeros(self.count), "durations": np.zeros(self.count),
-		}
-		if self._event_tracks:
-			values.update(_event_times=np.zeros(self.count), _target_event_times=np.zeros(self.count))
+		values = self._defaults(self.count)
 		if hasattr(self, "states"): values = {name: getattr(self, name).copy() for name in values}
 		for name, value in (("states", states), ("times", times), ("speeds", speeds), ("target_states", -1), ("target_times", 0), ("target_speeds", 1), ("elapsed", 0), ("durations", 0)):
 			values[name][rows] = value
 		if self._event_tracks:
 			values["_event_times"][rows] = times
 			values["_target_event_times"][rows] = 0.0
+		if self._motion_reference is not None: values["root_motion"][rows] = np.eye(4)
 		self._install(values)
 
 	def advance(self, dt: ArrayLike, parameters: ArrayLike | None = None) -> tuple[GraphEvent, ...]:
@@ -264,19 +320,26 @@ class AnimationGraphPlayback:
 		target_times[selected], target_speeds[selected], elapsed[selected] = 0.0, speeds[selected], 0.0
 		active = targets >= 0
 		step = np.where(active, np.minimum(dt, np.maximum(durations - elapsed, 0)), dt)
+		track_intervals = bool(self._event_tracks) or self._motion_reference is not None
 		if self._event_tracks:
 			target_start = target_times.copy()
 			sync_rows = np.zeros(self.count, dtype=bool)
+		if self._motion_reference is not None: motion_target_start = target_times.copy()
 		with np.errstate(over="ignore", invalid="ignore"):
 			source_end = source_start + speeds * step
 			target_times[active] += target_speeds[active] * step[active]
+			if self._motion_reference is not None: motion_target_end = target_times.copy()
 			for (source, target), mapping in self.graph.sync_mappings.items():
 				mask = active & (self._clock_clips[states] == source) & (self._clock_clips[np.maximum(targets, 0)] == target)
 				if np.any(mask):
 					mapped, rates = mapping.map(source_end[mask])
 					target_times[mask], target_speeds[mask] = mapped, speeds[mask] * rates
 					if self._event_tracks: sync_rows |= mask
-			if self._event_tracks: target_fade_end = target_times.copy()
+					if self._motion_reference is not None:
+						start = mapping.map(source_start[mask])[0]
+						motion_target_start[mask] = start
+						motion_target_end[mask] = mapping.advance(source_start[mask], source_end[mask], start)
+			if track_intervals: target_fade_end = target_times.copy()
 			target_times[active] += target_speeds[active] * (dt[active] - step[active])
 			elapsed[active] = np.minimum(elapsed[active] + dt[active], durations[active])
 		if not np.isfinite(target_speeds).all(): raise ValueError("playback speed overflow")
@@ -289,6 +352,16 @@ class AnimationGraphPlayback:
 				target_fade_end, target_times, target_speeds, sync_rows,
 			)
 			target_event_end = target_times.copy()
+		if self._motion_reference is not None:
+			motion = self._state_deltas(states, source_start, source_end, parameters)
+			if np.any(active):
+				target = targets[active]
+				fade_delta = self._state_deltas(target, motion_target_start[active], motion_target_end[active], parameters[active])
+				weight = (self.elapsed[active] + step[active] * 0.5) / durations[active]
+				motion[active] = _blend_deltas(motion[active], fade_delta, weight)
+				remaining = active & (dt > step)
+				motion[remaining] = motion[remaining] @ self._state_deltas(targets[remaining], target_fade_end[remaining], target_times[remaining], parameters[remaining])
+			if not np.isfinite(motion).all(): raise ValueError("root motion overflow")
 		target_times[active] = self._times(targets[active], target_times[active])
 		promoted = active & (elapsed >= durations)
 		states[promoted], times[promoted], speeds[promoted] = targets[promoted], target_times[promoted], target_speeds[promoted]
@@ -299,8 +372,29 @@ class AnimationGraphPlayback:
 			source_end[promoted] = target_event_end[promoted]
 			target_event_end[promoted] = 0.0
 			values.update(_event_times=source_end, _target_event_times=target_event_end)
+		if self._motion_reference is not None: values["root_motion"] = motion
 		self._install(values)
 		return events
+
+	def _state_deltas(self, states: np.ndarray, start: np.ndarray, end: np.ndarray, parameters: np.ndarray) -> np.ndarray:
+		motion = np.broadcast_to(np.eye(4), (len(states), 4, 4)).copy()
+		moving = start != end
+		for state in np.unique(states[moving]):
+			rows = (states == state) & moving
+			lo, hi, values = start[rows], end[rows], parameters[rows]
+			if state in self.graph.state_clips:
+				motion[rows] = self._motions[self.graph.state_clips[state]].character_delta(lo, hi)
+			elif state in self.graph.state_blend_spaces_2d:
+				space = self.graph.blend_spaces_2d[self.graph.state_blend_spaces_2d[state]]
+				ids, horizontal, vertical = space.select(values)
+				deltas = _sample_deltas(self._motions, ids, lo, hi, space.sync)
+				lower, upper = (_blend_deltas(deltas[:, row, 0], deltas[:, row, 1], horizontal[:, 1]) for row in (0, 1))
+				motion[rows] = _blend_deltas(lower, upper, vertical)
+			else:
+				ids, weights, sync = _state_pair(self.graph, int(state), values)
+				deltas = _sample_deltas(self._motions, ids, lo, hi, sync)
+				motion[rows] = _blend_deltas(deltas[:, 0], deltas[:, 1], weights[:, 1])
+		return motion
 
 	def _tick_events(
 		self, states: np.ndarray, targets: np.ndarray, dt: np.ndarray, step: np.ndarray,
@@ -348,11 +442,12 @@ class AnimationGraphPlayback:
 			for output, values in zip(pose, local): output[rows] = values
 		return pose
 
-	def pose(self, parameters: ArrayLike | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+	def pose(self, parameters: ArrayLike | None = None, *, in_place: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Return independently owned batched local TRS before authored layers.
 
 		Pass this pose in sample-slot order to graph.input_plan.evaluate(), with
 		application-owned layer poses, weights and root-motion inputs as needed.
+		Set in_place to anchor the root when root motion has been configured.
 		"""
 		parameters = self._parameters(parameters)
 		pose = self._poses(self.states, self.times, parameters)
@@ -361,4 +456,5 @@ class AnimationGraphPlayback:
 			target = self._poses(self.target_states[active], self.target_times[active], parameters[active])
 			mixed = blend_poses(self.graph.plan.skeleton, tuple(values[active] for values in pose), target, self.elapsed[active] / self.durations[active])
 			for output, values in zip(pose, mixed): output[active] = values
+		if in_place and self._motion_reference is not None: return self._motion_reference.in_place(*pose)
 		return pose

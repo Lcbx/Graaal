@@ -164,7 +164,8 @@ def run_scene(scenario="drop", *, frames=960, threads=1, height=1.8, mass=70.0, 
 		peak_linear, peak_angular = _body_peak_speeds(state)
 		late_linear = late_angular = 0.0
 		impact = None
-		impact_tick = min(120, frames // 3)
+		# Strike after foot contact, while the body is still upright.
+		impact_tick = min(24, frames // 3)
 		for tick in range(frames):
 			if scenario == "impact" and tick == impact_tick:
 				chest = settings.bone_index("chest")

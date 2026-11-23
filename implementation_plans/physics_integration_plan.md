@@ -201,9 +201,12 @@ character and ragdoll capture gaps rather than assuming those resources replay.
   angular limits with a headless control benchmark. An [authored 13-body passive
   humanoid](active_ragdolls.md#authored-passive-humanoid-and-contact-scenarios)
   now includes feet/ankles, a relaxed pose, per-joint gains and bounded
-  zero-gravity/drop/stair/impact checks. Broader anatomical tuning, visual motion
-  review, expanded observations/actions, training resets and complete passive-motion
-  validation remain pending. Record missing native capabilities without extending bindings.
+  zero-gravity/drop/stair/impact checks. The visual review covered collider and
+  skinned replays, with the impact timing revised and validated across three body
+  sizes. Batched observations, bounded motor actions and a root-assisted standing
+  baseline are available. Broader anatomical tuning, free-root balance and
+  selective training resets remain open. Record missing native capabilities
+  without extending bindings.
   Revisit free-running simulation only with an explicit latency/synchronization
   contract.
 

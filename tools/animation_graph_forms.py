@@ -1,6 +1,148 @@
-"""Structured transition editing for an in-memory graph draft."""
+"""Structured editing for an in-memory graph draft."""
 from copy import deepcopy
 import math
+
+
+class StateParameterWindow:
+	def __init__(self, host, data, original_text):
+		self.host, self.data, self.original_text = host, data, original_text
+		tk, ttk = host.tk, host.ttk
+		self.window = tk.Toplevel(host.window)
+		self.window.title("Edit graph states and parameters")
+		self.window.geometry("740x510")
+		self.window.protocol("WM_DELETE_WINDOW", self.close)
+		self.status = tk.StringVar(value="Stage edits here, then write them to the draft.")
+		self.sources = {"Clip": ("clip", tuple(host.clip_box["values"])),
+			"1D blend": ("blend_space", tuple(data.get("blend_spaces", {}))),
+			"2D blend": ("blend_space_2d", tuple(data.get("blend_spaces_2d", {})))}
+		self.source_type, self.source = tk.StringVar(value="Clip"), tk.StringVar()
+		self.names = {kind: tk.StringVar() for kind in ("states", "parameters")}
+		self.default = tk.StringVar(value="0")
+		body = ttk.Frame(self.window, padding=10)
+		body.pack(fill="both", expand=True)
+		tabs = ttk.Notebook(body)
+		tabs.pack(fill="both", expand=True)
+		self.trees = {}
+		for kind, columns in (("states", ("Name", "Source", "Resource", "Initial")), ("parameters", ("Name", "Default"))):
+			page = ttk.Frame(tabs, padding=8)
+			tabs.add(page, text=kind.capitalize())
+			tree = self.trees[kind] = ttk.Treeview(page, columns=columns, show="headings", selectmode="browse")
+			for column in columns:
+				tree.heading(column, text=column)
+				tree.column(column, width=74 if column == "Initial" else 170)
+			tree.pack(fill="both", expand=True)
+			tree.bind("<<TreeviewSelect>>", lambda _, kind=kind: self.select(kind))
+			row = ttk.Frame(page)
+			row.pack(fill="x", pady=6)
+			ttk.Label(row, text="Name").pack(side="left")
+			ttk.Entry(row, textvariable=self.names[kind], width=20).pack(side="left", padx=5)
+			if kind == "states":
+				types = ttk.Combobox(row, textvariable=self.source_type, values=tuple(self.sources), state="readonly", width=12)
+				types.pack(side="left", padx=5)
+				types.bind("<<ComboboxSelected>>", lambda _: self.select_source())
+				self.resource = ttk.Combobox(row, textvariable=self.source, state="readonly", width=26)
+				self.resource.pack(side="left")
+				self.select_source()
+			else:
+				ttk.Label(row, text="Default").pack(side="left")
+				ttk.Entry(row, textvariable=self.default, width=16).pack(side="left", padx=5)
+			buttons = ttk.Frame(page)
+			buttons.pack(fill="x")
+			for action, label in (("add", "Add"), ("update", "Update selected"), ("remove", "Remove selected")):
+				ttk.Button(buttons, text=label, command=lambda kind=kind, action=action: self.edit(kind, action)).pack(side="left", padx=3)
+			if kind == "states":
+				ttk.Button(buttons, text="Set initial state", command=lambda: self.edit("states", "initial")).pack(side="left", padx=3)
+			self.refresh(kind)
+		ttk.Button(body, text="Write states and parameters to draft", command=self.apply).pack(fill="x", pady=7)
+		ttk.Label(body, textvariable=self.status, wraplength=680).pack(anchor="w")
+
+	def refresh(self, kind, selected=None):
+		tree = self.trees[kind]
+		tree.delete(*tree.get_children())
+		for name, value in self.data.get(kind, {}).items():
+			if kind == "states":
+				label = next(label for label, (key, _) in self.sources.items() if key in value)
+				values = (name, label, value[self.sources[label][0]], "Yes" if name == self.data["initial_state"] else "")
+			else:
+				values = (name, value)
+			tree.insert("", "end", iid=name, values=values)
+		if selected is not None: tree.selection_set(selected)
+
+	def select_source(self, resource=None):
+		_, choices = self.sources[self.source_type.get()]
+		self.resource.configure(values=choices)
+		self.source.set(resource if resource is not None else (choices[0] if choices else ""))
+
+	def select(self, kind):
+		selection = self.trees[kind].selection()
+		if not selection: return
+		name = selection[0]
+		self.names[kind].set(name)
+		value = self.data[kind][name]
+		if kind == "states":
+			label = next(label for label, (key, _) in self.sources.items() if key in value)
+			self.source_type.set(label)
+			self.select_source(value[self.sources[label][0]])
+		else:
+			self.default.set(f"{float(value):.17g}")
+
+	def edit(self, kind, action):
+		selection = self.trees[kind].selection()
+		if action != "add" and not selection: return
+		selected = selection[0] if action != "add" else None
+		candidate = deepcopy(self.data)
+		values = candidate.setdefault(kind, {})
+		name = self.names[kind].get().strip()
+		try:
+			if action in ("add", "update"):
+				if not name or (name != selected and name in values): raise ValueError("Choose a unique, nonempty name")
+				value = {self.sources[self.source_type.get()][0]: self.source.get()} if kind == "states" else float(self.default.get())
+				if selected is not None and name != selected:
+					candidate[kind] = {name if key == selected else key: item for key, item in values.items()}
+					_rename_graph_binding(candidate, kind, selected, name)
+				candidate[kind][name] = value
+				selected = name
+			elif action == "initial":
+				candidate["initial_state"] = selected
+			else:
+				del values[selected]
+				selected = None
+			self.host.compile_definition(candidate)
+		except (ValueError, TypeError) as exc:
+			self.status.set(f"Cannot stage edit: {exc}")
+			return
+		self.data = candidate
+		self.refresh(kind, selected)
+		self.status.set("Edit staged. Write states and parameters to draft when ready.")
+
+	def apply(self):
+		self.original_text = self.host.write_form_draft(self.data, self.original_text, "states and parameters", self.status)
+
+	def close(self):
+		self.window.destroy()
+		self.host.state_parameter_window = None
+
+
+def _rename_graph_binding(data, kind, old, name):
+	if kind == "states":
+		if data["initial_state"] == old: data["initial_state"] = name
+		for rule in data.get("transitions", ()):
+			for key in ("source", "target"):
+				if rule[key] == old: rule[key] = name
+		return
+	for rule in data.get("transitions", ()):
+		for condition in rule["conditions"]:
+			if condition["parameter"] == old: condition["parameter"] = name
+	if old in data.get("weight_slots", ()):
+		data["weight_slots"] = [name if slot == old else slot for slot in data["weight_slots"]]
+		for task in data["tasks"]:
+			if task.get("weight") == old: task["weight"] = name
+		for grid in data.get("blend_spaces_2d", {}).values():
+			if grid.get("weight_slot") == old: grid["weight_slot"] = name
+	for field, columns in (("blend_spaces", ("parameter",)), ("blend_spaces_2d", ("x_parameter", "y_parameter"))):
+		for space in data.get(field, {}).values():
+			for column in columns:
+				if space[column] == old: space[column] = name
 
 
 class TransitionWindow:

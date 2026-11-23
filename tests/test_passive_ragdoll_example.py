@@ -253,7 +253,7 @@ def test_passive_contact_scenarios_are_bounded_and_settle(pj, scenario, threads)
 	assert np.isfinite(result["position"]).all() and np.isfinite(result["orientation"]).all()
 	if scenario == "impact":
 		impact = result["impact"]
-		assert impact["tick"] == 120
+		assert impact["tick"] == 24
 		np.testing.assert_allclose(impact["delta_linear_velocity"], impact["impulse_ns"] / 22, atol=1e-6)
 		assert np.linalg.norm(impact["delta_angular_velocity"]) > 1
 	else: assert result["impact"] is None

@@ -64,9 +64,10 @@ platform validation was performed.
 The authored humanoid and bounded contact scenarios below extend these isolated
 mechanism checks. Broader tuning and visual validation remain prerequisites.
 Full character/ragdoll replay and
-selective training resets still need native control-state capture. Body pose and
-velocity writes do not provide that reset contract. Expanded observations and
-training/runtime parity remain future work.
+selective training resets still need native control-state capture. Fresh isolated
+worlds can reproduce the same rollout from the same spawn and inputs. Selective
+replay in a live world also needs the native held control state and application
+state. Training/runtime policy parity remains future work.
 
 ## Python soft angular limits
 
@@ -157,8 +158,17 @@ soft-limit tests and the offscreen dummy replay in zero gravity. Earlier
 viewer validation passed for 160 focused tests, eight GPU skinning tests and
 the `python -m graaal` smoke test. With ECS imports blocked, offscreen playback
 passed for all four collider scenarios and for the dummy in zero gravity and on stairs.
-Broader visual review, anatomical and impact tuning, active balancing and
-complete training resets remain pending.
+Follow-up review rendered five samples per scenario with colliders and the
+dummy rig. The impact review showed the body tipping before the impulse at tick
+120. The impulse now lands at tick 24 (0.20 s), after initial contact. Before
+the impulse, the pelvis-to-chest axis had an upward cosine of 0.952–0.957 over
+1.5 m/50 kg, 1.8 m/70 kg and 2.1 m/100 kg at one or two threads. The new impact
+trials reached 0.011–0.015 m peak anchor separation and 30–35 rad/s peak body
+angular speed. The immediate linear impulse response still matches impulse
+divided by mass. Across all four scenarios at those sizes, zero-gravity final
+errors were 0.086–0.089 rad and contact trials finished below 0.072 m/s peak
+body speed over their final 120 ticks. Other platforms and broader anatomical
+tuning remain open.
 
 ## Overview
 
@@ -200,6 +210,16 @@ The system separates three sources of joint forces:
 **Deliverable:** A passive ragdoll with convincing movement and impacts, without any neural controller.
 
 ### Phase 2 — Active actuation and observations
+
+`PhysicsRagdollControl` provides detached observation rows in bone UID order
+and bounded per-joint motor actions. The [active example](../scenes/active_ragdoll_example.py)
+combines those actions with the passive torques and a classical standing probe.
+Its controller applies an upright root spring and a contact-gated horizontal
+pelvis force of up to 200 N. With a 3 N s chest impulse over 480 ticks on the
+default body, minimum pelvis height was 0.983 m and final tracking error was
+0.004 rad. With root assistance disabled, tracking alone reached 0.101 m and
+0.098 rad. Fresh isolated runs reproduce the sampled result. Free-root balance,
+walking reference evaluation, and policy training remain open.
 
 - Add strength-limited joint motors that track reference poses from standing, walking or other animations.
 - Allow motor targets and strengths to vary continuously, including partial weakening during impacts.

@@ -49,6 +49,12 @@ See the [tool guides](../tools/README.md) for available controls.
 
 ## GPU pose evaluation for crowds and distant characters
 
+The packed clip pool and one-skeleton compute pass are available. See the
+[crowd API](../graaal/skeletal_animation.md#crowd-pose-compute-pass) for the
+supported interface and the [status snapshot](skeletal_animation_current.md)
+for measurements and remaining work. Automatic tiering and overrides below
+are design targets.
+
 The CPU evaluator costs roughly `N x B` NumPy work per frame plus Python dispatch overhead, so it will top out at some character count. A GPU path batches Python work into a gather, an upload and a few dispatches; gathered/uploaded data still scales with `N`. The idea is to bake clips into a GPU-resident pool, mix them in a compute pass, and let the CPU modify the result through overrides.
 
 ### Scope and tiers

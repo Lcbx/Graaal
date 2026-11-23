@@ -10,10 +10,11 @@ import argparse
 
 import numpy as np
 
+from graaal.Animation.AnimationEvents import EventTrack
 from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 from graaal.ECS import ECS, Scheduler
-from graaal.EcsAdapters.EcsAnimation import ClipPlayer, EcsAnimationAdapter, PoseBatch, SkeletonRef
-from graaal.EcsAdapters.EcsAnimationStateMachine import AnimationState, EcsAnimationStateAdapter
+from graaal.EcsAdapters.EcsAnimation import PoseBatch
+from graaal.EcsAdapters.EcsAnimationGraph import EcsAnimationGraphAdapter, GraphPlayer
 from graaal.EcsAdapters.EcsPhysics import CharacterState, Collider, EcsPhysicsAdapter, PhysicsCharacter, PhysicsRagdoll, RigidBody
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
@@ -39,42 +40,45 @@ def create_demo():
 	rig = Skeleton(parents, translation, rotation, scale, np.linalg.inv(model_matrices(rig, translation[None], rotation[None], scale[None])[0]))
 	asset = RagdollAsset(rig, settings, bones=physical_bones)
 	translations, rotations, scales = (np.tile(value, (5, 1, 1)) for value in (rig.translation, rig.rotation, rig.scale))
-	translations[:, 0, 2] = np.linspace(0, 4, 5)
+	translations[:, 0, 2] = np.linspace(0, 2, 5)
 	rotations[:, 7] = np.array([Quaternion.from_x_rotation(angle) for angle in (0, 0.2, 0, -0.2, 0)])
 	rotations[:, 10] = np.array([Quaternion.from_x_rotation(-angle) for angle in (0, 0.2, 0, -0.2, 0)])
-	clip = Clip(translations, rotations, scales, fps=2)
+	walk = Clip(translations, rotations, scales, fps=2)
+	translations[:, 0, 2] *= 3
+	brisk = Clip(translations, rotations, scales, fps=4)
 	idle = Clip(np.tile(rig.translation, (5, 1, 1)), np.tile(rig.rotation, (5, 1, 1)), scales, fps=2)
+	tracks = {name: EventTrack(clip.duration, [0, clip.duration / 2], ["left_step", "right_step"]) for name, clip in (("walk", walk), ("brisk", brisk))}
 	graph = AnimationGraphDefinition({
-		"version": 1, "parameters": {"move": 1}, "states": {"idle": {"clip": "idle"}, "walk": {"clip": "walk"}}, "initial_state": "walk",
+		"version": 1, "parameters": {"move": 1, "pace": 0.5},
+		"states": {"idle": {"clip": "idle"}, "locomotion": {"blend_space": "pace"}}, "initial_state": "locomotion",
+		"blend_spaces": {"pace": {"parameter": "pace", "sync_reference": "walk", "points": [{"position": 0, "clip": "walk"}, {"position": 1, "clip": "brisk"}]}},
 		"transitions": [
-			{"source": "idle", "target": "walk", "conditions": [{"parameter": "move", "comparison": ">", "threshold": 0.5}], "duration": 0.15},
-			{"source": "walk", "target": "idle", "conditions": [{"parameter": "move", "comparison": "<", "threshold": 0.5}], "duration": 0.15},
+			{"source": "idle", "target": "locomotion", "conditions": [{"parameter": "move", "comparison": ">", "threshold": 0.5}], "duration": 0.15},
+			{"source": "locomotion", "target": "idle", "conditions": [{"parameter": "move", "comparison": "<", "threshold": 0.5}], "duration": 0.15},
 		],
 		"sample_slots": ["locomotion"], "root_motion_slots": ["locomotion"],
 		"tasks": [{"name": "sample", "op": "sample", "slot": "locomotion"}, {"name": "in_place", "op": "in_place", "base": "sample", "slot": "locomotion"}],
-	}).compile(rig, {"idle": idle, "walk": clip})
+	}).compile(rig, {"idle": idle, "walk": walk, "brisk": brisk}, sync_tracks=tracks)
 	post = PosePlan(rig, [("input", 0), ("two_bone_ik", 0, (7, 8, 9), 0, 0), ("two_bone_ik", 1, (10, 11, 12), 1, 1)])
 	ecs = ECS()
-	ecs.register(Collider, RigidBody, PhysicsCharacter, CharacterState, PhysicsRagdoll, MaterialTransform, SkeletonRef, ClipPlayer, AnimationState)
+	ecs.register(Collider, RigidBody, PhysicsCharacter, CharacterState, PhysicsRagdoll, MaterialTransform, GraphPlayer)
 	owner, floor, wall, step, sensor = ecs.create(5)
-	ecs.add(owner, PhysicsCharacter(), CharacterState(), MaterialTransform(position=(-4, 0, 0)), SkeletonRef(0), ClipPlayer(graph.state_clips[graph.initial_state], extract_root_motion=True), AnimationState(graph.initial_state))
+	ecs.add(owner, PhysicsCharacter(), CharacterState(), MaterialTransform(position=(-4, 0, 0)), GraphPlayer(0))
 	ecs.add(floor, Collider(0), MaterialTransform(position=(0, -0.5, 0), scale=(30, 1, 20)))
 	ecs.add(wall, Collider(0), MaterialTransform(position=(3, 0.375, 0), scale=(0.5, 0.75, 8)))
 	ecs.add(step, Collider(0), MaterialTransform(position=(-2, 0.1, 0), scale=(1, 0.2, 3)))
 	ecs.add(sensor, Collider(0, sensor=True), MaterialTransform(position=(-1, 1, 0), scale=(2, 2, 3)))
 	capabilities = pj.CharacterCapabilities(airControl=1)
 	physics = EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, characters={0: capabilities}, ragdolls={0: asset}, settings=pj.WorldSettings(threads=1), interpolate=True)
-	animation = EcsAnimationAdapter(ecs, {0: rig}, graph.clips, root_motions={(0, key): RootMotion(rig, clip) for key, clip in graph.clips.items()})
-	animation_states = EcsAnimationStateAdapter(ecs, graph.machine, graph.state_clips)
+	motions = {key: RootMotion(rig, clip) for key, clip in graph.clips.items()}
+	animation = EcsAnimationGraphAdapter(ecs, 0, graph, event_tracks={graph.state_ids["locomotion"]: tracks["walk"]}, root_motions=motions)
 	state = {"auto": True, "direction": np.array([1, 0, 0]), "jump": False, "fall": False, "recover": False, "stage": "controller", "pose": None, "final_pose": None, "batches": [], "launch": None, "return_velocity": None, "fall_tick": -1, "foot_hits": np.zeros(2, dtype=bool), "requested_speed": 0.0, "accepted_speed": 0.0, "trigger_begins": 0, "trigger_ends": 0}
-
-	def select_animation(world, commands, dt):
-		moving = state["stage"] == "controller" and (state["auto"] or np.any(state["direction"]))
-		animation_states.update(np.array([[float(moving)]]))
+	state.update(animation=animation, pace=0.5)
 
 	def prepare_pose(world, commands, dt):
-		batch = animation.sample_batches[0]
-		pose = graph.plan.evaluate(graph.clips, [(batch.clip_ids, batch.times, batch.weights)], np.empty((1, 0)), root_motions=[animation.in_place_motion(batch)])
+		moving = state["stage"] == "controller" and (state["auto"] or np.any(state["direction"]))
+		base = animation.update(dt, [[float(moving), state["pace"]]])
+		pose = graph.input_plan.evaluate({}, [], np.empty((1, 0)), poses=[base], root_motions=[(motions[graph.clip_ids["walk"]], np.array([True]))])
 		state["pose"] = tuple(value.copy() for value in pose)
 
 	def control(world, commands, dt):
@@ -118,7 +122,7 @@ def create_demo():
 
 	def inputs(world, commands, dt):
 		if state["stage"] == "controller":
-			request = animation.root_motion_batches[0].matrices[0, :3, 3]
+			request = animation.playback.root_motion[0, :3, 3]
 			speed = np.linalg.norm(request[[0, 2]]) / dt
 			state["requested_speed"] = float(speed) if np.linalg.norm(state["direction"]) else 0
 			physics.move_characters([owner], state["direction"] if state["return_velocity"] is None else [0, 0, 0], speed=speed)
@@ -164,7 +168,7 @@ def create_demo():
 
 	schedule = Scheduler(ecs)
 	previous = ()
-	for name, callback in (("animation_state", select_animation), ("animation", animation.advance), ("pre_pose", prepare_pose), ("control", control), ("sync", physics.reconcile), ("targets", inputs), ("input", physics.prepare_inputs), ("step", physics.step), ("pull", physics.pull), ("events", physics.dispatch_events), ("final_pose", finalize)):
+	for name, callback in (("pre_pose", prepare_pose), ("control", control), ("sync", physics.reconcile), ("targets", inputs), ("input", physics.prepare_inputs), ("step", physics.step), ("pull", physics.pull), ("events", physics.dispatch_events), ("final_pose", finalize)):
 		schedule.add(name, callback, phase="fixed_update", after=previous)
 		previous = name
 	return ecs, owner, (floor, wall, step, sensor), physics, schedule, state, asset

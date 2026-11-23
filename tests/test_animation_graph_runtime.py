@@ -9,11 +9,75 @@ from graaal.Animation.AnimationGraphPlayback import AnimationGraphPlayback
 from graaal.Animation.AnimationGraph import AnimationGraphDefinition
 from graaal.Animation.AnimationEvents import EventTrack
 from graaal.Animation.AnimationSync import SyncMapping
-from graaal.Animation.SkeletalAnimation import model_matrices, skin_matrices
+from graaal.Animation.RootMotion import RootMotion
+from graaal.Animation.SkeletalAnimation import Clip, model_matrices, skin_matrices
+from graaal.ECS import ECS
+from graaal.EcsAdapters.EcsAnimationGraph import EcsAnimationGraphAdapter, GraphPlayer
 from tests.test_animation_graph_playback import graph, grid_graph, synchronized_graph
 
 
 FIELDS = ("states", "times", "speeds", "target_states", "target_times", "target_speeds", "elapsed", "durations")
+
+
+def motion_tracks(compiled):
+	return {key: RootMotion(compiled.plan.skeleton, clip) for key, clip in compiled.clips.items()}
+
+
+@pytest.mark.parametrize("dimension", [1, 2])
+def test_root_motion_blends_synced_clips_across_a_reference_loop(dimension):
+	compiled = synchronized_graph(dimension)
+	compiled = replace(compiled, clips={key: Clip(clip.translation, np.broadcast_to([0, 0, 0, 1], clip.rotation.shape), clip.scale, fps=clip.fps) for key, clip in compiled.clips.items()})
+	player = AnimationGraphPlayback(compiled, 1, root_motions=motion_tracks(compiled))
+	player.reset(times=1.25)
+	parameters = [[0, 0.25, 0]]
+	player.advance(0.5, parameters)
+	# Each endpoint is in its own clip time, unwrapped through the seam.
+	lower = 0.75 * (2 * 0.5 / 1.5) + 0.25 * 0.75
+	upper = 0.75 * (2 * 0.375) + 0.25 * (2 * 1.125 / 3)
+	expected = lower if dimension == 1 else (lower + upper) / 2
+	np.testing.assert_allclose(player.root_motion[:, :3, 3], [[expected, 0, 0]], atol=1e-6)
+	np.testing.assert_allclose(player.pose(parameters, in_place=True)[0], [[[0, 0, 0]]])
+	player.advance(0, [[0, 1, -1]])
+	np.testing.assert_allclose(player.root_motion[0], np.eye(4))
+
+
+def test_synced_root_motion_blends_fade_and_composes_remaining_target_motion():
+	compiled = graph(sync=True)
+	player = AnimationGraphPlayback(compiled, 2, root_motions=motion_tracks(compiled))
+	player.reset(times=0.75, speeds=[1, 0])
+	player.advance(0.5, [[1], [1]])
+	np.testing.assert_allclose(player.root_motion[:, :3, 3], [[0.875, 0, 0], [0, 0, 0]])
+	np.testing.assert_allclose(player.times, [0.25, 1.25])
+	assert not player.root_motion.flags.writeable
+	player.reset(rows=[0])
+	np.testing.assert_allclose(player.root_motion[0], np.eye(4))
+
+
+def test_ecs_graph_remaps_fading_entities_and_event_cursors_by_full_handle():
+	compiled = graph(duration=0.75)
+	world = ECS()
+	world.register(GraphPlayer)
+	removed, kept, other_graph = world.create(3)
+	world.add(removed, GraphPlayer(0))
+	world.add(kept, GraphPlayer(0))
+	world.add(other_graph, GraphPlayer(1))
+	adapter = EcsAnimationGraphAdapter(world, 0, compiled, event_tracks={1: EventTrack(2, [0.5], ["step"])}, root_motions=motion_tracks(compiled))
+	adapter.update(0.25, [[0], [1]])
+	world.delete(removed)
+	replacement, = world.create(1)
+	world.add(replacement, GraphPlayer(0))
+	assert replacement != removed
+	with pytest.raises(ValueError, match="parameters"): adapter.update(0.25, [[0]])
+	assert adapter.events == ()
+	pose = adapter.update(0.25, [[0], [0]], in_place=True)
+	rows = {owner: row for row, owner in enumerate(adapter.entities())}
+	assert set(rows) == {kept, replacement}
+	assert adapter.playback.target_times[rows[kept]] == 0.5
+	assert adapter.playback.times[rows[replacement]] == 0.25
+	assert [(event.entity, event.name, event.role) for event in adapter.events] == [(kept, "step", "target")]
+	np.testing.assert_allclose(pose[0], 0)
+	adapter.update(0)
+	assert adapter.events == ()
 
 
 def test_state_events_cross_multiple_loops_in_tick_order_without_replaying_start():

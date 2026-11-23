@@ -1,9 +1,28 @@
 import numpy as np
 import pytest
 
-from graaal.Animation.InverseKinematics import align_bone_axis, solve_two_bone, two_bone_pose
+from graaal.Animation.InverseKinematics import align_bone_axis, limit_twist, solve_two_bone, two_bone_pose
 from graaal.Math import Quaternion
 from graaal.Animation.SkeletalAnimation import Skeleton, model_matrices, skin_matrices
+
+
+def test_twist_limit_preserves_swing_and_reference_frame():
+	reference = Quaternion.from_z_rotation(0.4)
+	swing = Quaternion.from_y_rotation(0.7)
+	turns = np.stack([Quaternion.multiply_batch(swing, Quaternion.from_x_rotation(angle)) for angle in (0.9, -1.1, 0.15)])
+	turns = Quaternion.multiply_batch(reference, turns) * [[1], [-1], [1]]
+	clamped = limit_twist(turns, reference, [1, 0, 0], -0.4, 0.2)
+	expected = np.stack([Quaternion.multiply_batch(swing, Quaternion.from_x_rotation(angle)) for angle in (0.2, -0.4, 0.15)])
+	expected = Quaternion.multiply_batch(reference, expected)
+	np.testing.assert_allclose(Quaternion.matrix_batch(clamped), Quaternion.matrix_batch(expected), atol=1e-6)
+	with pytest.raises(ValueError, match="twist limits"): limit_twist(turns, reference, [1, 0, 0], 0.2, -0.4)
+
+
+def test_twist_limit_treats_exact_half_turn_signs_equally():
+	turn = np.array([1.0, 0, 0, 0])
+	clamped = limit_twist([turn, -turn], [0, 0, 0, 1], [1, 0, 0], -0.3, 0.3)
+	expected = np.tile(Quaternion.from_x_rotation(0.3), (2, 1))
+	np.testing.assert_allclose(Quaternion.matrix_batch(clamped), Quaternion.matrix_batch(expected), atol=1e-6)
 
 
 def test_batch_reaches_targets_and_pole_selects_bend_side():

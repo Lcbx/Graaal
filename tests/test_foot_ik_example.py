@@ -63,3 +63,39 @@ def test_ground_query_miss_disables_foot_correction():
 	assert not np.any(frames["ground_hits"][0])
 	assert np.all(np.isfinite(frames["batches"][0][1]))
 	np.testing.assert_allclose(frames["batches"][0][1][:, 2, 1, 3], 0, atol=1e-6)
+
+
+def test_supported_stance_holds_world_position_and_normal_until_release():
+	world, entities, _, schedule, frames = create_demo(plant=True)
+	feet, normals = [], []
+	for _ in range(3):
+		schedule.run(0.25, fixed_steps=1, fixed_dt=0.25)
+		x = world.get(Character)[entities].x[0]
+		matrix = frames["batches"][0][1][0, 2]
+		feet.append(matrix[:, 3] + [x, 0, 0])
+		normals.append(matrix[:, 1].copy())
+	np.testing.assert_allclose(feet[0], feet[1], atol=2e-6)
+	np.testing.assert_allclose(normals[0], normals[1], atol=2e-6)
+	assert feet[2][0] > feet[1][0]
+	assert not world.get(Character)[entities].locked.any()
+
+
+def test_planted_foot_checks_support_at_its_anchor():
+	def ground_query(points):
+		height = np.where(points[:, 0] < 0.1, 0.2, np.nan)
+		return height, np.tile([0, 1, 0], (len(points), 1))
+
+	world, entities, _, schedule, frames = create_demo(ground_query, plant=True)
+	schedule.run(0.25, fixed_steps=1, fixed_dt=0.25)
+	anchor = world.get(Character)[entities].anchor[0].copy()
+	assert world.get(Character)[entities].locked[0]
+	schedule.run(0.25, fixed_steps=1, fixed_dt=0.25)
+	characters = world.get(Character)[entities]
+	assert characters.x[0] > 0.1
+	assert characters.locked[0] and frames["ground_hits"][0][0]
+	np.testing.assert_array_equal(characters.anchor[0], anchor)
+	foot = frames["batches"][0][1][0, 2, :, 3] + [characters.x[0], 0, 0]
+	np.testing.assert_allclose(foot, anchor, atol=2e-6)
+	schedule.run(0.25, fixed_steps=1, fixed_dt=0.25)
+	assert not world.get(Character)[entities].locked[0]
+	assert not frames["ground_hits"][0][0]
