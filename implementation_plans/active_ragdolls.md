@@ -170,6 +170,13 @@ errors were 0.086–0.089 rad and contact trials finished below 0.072 m/s peak
 body speed over their final 120 ticks. Other platforms and broader anatomical
 tuning remain open.
 
+Use the [ragdoll tuner](../tools/ragdoll_tuner.md) to edit colliders, masses,
+joint limits and passive gains in drop, stair and zero-gravity previews and
+save the tuned settings as JSON. Pass `--tuning PATH` to the passive example
+to run reports or playback with the saved rig and passive gains. The repository
+tuning file was checked in all four headless scenarios and in offscreen
+collider and dummy playback.
+
 ## Overview
 
 Implement a physically simulated humanoid with **natural passive joint behavior** and a **neural controller** capable of balancing, following animations, stepping, bracing during falls, and getting back up. Physics is handled by **Jolt Physics through pyjoltphysics**, while Python defines ragdolls, joint constraints, motor commands, simulation scenarios and batched observations using **NumPy**. A **PyTorch PPO policy** learns purposeful movement through reinforcement learning. The same physics, actuation and observation code runs during training and at runtime in **Graaal**, with NumPy-based neural inference.

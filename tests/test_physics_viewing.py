@@ -107,3 +107,16 @@ def test_segment_transform_preserves_world_space_endpoints(end):
 	half_segment = rotation.matrix33[:, 1] * scale[1] / 2
 	np.testing.assert_allclose(center - half_segment, start)
 	np.testing.assert_allclose(center + half_segment, end)
+
+
+def test_collider_poses_apply_local_offsets_and_rotations_in_bone_space():
+	from graaal.Math import Quaternion
+	from scenes.physics_geometry import collider_poses
+
+	positions = np.array([[4, 5, 6], [10, 20, 30]])
+	orientations = np.array([Quaternion.from_z_rotation(np.pi / 2), Quaternion()])
+	offsets = np.array([[2, 0, 0], [1, 2, 3]])
+	shape_rotations = np.array([Quaternion.from_x_rotation(np.pi / 2), Quaternion()])
+	centers, rotations = collider_poses(positions, orientations, offsets, shape_rotations)
+	np.testing.assert_allclose(centers, [[4, 7, 6], [11, 22, 33]])
+	np.testing.assert_allclose(Quaternion.matrix_batch(rotations) @ [1, 2, 3], [[3, 1, 2], [1, 2, 3]])

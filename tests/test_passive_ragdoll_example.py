@@ -10,7 +10,9 @@ import pytest
 from graaal.Animation.SkeletalAnimation import Skeleton, model_matrices
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import RagdollAsset
+from scenes import passive_ragdoll_example as example
 from scenes.passive_ragdoll_example import main, make_humanoid, run_scene, terrain_boxes
+from scenes.physics_geometry import rounded_vertices
 
 
 @pytest.fixture
@@ -67,8 +69,6 @@ def test_authored_humanoid_topology_feet_mass_and_skeleton_compatibility(pj, hei
 
 
 def test_rendered_limb_capsules_match_authored_joint_extents(pj):
-	from scenes.passive_ragdoll_viewer import rounded_vertices
-
 	settings = make_humanoid()[0]
 	template = np.empty(0, dtype=[("position", "f4", 3), ("normal", "f4", 3), ("uv", "f4", 2)])
 	for parent, child in (("upper_arm", "lower_arm"), ("thigh", "shin"), ("shin", "foot")):
@@ -93,10 +93,8 @@ def test_playback_samples_include_initial_and_final_poses(pj):
 
 
 def test_missing_dummy_model_reports_how_to_supply_it(monkeypatch, tmp_path, capsys):
-	from scenes import passive_ragdoll_viewer
-
 	path = tmp_path / "dummy_rigged.glb"
-	monkeypatch.setattr(passive_ragdoll_viewer, "DEFAULT_DUMMY_MODEL", path)
+	monkeypatch.setattr(example, "DEFAULT_DUMMY_MODEL", path)
 	monkeypatch.setattr(sys, "argv", ["passive_ragdoll_example", "--offscreen", "--model"])
 	with pytest.raises(SystemExit) as error:
 		main()
@@ -107,15 +105,66 @@ def test_missing_dummy_model_reports_how_to_supply_it(monkeypatch, tmp_path, cap
 
 @pytest.mark.parametrize("args, expected", (([], "drop"), (["--view", "--scenario", "stairs"], "stairs")))
 def test_passive_cli_defaults_to_window(monkeypatch, args, expected):
-	from scenes import passive_ragdoll_viewer
-
 	def view(scenario, *, offscreen, **options):
 		assert scenario == expected and not offscreen
 		return dict(scenario=scenario, ticks=1, initial_joint_error_rad=0, final_joint_error_rad=0, contact_records=0, max_anchor_error_m=0)
 
-	monkeypatch.setattr(passive_ragdoll_viewer, "run_viewer", view)
+	monkeypatch.setattr(example, "run_viewer", view)
 	monkeypatch.setattr(sys, "argv", ["passive_ragdoll_example", *args])
 	main()
+
+
+def test_tuning_project_drives_headless_simulation(pj, monkeypatch, tmp_path):
+	from tools.ragdoll_project import default_project, write_project
+
+	project = default_project()
+	project.settings.bones[1].mass = 30
+	for controls in (project.spring, project.soft_limit):
+		for name in project.spring:
+			controls[name].fill(0)
+	path = tmp_path / "tuned.json"
+	write_project(path, project)
+	output = tmp_path / "report.json"
+	monkeypatch.setattr(sys, "argv", ["passive_ragdoll_example", "--headless", "--scenario", "zero_gravity", "--frames", "120", "--tuning", str(path), "--output", str(output)])
+	main()
+	result, = json.loads(output.read_text(encoding="utf-8"))
+	assert result["mass_kg"] == 78
+	assert result["passive"]
+	assert result["final_joint_error_rad"] == pytest.approx(result["initial_joint_error_rad"], abs=1e-7)
+
+
+def test_tuning_native_cylinder_uses_saved_shape_and_clears_stairs(pj, monkeypatch, tmp_path):
+	from contextlib import nullcontext
+	from types import SimpleNamespace
+
+	pytest.importorskip("wgpu")
+	from graaal.Materials import MaterialRenderer as materials
+	from pyjoltphysics.ragdolls import Bone
+
+	bone = Bone("body", -1, (0, 0.5, 0), shape=pj.Shape.cylinder(0.15, 0.8), shape_offset=(0, 0, 0.4))
+	settings = pj.RagdollSettings([bone])
+	path = tmp_path / "native.json"
+	path.write_text(json.dumps(settings.as_dict()), encoding="utf-8")
+	frames = []
+
+	def play(renderer, camera, output, update, **options):
+		update(0)
+		body = renderer.instances[0]
+		vertices = body.mesh.vertices["position"]
+		np.testing.assert_allclose(np.ptp(vertices, axis=0), [0.3, 0.8, 0.3], atol=1e-7)
+		footprint = vertices @ Quaternion(body.rotation).matrix33.T + body.position
+		top_step = renderer.instances[-1]
+		top = top_step.position[1] + top_step.scale[1] / 2
+		assert footprint[:, 1].min() > top
+		np.testing.assert_allclose(body.position[[0, 2]], top_step.position[[0, 2]], atol=1e-6)
+		frames.append(0)
+
+	monkeypatch.setattr(example, "viewing_target", lambda *args, **kwargs: nullcontext())
+	monkeypatch.setattr(materials, "MaterialRenderer", lambda instances, **kwargs: SimpleNamespace(instances=instances))
+	monkeypatch.setattr(example, "play_frames", play)
+	monkeypatch.setattr(sys, "argv", ["passive_ragdoll_example", "--offscreen", "--scenario", "stairs", "--frames", "2", "--tuning", str(path)])
+	main()
+	assert frames == [0]
 
 
 def test_passive_viewer_switches_terrain_and_reuses_recordings(pj, monkeypatch):
@@ -127,12 +176,11 @@ def test_passive_viewer_switches_terrain_and_reuses_recordings(pj, monkeypatch):
 	from graaal.Materials import MaterialRenderer as materials
 	from graaal.RenderContext import RenderContext
 	from graaal.UI import ImGui
-	from scenes import passive_ragdoll_viewer as viewer
 
 	titles, keys, recorded = [], [], []
 	monkeypatch.setattr(glfw, "set_window_title", lambda window, title: titles.append(title))
 	monkeypatch.setattr(RenderContext, "subscribe_event", lambda channel, handler: keys.append(handler))
-	monkeypatch.setattr(viewer, "viewing_target", lambda *args, **kwargs: nullcontext())
+	monkeypatch.setattr(example, "viewing_target", lambda *args, **kwargs: nullcontext())
 	monkeypatch.setattr(materials, "MaterialRenderer", lambda instances, **kwargs: SimpleNamespace(instances=instances))
 	imgui = SimpleNamespace(Cond_=SimpleNamespace(first_use_ever=0),
 		WindowFlags_=SimpleNamespace(always_auto_resize=1, no_saved_settings=2, no_collapse=4),
@@ -161,9 +209,9 @@ def test_passive_viewer_switches_terrain_and_reuses_recordings(pj, monkeypatch):
 		assert before_frame()
 		np.testing.assert_allclose(camera.target, drop_target)
 
-	monkeypatch.setattr(viewer, "run_scene", record)
-	monkeypatch.setattr(viewer, "play_frames", play)
-	assert viewer.run_viewer("drop", frames=2)["scenario"] == "drop"
+	monkeypatch.setattr(example, "run_scene", record)
+	monkeypatch.setattr(example, "play_frames", play)
+	assert example.run_viewer("drop", frames=2)["scenario"] == "drop"
 	assert recorded == ["drop", "stairs", "zero_gravity"]
 
 
