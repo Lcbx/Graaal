@@ -868,7 +868,7 @@ the copied pre-physics pose for IK or alignment; see `foot_ik_example.py`.
 Run `python -m scenes.root_motion_example` for a fixed-step idle/walk/run
 example that submits root-motion requests to a bounded movement system and
 reports the accepted displacement. It uses synthetic clips and a simple boundary.
-Run `python -m scenes.physics_locomotion_example` to accept the same requests
+Run `python -m scenes.physics_locomotion_example --headless` to accept the same requests
 against a native shape sweep in one ECS scheduler. The character's kinematic
 transform receives only the accepted displacement, while the animation pose
 remains in place. This demonstrates blocking, not sliding or step climbing.

@@ -105,6 +105,68 @@ def test_missing_dummy_model_reports_how_to_supply_it(monkeypatch, tmp_path, cap
 	assert str(path) in message and "--model PATH" in message
 
 
+@pytest.mark.parametrize("args, expected", (([], "drop"), (["--view", "--scenario", "stairs"], "stairs")))
+def test_passive_cli_defaults_to_window(monkeypatch, args, expected):
+	from scenes import passive_ragdoll_viewer
+
+	def view(scenario, *, offscreen, **options):
+		assert scenario == expected and not offscreen
+		return dict(scenario=scenario, ticks=1, initial_joint_error_rad=0, final_joint_error_rad=0, contact_records=0, max_anchor_error_m=0)
+
+	monkeypatch.setattr(passive_ragdoll_viewer, "run_viewer", view)
+	monkeypatch.setattr(sys, "argv", ["passive_ragdoll_example", *args])
+	main()
+
+
+def test_passive_viewer_switches_terrain_and_reuses_recordings(pj, monkeypatch):
+	from contextlib import nullcontext
+	from types import SimpleNamespace
+
+	pytest.importorskip("wgpu")
+	glfw = pytest.importorskip("glfw")
+	from graaal.Materials import MaterialRenderer as materials
+	from graaal.RenderContext import RenderContext
+	from graaal.UI import ImGui
+	from scenes import passive_ragdoll_viewer as viewer
+
+	titles, keys, recorded = [], [], []
+	monkeypatch.setattr(glfw, "set_window_title", lambda window, title: titles.append(title))
+	monkeypatch.setattr(RenderContext, "subscribe_event", lambda channel, handler: keys.append(handler))
+	monkeypatch.setattr(viewer, "viewing_target", lambda *args, **kwargs: nullcontext())
+	monkeypatch.setattr(materials, "MaterialRenderer", lambda instances, **kwargs: SimpleNamespace(instances=instances))
+	imgui = SimpleNamespace(Cond_=SimpleNamespace(first_use_ever=0),
+		WindowFlags_=SimpleNamespace(always_auto_resize=1, no_saved_settings=2, no_collapse=4),
+		set_next_window_pos=lambda *args: None, set_next_item_width=lambda *args: None,
+		begin=lambda *args, **kwargs: (True, None), end=lambda: None, combo=lambda *args: (True, 0))
+	monkeypatch.setattr(ImGui, "ImGui", lambda: nullcontext(SimpleNamespace(imgui=imgui, render=lambda draw: draw())))
+
+	def record(name, **options):
+		recorded.append(name)
+		return run_scene(name, **options)
+
+	def play(renderer, camera, output, update, *, before_frame, draw_overlay, **options):
+		drop_target = camera.target.copy()
+		assert len(renderer.instances) == 14
+		keys[0](glfw.KEY_3, 0, glfw.PRESS, 0)
+		assert before_frame()
+		update(0)
+		assert len(renderer.instances) == 13 + len(terrain_boxes("stairs", 1)[0])
+		assert not np.allclose(camera.target, drop_target)
+		assert " | Stairs | " in titles[-1]
+		draw_overlay()
+		assert before_frame()
+		assert len(renderer.instances) == 13
+		assert " | Zero gravity | " in titles[-1]
+		keys[0](glfw.KEY_2, 0, glfw.PRESS, 0)
+		assert before_frame()
+		np.testing.assert_allclose(camera.target, drop_target)
+
+	monkeypatch.setattr(viewer, "run_scene", record)
+	monkeypatch.setattr(viewer, "play_frames", play)
+	assert viewer.run_viewer("drop", frames=2)["scenario"] == "drop"
+	assert recorded == ["drop", "stairs", "zero_gravity"]
+
+
 @pytest.mark.parametrize("height", (0.9, 1.8, 2.16))
 def test_stair_spawn_clears_top_step(pj, height):
 	poses = []

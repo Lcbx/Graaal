@@ -1,7 +1,9 @@
-"""Headless root-motion locomotion against native collision geometry.
+"""Root-motion locomotion against native collision geometry.
 
 Run: python -m scenes.physics_locomotion_example
 """
+import argparse
+
 import numpy as np
 
 from graaal.ECS import ECS, Scheduler
@@ -11,6 +13,11 @@ from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Animation.RootMotion import RootMotion
 from graaal.Animation.SkeletalAnimation import Skeleton
 from scenes.root_motion_example import Movement, make_clip
+
+
+TICK_HZ = 4
+SPHERE_RADIUS = 0.25
+OBSTACLE_SIZE = (0.5, 0.5, 0.5)
 
 
 def create_demo():
@@ -23,7 +30,7 @@ def create_demo():
 	character, obstacle = world.create(2)
 	world.add(character, SkeletonRef(0), ClipPlayer(0, extract_root_motion=True), Movement(), MaterialTransform(position=(0, 1, 0)), Collider(0), RigidBody(motion=1, gravity_factor=0))
 	world.add(obstacle, MaterialTransform(position=(2, 1, 0)), Collider(1))
-	physics = EcsPhysicsAdapter(world, {0: pj.Shape.sphere(0.25), 1: pj.Shape.box((0.5, 0.5, 0.5))}, settings=pj.WorldSettings(tick_hz=4, threads=1))
+	physics = EcsPhysicsAdapter(world, {0: pj.Shape.sphere(SPHERE_RADIUS), 1: pj.Shape.box(OBSTACLE_SIZE)}, settings=pj.WorldSettings(tick_hz=TICK_HZ, threads=1))
 	animation = EcsAnimationAdapter(world, {0: rig}, {0: clip}, root_motions={(0, 0): RootMotion(rig, clip)})
 
 	def accept_movement(world, commands, dt):
@@ -55,14 +62,48 @@ def create_demo():
 	return world, character, obstacle, animation, physics, schedule
 
 
-def run_scene():
+def run_scene(*, on_pose=None):
 	world, character, obstacle, animation, physics, schedule = create_demo()
+	transforms = world.get(MaterialTransform)
+	entities = [character, obstacle]
+	fixed_dt = 1 / TICK_HZ
 	with physics:
+		if on_pose is not None:
+			pose = transforms[entities]
+			on_pose(pose.position, pose.rotation)
 		for tick in range(12):
-			schedule.run(0.25, fixed_steps=1, fixed_dt=0.25)
+			schedule.run(fixed_dt, fixed_steps=1, fixed_dt=fixed_dt)
+			if on_pose is not None:
+				pose = transforms[entities]
+				on_pose(pose.position, pose.rotation)
 			movement = world.get(Movement)[[character]]
 			print(f"tick={tick} x={movement.x[0]:.3f} requested={movement.requested[0]:.3f} accepted={movement.accepted[0]:.3f}")
 
 
+def run_viewer(*, offscreen=False):
+	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
+	from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh
+	from graaal.Math import Camera
+	from scenes.physics_geometry import cube_vertices, rounded_vertices
+	from scenes.physics_viewing_utils import has_blue_pixels, view_poses
+
+	samples = []
+	run_scene(on_pose=lambda position, rotation: samples.append((position, rotation)))
+	shader = DefaultMaterialShader()
+	cube = cube_vertices()
+	sphere = DrawInstance(MaterialMesh(rounded_vertices(cube, SPHERE_RADIUS, 0), shader), material={"base_color": (0.12, 0.55, 0.95, 1)})
+	box = DrawInstance(MaterialMesh(cube, shader), material={"base_color": (0.95, 0.50, 0.13, 1)}, scale=OBSTACLE_SIZE)
+	camera = Camera((2.7, 2.5, 4.5), (1, 1, 0), (0, 1, 0), 39, near=0.05, far=40)
+	view_poses("Physics locomotion | sphere sweep", camera, samples, [sphere, box], sample_hz=TICK_HZ, offscreen=offscreen, check_frame=has_blue_pixels)
+
+
 if __name__ == "__main__":
-	run_scene()
+	from scenes.physics_viewing_utils import add_viewing_options
+
+	parser = argparse.ArgumentParser(description=__doc__)
+	add_viewing_options(parser)
+	args = parser.parse_args()
+	if args.headless:
+		run_scene()
+	else:
+		run_viewer(offscreen=args.offscreen)

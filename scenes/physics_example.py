@@ -14,6 +14,7 @@ from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.EcsAdapters.EcsPhysics import Collider, EcsPhysicsAdapter, RigidBody
 from scenes.physics_geometry import cube_vertices
 from scenes.physics_utils import advance_fixed_steps
+from scenes.physics_viewing_utils import draw_frame, read_pixels, viewing_target
 
 
 def make_world():
@@ -85,17 +86,14 @@ def run_scene(*, offscreen=False, frames=None):
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
-	from graaal.RenderContext import RenderContext, Texture, TextureUsage
+	from graaal.RenderContext import RenderContext
 
 	ecs, boxes, floor, obstacle, platform, sensor = make_world()
 	physics = EcsPhysicsAdapter(ecs, {0: pj.Shape.box()}, interpolate=True)
-	try:
-		if offscreen:
-			RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-		else:
-			RenderContext.init_window(1000, 760, "Physics | sensor: green when empty, redder with more boxes", required_gpu_features=["indirect-first-instance"])
-		mesh = MaterialMesh(cube_vertices(), DefaultMaterialShader())
-		sensor_mesh = MaterialMesh(cube_vertices(), DefaultMaterialShader(transparent=True))
+	with physics, viewing_target("Physics | sensor: green when empty, redder with more boxes", offscreen=offscreen) as output:
+		cube = cube_vertices()
+		mesh = MaterialMesh(cube, DefaultMaterialShader())
+		sensor_mesh = MaterialMesh(cube, DefaultMaterialShader(transparent=True))
 		ecs.register(MaterialInstance)
 		ecs.add(boxes, MaterialInstance(mesh, {"base_color": (0.9, 0.35, 0.1, 1)}))
 		ecs.add(floor, MaterialInstance(mesh, {"base_color": (0.3, 0.3, 0.35, 1)}))
@@ -120,8 +118,6 @@ def run_scene(*, offscreen=False, frames=None):
 			drawing.touch_materials(sensor_material)
 		schedule.add("sensor_tint", update_sensor, phase="fixed_update", after="physics_events")
 		camera = Camera((12, 10, 16), (0, 2, 0), (0, 1, 0), 50, near=0.1, far=100)
-		size = (640, 480)
-		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
 		if offscreen and frames is None: frames = 1
 		while frames is None or displayed < frames:
 			if not offscreen and not RenderContext.window_loop(): break
@@ -129,18 +125,11 @@ def run_scene(*, offscreen=False, frames=None):
 			fixed_steps, accumulator = advance_fixed_steps(accumulator, min(elapsed, 0.1), tick_hz)
 			schedule.run(elapsed, fixed_steps=fixed_steps, fixed_dt=fixed_dt)
 			drawing.sync()
-			commands = RenderContext.commands("physics")
-			size = size if offscreen else RenderContext.window_dimensions
-			renderer.record(commands, size, camera, output.color_attachment() if offscreen else RenderContext.screen())
-			RenderContext.submit(commands.finish())
+			draw_frame(renderer, camera, output, "physics")
 			displayed += 1
 		if offscreen:
-			pixels = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": size[0] * 4}, (*size, 1))
-			if not np.any(np.frombuffer(pixels, dtype=np.uint8).reshape(-1, 4)[:, :3]): raise RuntimeError("physics scene rendered no colored pixels")
+			if not np.any(read_pixels(output)[..., :3]): raise RuntimeError("physics scene rendered no colored pixels")
 			print(f"Physics scene rendered {displayed} offscreen frames")
-	finally:
-		physics.close()
-		RenderContext.cleanup()
 
 
 if __name__ == "__main__":

@@ -21,7 +21,9 @@ from graaal.PhysicsRagdoll import RagdollAsset
 from graaal.Animation.PoseTasks import PosePlan
 from graaal.Animation.RootMotion import RootMotion
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, skin_matrices
+from scenes.physics_geometry import cube_vertices, skinned_boxes
 from scenes.physics_utils import advance_fixed_steps
+from scenes.physics_viewing_utils import draw_frame, read_pixels, viewing_target
 
 
 def create_demo():
@@ -182,21 +184,17 @@ def run_headless(frames=960):
 
 
 def run_scene(*, offscreen=False, frames=None):
-	import glfw
 	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
 	from graaal.Animation.PosePalette import PosePalette
-	from graaal.RenderContext import RenderContext, Texture, TextureUsage
+	from graaal.RenderContext import RenderContext
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
-	from scenes.physics_geometry import cube_vertices
-	from scenes.ragdoll_example import skinned_boxes
 
 	ecs, owner, environment, physics, schedule, state, asset = create_demo()
-	try:
-		if offscreen: RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-		else: RenderContext.init_window(1000, 720, "Character | WASD move, Space jump, R fall, G recover, T scripted cycle", required_gpu_features=["indirect-first-instance"])
+	title = "Character | WASD move, Space jump, R fall, G recover, T scripted cycle"
+	with physics, viewing_target(title, (1000, 720), offscreen=offscreen) as output:
 		cube = cube_vertices()
 		shader = DefaultMaterialShader()
 		mesh = MaterialMesh(skinned_boxes(asset, cube), shader, bounds=((0, 0, 0), (20, 20, 20)))
@@ -213,8 +211,6 @@ def run_scene(*, offscreen=False, frames=None):
 		accumulator, displayed = 0.0, 0
 		drawing = EcsMaterialAdapter(renderer, ecs, transform_source=lambda owners: physics.render_transforms(owners, alpha=accumulator * tick_hz))
 		camera = Camera((4, 4, 10), (-0.5, 1, 0), (0, 1, 0), 45, near=0.05, far=100)
-		size = (640, 480)
-		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
 		def on_char(code):
 			key = chr(code).lower()
 			if key == "t": state["auto"] = True
@@ -223,7 +219,10 @@ def run_scene(*, offscreen=False, frames=None):
 				state[{" ": "jump", "r": "fall", "g": "recover"}[key]] = True
 			else: return False
 			return True
-		if not offscreen: RenderContext.subscribe_event("char", on_char)
+		if not offscreen:
+			import glfw
+
+			RenderContext.subscribe_event("char", on_char)
 		schedule.run(0, fixed_steps=1, fixed_dt=fixed_dt)
 		if offscreen and frames is None: frames = 6
 		while frames is None or displayed < frames:
@@ -240,19 +239,12 @@ def run_scene(*, offscreen=False, frames=None):
 			if state["stage"] != "controller": batches = [PoseBatch(0, 0, np.array([owner]), physics.ragdoll_skin([owner], alpha=accumulator * tick_hz))]
 			poses.update(batches)
 			drawing.sync()
-			commands = RenderContext.commands("character")
-			size = size if offscreen else RenderContext.window_dimensions
-			renderer.record(commands, size, camera, output.color_attachment() if offscreen else RenderContext.screen())
-			RenderContext.submit(commands.finish())
+			draw_frame(renderer, camera, output, "character")
 			displayed += 1
 		if offscreen:
-			pixels = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": size[0] * 4}, (*size, 1))
-			rgb = np.frombuffer(pixels, dtype=np.uint8).reshape(-1, 4)[:, :3].astype(np.int16)
-			if not np.any(rgb[:, 2] > rgb[:, 0] + 30): raise RuntimeError("character scene rendered no blue character pixels")
+			rgb = read_pixels(output).astype(np.int16)
+			if not np.any(rgb[..., 2] > rgb[..., 0] + 30): raise RuntimeError("character scene rendered no blue character pixels")
 			print(f"Character scene rendered {displayed} offscreen frames")
-	finally:
-		physics.close()
-		RenderContext.cleanup()
 
 
 if __name__ == "__main__":

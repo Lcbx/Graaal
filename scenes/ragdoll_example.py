@@ -16,8 +16,9 @@ from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import RagdollAsset
 from graaal.Animation.SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip_pairs
-from graaal.Animation.SkeletalGltf import SKINNED_VERTEX_DTYPE
+from scenes.physics_geometry import cube_vertices, skinned_boxes
 from scenes.physics_utils import advance_fixed_steps
+from scenes.physics_viewing_utils import draw_frame, read_pixels, viewing_target
 
 
 def create_demo():
@@ -79,24 +80,6 @@ def create_demo():
 	return ecs, owner, floor, physics, schedule, frames, asset
 
 
-def skinned_boxes(asset, cube):
-	"""One skinned mesh of boxes showing the prefab's offset capsule volumes."""
-	rig = asset.skeleton
-	model = model_matrices(rig, rig.translation[None], rig.rotation[None], rig.scale[None])[0]
-	vertices = np.zeros((len(asset.bones), len(cube)), dtype=SKINNED_VERTEX_DTYPE)
-	for i, bone in enumerate(asset.settings.bones):
-		radius, cylinder_length = bone.shape.params[:2]
-		size = np.array([radius * 2, radius * 2 + cylinder_length, radius * 2])
-		shape_rotation = Quaternion(bone.shape_rotation).matrix33
-		position = (cube["position"] * size) @ shape_rotation.T + bone.shape_offset
-		vertices[i]["position"] = position @ model[asset.bones[i], :3, :3].T + model[asset.bones[i], :3, 3]
-		vertices[i]["normal"] = cube["normal"] @ shape_rotation.T @ model[asset.bones[i], :3, :3].T
-		vertices[i]["uv"] = cube["uv"]
-		vertices[i]["joints"][:, 0] = asset.bones[i]
-		vertices[i]["weights"][:, 0] = 1
-	return vertices.reshape(-1)
-
-
 def run_headless(frames=960):
 	ecs, owner, floor, physics, schedule, state, asset = create_demo()
 	with physics:
@@ -115,14 +98,11 @@ def run_scene(*, offscreen=False, frames=None):
 	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
 	from graaal.Animation.PosePalette import PosePalette
-	from graaal.RenderContext import RenderContext, Texture, TextureUsage
+	from graaal.RenderContext import RenderContext
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
-	from scenes.physics_geometry import cube_vertices
 
 	ecs, owner, floor, physics, schedule, state, asset = create_demo()
-	try:
-		if offscreen: RenderContext.setup_graphics_backend(True, required_features=["indirect-first-instance"])
-		else: RenderContext.init_window(960, 720, "Native ragdoll | animated, powered push, limp, recovery", required_gpu_features=["indirect-first-instance"])
+	with physics, viewing_target("Native ragdoll | animated, powered push, limp, recovery", (960, 720), offscreen=offscreen) as output:
 		cube = cube_vertices()
 		shader = DefaultMaterialShader()
 		mesh = MaterialMesh(skinned_boxes(asset, cube), shader, bounds=((0, 0, 0), (20, 20, 20)))
@@ -137,8 +117,6 @@ def run_scene(*, offscreen=False, frames=None):
 		ecs.add(floor, MaterialInstance(ground, {"base_color": (0.3, 0.3, 0.35, 1)}))
 		drawing = EcsMaterialAdapter(renderer, ecs)
 		camera = Camera((4, 3, 7), (0, 0.9, 0), (0, 1, 0), 45, near=0.05, far=100)
-		size = (640, 480)
-		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
 		tick_hz = physics.world.settings.tick_hz
 		fixed_dt = 1 / tick_hz
 		accumulator, displayed = 0.0, 0
@@ -151,18 +129,11 @@ def run_scene(*, offscreen=False, frames=None):
 			schedule.run(elapsed, fixed_steps=steps, fixed_dt=fixed_dt)
 			poses.update([PoseBatch(0, 0, np.array([owner]), physics.ragdoll_skin([owner], alpha=accumulator * tick_hz))])
 			drawing.sync()
-			commands = RenderContext.commands("ragdoll")
-			size = size if offscreen else RenderContext.window_dimensions
-			renderer.record(commands, size, camera, output.color_attachment() if offscreen else RenderContext.screen())
-			RenderContext.submit(commands.finish())
+			draw_frame(renderer, camera, output, "ragdoll")
 			displayed += 1
 		if offscreen:
-			pixels = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": size[0] * 4}, (*size, 1))
-			if not np.any(np.frombuffer(pixels, dtype=np.uint8).reshape(-1, 4)[:, 2] > 100): raise RuntimeError("ragdoll scene rendered no colored mesh")
+			if not np.any(read_pixels(output)[..., 2] > 100): raise RuntimeError("ragdoll scene rendered no colored mesh")
 			print(f"Ragdoll scene rendered {displayed} offscreen frames")
-	finally:
-		physics.close()
-		RenderContext.cleanup()
 
 
 if __name__ == "__main__":

@@ -1,30 +1,19 @@
 """Playback of the passive ragdoll example using the engine's direct draw API."""
 
+from contextlib import nullcontext
+from functools import cache
 from pathlib import Path
 
 import numpy as np
 
 from graaal.Math import Quaternion
-from scenes.passive_ragdoll_example import make_humanoid, run_scene, terrain_boxes
-from scenes.physics_geometry import cube_vertices
+from scenes.passive_ragdoll_example import SCENARIOS, make_humanoid, run_scene, terrain_boxes
+from scenes.physics_geometry import cube_vertices, rounded_vertices
+from scenes.physics_viewing_utils import has_blue_pixels, play_frames, viewing_target
 
 
 DEFAULT_DUMMY_MODEL = Path(__file__).with_name("resources") / "dummy_rigged.glb"
-
-
-def rounded_vertices(template, radius, cylinder_length):
-	u = np.linspace(0, 2 * np.pi, 25)
-	v = np.concatenate((np.linspace(0, np.pi / 2, 9), np.linspace(np.pi / 2, np.pi, 9)))
-	u, v = np.meshgrid(u, v)
-	normals = np.stack((np.sin(v) * np.cos(u), np.cos(v), np.sin(v) * np.sin(u)), axis=-1)
-	grid = np.zeros(u.shape, dtype=template.dtype)
-	grid["position"], grid["normal"] = normals * radius, normals
-	# Duplicate the equator to connect the two hemispheres with a cylinder.
-	grid["position"][:9, :, 1] += cylinder_length / 2
-	grid["position"][9:, :, 1] -= cylinder_length / 2
-	grid["uv"] = np.stack((u / (2 * np.pi), v / np.pi), axis=-1)
-	return np.stack((grid[:-1, :-1], grid[1:, 1:], grid[1:, :-1],
-		grid[:-1, :-1], grid[:-1, 1:], grid[1:, 1:]), axis=2).reshape(-1)
+SCENARIO_LABELS = tuple(name.replace("_", " ").capitalize() for name in SCENARIOS)
 
 
 def dummy_skin(settings, height, path):
@@ -71,7 +60,7 @@ def dummy_skin(settings, height, path):
 
 
 def run_viewer(scenario, *, offscreen=False, frames=960, height=1.8, mass=70.0, model=False, **options):
-	"""Replay a scenario with colliders, the default dummy rig, or a supplied rig path."""
+	"""Replay with colliders or a dummy rig and return the last viewed scenario's report."""
 	if model:
 		path = DEFAULT_DUMMY_MODEL if model is True else Path(model)
 		if not path.is_file():
@@ -81,7 +70,6 @@ def run_viewer(scenario, *, offscreen=False, frames=960, height=1.8, mass=70.0, 
 	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.Materials.MaterialRenderer import DrawInstance, MaterialMesh, MaterialRenderer
 	from graaal.Math import Camera
-	from graaal.RenderContext import RenderContext, Texture, TextureUsage
 
 	settings, *_ = make_humanoid(height=height, mass=mass)
 	if model:
@@ -92,26 +80,39 @@ def run_viewer(scenario, *, offscreen=False, frames=960, height=1.8, mass=70.0, 
 		offsets = np.array([bone.shape_offset for bone in settings.bones])
 		shape_rotations = np.array([bone.shape_rotation for bone in settings.bones])
 
-	positions, orientations = [], []
+	@cache
+	def recording(name):
+		positions, orientations = [], []
 
-	def capture(position, orientation):
-		positions.append(position.copy())
-		orientations.append(orientation.copy())
+		def capture(position, orientation):
+			positions.append(position.copy())
+			orientations.append(orientation.copy())
 
-	result = run_scene(scenario, frames=frames, height=height, mass=mass, on_pose=capture, **options)
-	ground_positions, ground_sizes = terrain_boxes(scenario, height / 1.8)
-	positions, orientations = np.array(positions), np.array(orientations)
-	try:
-		features = ["indirect-first-instance"]
-		if offscreen:
-			RenderContext.setup_graphics_backend(True, required_features=features)
-		else:
-			RenderContext.init_window(1000, 760, f"Passive ragdoll | {scenario.replace('_', ' ')} | Space: pause, R: restart", required_gpu_features=features)
+		result = run_scene(name, frames=frames, height=height, mass=mass, on_pose=capture, **options)
+		return result, np.array(positions), np.array(orientations)
 
+	def camera_points(name, poses):
+		center = (poses.min(axis=(0, 1)) + poses.max(axis=(0, 1))) / 2
+		distance = max(height, float(np.ptp(poses, axis=0).max()))
+		offset = (-0.35, 0.45, 1.68) if name == "stairs" else (1.1, 0.7, 2.0)
+		return center + distance * np.array(offset), center
+
+	def window_title(index):
+		keys = ", ".join(f"{i} {label}" for i, label in enumerate(SCENARIO_LABELS, 1))
+		return f"Passive ragdoll | {SCENARIO_LABELS[index]} | {keys} | Space: pause, R: restart"
+
+	result, positions, orientations = recording(scenario)
+	selected = SCENARIOS.index(scenario)
+	with viewing_target(window_title(selected), offscreen=offscreen) as output:
 		shader = DefaultMaterialShader()
 		cube = cube_vertices()
 		box_mesh = MaterialMesh(cube, shader)
-		terrain = [DrawInstance(box_mesh, material={"base_color": (0.27, 0.30, 0.32, 1)}, position=position, scale=size) for position, size in zip(ground_positions, ground_sizes)]
+
+		@cache
+		def terrain(name):
+			ground_positions, ground_sizes = terrain_boxes(name, height / 1.8)
+			return [DrawInstance(box_mesh, material={"base_color": (0.27, 0.30, 0.32, 1)}, position=position, scale=size) for position, size in zip(ground_positions, ground_sizes)]
+
 		if model:
 			bones = len(asset.skeleton.parents)
 			palette = SkinMatrixBuffer(bones * len(asset.primitives))
@@ -132,32 +133,11 @@ def run_viewer(scenario, *, offscreen=False, frames=960, height=1.8, mass=70.0, 
 					mesh = MaterialMesh(rounded_vertices(cube, radius, cylinder_length), shader)
 					scale = (1, 1, 1)
 				body_parts.append(DrawInstance(mesh, material={"base_color": color}, scale=scale))
-		renderer = MaterialRenderer(body_parts + terrain, skin_palette=palette)
-		center = (positions.min(axis=(0, 1)) + positions.max(axis=(0, 1))) / 2
-		distance = max(height, float(np.ptp(positions, axis=0).max()))
-		camera_offset = (-0.35, 0.45, 1.68) if scenario == "stairs" else (1.1, 0.7, 2.0)
-		camera = Camera(center + distance * np.array(camera_offset), center, (0, 1, 0), 43, near=0.02 * height, far=100 * height)
-		size = (640, 480)
-		output = Texture(size, format="rgba8unorm", usage=TextureUsage.RENDER_ATTACHMENT | TextureUsage.COPY_SRC) if offscreen else None
-		cursor, paused = 0.0, False
-		if not offscreen:
-			import glfw
+		meshes = [box_mesh, *(part.mesh for part in body_parts)]
+		renderer = MaterialRenderer(body_parts + terrain(scenario), meshes=meshes, skin_palette=palette)
+		camera = Camera(*camera_points(scenario, positions), (0, 1, 0), 43, near=0.02 * height, far=100 * height)
 
-			def key_pressed(key, scancode, action, mods):
-				nonlocal cursor, paused
-				if action == glfw.PRESS:
-					if key == glfw.KEY_SPACE:
-						paused = not paused
-					elif key == glfw.KEY_R:
-						cursor = 0.0
-
-			RenderContext.subscribe_event("key", key_pressed)
-
-		displayed = 0
-		while displayed < 2 or not offscreen:
-			if not offscreen and not RenderContext.window_loop():
-				break
-			tick = min(int(cursor), frames)
+		def update(tick):
 			turns = orientations[tick]
 			if model:
 				for part in body_parts:
@@ -168,21 +148,56 @@ def run_viewer(scenario, *, offscreen=False, frames=960, height=1.8, mass=70.0, 
 				rotations = Quaternion.multiply_batch(turns, shape_rotations)
 				for part, position, rotation in zip(body_parts, centers, rotations):
 					part.position, part.rotation = position, rotation
-			renderer.sync()
-			commands = RenderContext.commands("Passive ragdoll")
-			renderer.record(commands, size if offscreen else RenderContext.window_dimensions, camera, output.color_attachment() if offscreen else RenderContext.screen())
-			RenderContext.submit(commands.finish())
-			displayed += 1
-			if offscreen:
-				pixels = RenderContext.device.queue.read_texture({"texture": output.handle}, {"bytes_per_row": size[0] * 4}, (*size, 1))
-				rgb = np.frombuffer(pixels, dtype=np.uint8).reshape(-1, 4).astype(np.int16)
-				if not np.any((rgb[:, 2] > rgb[:, 0] + 20) & (rgb[:, 2] > 80)):
-					raise RuntimeError("passive ragdoll rendered no blue body pixels")
-				cursor = frames if scenario == "zero_gravity" else min(frames, 120)
-			elif not paused:
-				# Hold the last pose for one second before replaying the fall.
-				cursor = (cursor + min(RenderContext.frame_time, 0.1) * 120) % (frames + 120)
-		if offscreen: print(f"Passive ragdoll rendered {displayed} offscreen frames")
-		return result
-	finally:
-		RenderContext.cleanup()
+
+		selector = nullcontext()
+		if not offscreen:
+			import glfw
+			from graaal.RenderContext import RenderContext
+			from graaal.UI.ImGui import ImGui
+
+			def select_key(key, scancode, action, mods):
+				nonlocal selected
+				if action == glfw.PRESS and glfw.KEY_1 <= key <= glfw.KEY_4:
+					selected = key - glfw.KEY_1
+					return True
+				return False
+
+			RenderContext.subscribe_event("key", select_key)
+			try:
+				selector = ImGui()
+			except ModuleNotFoundError as error:
+				if error.name != "imgui_bundle":
+					raise
+
+		def switch_scenario():
+			nonlocal scenario, result, positions, orientations
+			name = SCENARIOS[selected]
+			if name == scenario:
+				return False
+			result, positions, orientations = recording(name)
+			scenario = name
+			renderer.instances[len(body_parts):] = terrain(name)
+			camera.position[:], camera.target[:] = camera_points(name, positions)
+			glfw.set_window_title(RenderContext.window, window_title(selected))
+			return True
+
+		sample_hz = result["tick_hz"]
+		offscreen_samples = (0, frames if scenario == "zero_gravity" else min(frames, sample_hz))
+		with selector as gui:
+			def draw_selector():
+				nonlocal selected
+				imgui = gui.imgui
+				imgui.set_next_window_pos((12, 12), imgui.Cond_.first_use_ever)
+				flags = imgui.WindowFlags_.always_auto_resize | imgui.WindowFlags_.no_saved_settings | imgui.WindowFlags_.no_collapse
+				expanded, _ = imgui.begin("Playback", flags=flags)
+				try:
+					if expanded:
+						imgui.set_next_item_width(144)
+						_, selected = imgui.combo("Scenario", selected, SCENARIO_LABELS)
+				finally:
+					imgui.end()
+
+			play_frames(renderer, camera, output, update, label="Passive ragdoll", sample_count=len(positions), sample_hz=sample_hz,
+				offscreen_samples=offscreen_samples, check_frame=has_blue_pixels, before_frame=switch_scenario,
+				draw_overlay=(lambda: gui.render(draw_selector)) if gui is not None else None)
+	return result

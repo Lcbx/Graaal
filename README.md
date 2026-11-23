@@ -37,7 +37,7 @@ For standalone headless physics, install the optional pinned backend:
 
 ```sh
 python -m pip install -e ".[physics]"
-python -m scenes.physics_headless_example
+python -m scenes.physics_headless_example --headless
 ```
 
 This example uses pyjoltphysics directly, without ECS or graphics. For ECS rigid

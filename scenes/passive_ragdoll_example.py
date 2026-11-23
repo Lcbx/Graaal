@@ -1,7 +1,7 @@
 """Python-authored passive humanoid: zero gravity, floor drop, stairs and impact.
 
-python -m scenes.passive_ragdoll_example --scenario all --frames 960
-python -m scenes.passive_ragdoll_example --view --scenario stairs
+python -m scenes.passive_ragdoll_example --headless --scenario all --frames 960
+python -m scenes.passive_ragdoll_example --scenario stairs
 """
 
 import argparse
@@ -13,6 +13,9 @@ import numpy as np
 from graaal.Math import Quaternion
 from graaal.PhysicsRagdoll import joint_limit_torques, joint_spring_torques, ragdoll_limit_parameters
 from scenes.physics_utils import joint_error
+
+
+SCENARIOS = ("zero_gravity", "drop", "stairs", "impact")
 
 
 def make_humanoid(*, height=1.8, mass=70.0):
@@ -128,7 +131,7 @@ def run_scene(scenario="drop", *, frames=960, threads=1, height=1.8, mass=70.0, 
 	"""
 	import pyjoltphysics as pj
 
-	if scenario not in ("zero_gravity", "drop", "stairs", "impact"): raise ValueError("unknown passive scenario")
+	if scenario not in SCENARIOS: raise ValueError("unknown passive scenario")
 	if frames < 1 or threads < 1: raise ValueError("frames and threads must be positive")
 	settings, neutral, spring, limit = make_humanoid(height=height, mass=mass)
 	parents, translation = settings.parents, settings.rest_translations
@@ -212,34 +215,33 @@ def run_scene(scenario="drop", *, frames=960, threads=1, height=1.8, mass=70.0, 
 
 
 def main():
+	from scenes.physics_viewing_utils import add_viewing_options
+
 	parser = argparse.ArgumentParser(description=__doc__)
-	parser.add_argument("--scenario", choices=("zero_gravity", "drop", "stairs", "impact", "all"))
+	parser.add_argument("--scenario", choices=(*SCENARIOS, "all"))
 	parser.add_argument("--frames", type=int, default=960)
 	parser.add_argument("--threads", type=int, default=1)
 	parser.add_argument("--height", type=float, default=1.8)
 	parser.add_argument("--mass", type=float, default=70)
 	parser.add_argument("--no-passive", action="store_true", help="keep native hard constraints but disable Python passive forces")
 	parser.add_argument("--output", type=Path)
-	mode = parser.add_mutually_exclusive_group()
-	mode.add_argument("--view", action="store_true", help="open a window with looping playback")
-	mode.add_argument("--offscreen", action="store_true", help="check rendered frames without opening a window")
+	add_viewing_options(parser)
 	parser.add_argument("--model", nargs="?", const=True, default=False, type=Path, metavar="PATH", help="draw the supplied dummy rig in place of ragdoll colliders (default path: scenes/resources/dummy_rigged.glb)")
 	args = parser.parse_args()
 	if args.frames < 1 or args.threads < 1 or not np.isfinite((args.height, args.mass)).all() or min(args.height, args.mass) <= 0: parser.error("frames/threads must be positive; height/mass must be finite and positive")
-	visual = args.view or args.offscreen
-	if args.model and not visual: parser.error("--model requires --view or --offscreen")
-	scenario = args.scenario or ("drop" if visual else "all")
+	if args.model and args.headless: parser.error("--model requires playback")
+	scenario = args.scenario or ("all" if args.headless else "drop")
 	options = dict(frames=args.frames, threads=args.threads, height=args.height, mass=args.mass, passive=not args.no_passive)
-	if visual:
-		if scenario == "all": parser.error("choose one scenario for playback")
+	if args.headless:
+		scenarios = SCENARIOS if scenario == "all" else (scenario,)
+		results = [run_scene(name, **options) for name in scenarios]
+	else:
+		if scenario == "all": parser.error("choose one initial scenario for playback, or use --headless --scenario all")
 		from scenes.passive_ragdoll_viewer import run_viewer
 		try:
 			results = [run_viewer(scenario, offscreen=args.offscreen, model=args.model, **options)]
 		except FileNotFoundError as error:
 			parser.error(str(error))
-	else:
-		scenarios = ("zero_gravity", "drop", "stairs", "impact") if scenario == "all" else (scenario,)
-		results = [run_scene(name, **options) for name in scenarios]
 	if args.output is not None: args.output.write_text(json.dumps(results, indent=2, default=lambda value: value.tolist(), allow_nan=False) + "\n", encoding="utf-8")
 	for result in results:
 		print(f"{result['scenario']}: ticks={result['ticks']} error={result['initial_joint_error_rad']:.4f}->{result['final_joint_error_rad']:.4f} rad contacts={result['contact_records']} anchor_error={result['max_anchor_error_m']:.4f} m")

@@ -53,7 +53,8 @@ components, see the [engine guide](../graaal/README.md), [ECS reference](../graa
 
 ## Headless animation and physics
 
-Run headless examples as `python -m scenes.<name>`:
+Run the animation examples as `python -m scenes.<name>`. Add `--headless` for
+the physics examples when you want simulation results in the terminal.
 
 | Module | Demonstrates | Extra |
 | --- | --- | --- |
@@ -74,11 +75,27 @@ Install the native backend with `python -m pip install -e ".[physics]"`.
 [physics guide](../graaal/physics.md) covers units, read-only snapshots,
 UID identity, commands and supported collider combinations.
 
+The falling-box, joint, locomotion and query demos open a playback window by
+default. Install the viewer dependencies with
+`python -m pip install -e ".[physics,render]"`, then choose a demo.
+
+```sh
+python -m scenes.physics_headless_example
+python -m scenes.physics_joints_example
+python -m scenes.physics_locomotion_example
+python -m scenes.physics_queries_example
+```
+
+Playback runs at the recorded sample rate. Press Space to pause or resume and R
+to restart. The queries viewer shows the IK leg in blue, the comparison leg in
+orange, the ray in yellow and the swept sphere at impact in green. Add
+`--offscreen` to render two samples without opening a window.
+
 Run the passive humanoid checks with:
 
 ```powershell
-python -m scenes.passive_ragdoll_example --scenario all --frames 960 --threads 1 --output passive_humanoid.json
-python -m scenes.passive_ragdoll_example --scenario zero_gravity --frames 960 --no-passive
+python -m scenes.passive_ragdoll_example --headless --scenario all --frames 960 --threads 1 --output passive_humanoid.json
+python -m scenes.passive_ragdoll_example --headless --scenario zero_gravity --frames 960 --no-passive
 ```
 
 `--scenario` also accepts `drop`, `stairs` and `impact`. `--height` and `--mass`
@@ -100,10 +117,14 @@ impulse response. Late maxima use post-step samples from the last 120 ticks
 records. These bounded mechanical checks cover the authored scenarios and their
 default parameters.
 
-Open the viewer with `python -m scenes.passive_ragdoll_example --view --scenario stairs`.
+Open the viewer with `python -m scenes.passive_ragdoll_example`.
 The viewer needs the `physics` and `render` extras and a working WGPU backend.
-Choose any single scenario or omit `--scenario` to view the drop. The viewer
-records the simulated poses, then loops them at 120 simulated ticks per second.
+It starts with the drop. Use `--scenario stairs` to start on the stairs, or
+switch in the window with **1** for zero gravity, **2** for drop, **3** for stairs
+and **4** for impact. Install the `ui` extra to also use the **Scenario** dropdown.
+The viewer records each scenario the first time it is selected and loops it at
+120 simulated ticks per second. In a window, `--output` writes the last viewed
+scenario's report when you close it.
 Press Space to pause or resume and R to restart. Blue marks the left limbs and
 orange marks the right. Capsules, spheres and boxes follow the collider poses.
 To play a scenario with the skinned dummy, install the `assets` extra and get a
@@ -113,13 +134,13 @@ Pass the path explicitly, or place the file at `scenes/resources/dummy_rigged.gl
 and pass `--model` by itself.
 
 ```sh
-python -m scenes.passive_ragdoll_example --view --scenario zero_gravity --model "path/to/dummy_rigged.glb"
+python -m scenes.passive_ragdoll_example --scenario zero_gravity --model "path/to/dummy_rigged.glb"
 ```
 
 Model mode draws the dummy and terrain. The mesh follows the simulated pelvis
 position and joint rotations while keeping the dummy's bone lengths.
 Add `--no-passive` to inspect the same scenario with only native constraints
-and damping, or use `--offscreen` in place of `--view` for a bounded render check.
+and damping, or add `--offscreen` for a bounded render check.
 
 These physics scenes also support windows through `python main.py scenes/<name>.py`:
 
@@ -135,6 +156,10 @@ Use `python -m scenes.<name> --offscreen --frames N` for a bounded GPU check
 physics tick; presentation interpolates without changing that state. Recovery
 requires standing clearance. Native physics and active-balancing plans are
 described in the [physics guide](../graaal/physics.md).
+
+The physics viewers share [window, offscreen and draw helpers](physics_viewing_utils.py).
+The live examples call those helpers from their own loops. The replay examples
+use the playback helper to draw sampled poses.
 
 ## Rendering and transparency settings
 
