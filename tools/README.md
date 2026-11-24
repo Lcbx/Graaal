@@ -174,3 +174,29 @@ python -m tools.ragdoll_standing --stance tuned --action-space residual --suppor
 
 Use the [push-recovery benchmark](../scenes/benchmarks/README.md#ragdoll-push-recovery)
 to compare a residual checkpoint with classical ankle balance after a push.
+
+Train on flat-floor disturbances with `--push-impulses`. At two seconds the
+task applies one center-of-mass impulse. It samples a magnitude from the list,
+where zero gives a quiet episode. For nonzero impulses it picks a −Z chest
+push half the time and otherwise samples a body and cardinal direction
+uniformly. The reset seed controls the initial tilt, spin and impulse.
+
+`--action-space stepping` keeps the four ankle corrections and adds six
+normalized outputs. The next four are local X/Z target-angle offsets for the
+left and right hips, capped at 0.45 rad per hip. The last two are left and
+right knee flexion offsets in [−0.05, 0.55] rad. Use `--stance tuned` with
+this action space. The observation layout matches `residual` with the same
+`--support-area` setting, including the previous four ankle commands.
+
+`--action-space whole-body` appends 16 chest, neck, shoulder and elbow outputs
+on the built-in rig. Channels follow bone order, then twist and swing axes
+with at least 0.22 rad of travel. Combined target offsets are bounded to
+0.22 rad at the chest and neck and 0.55 rad at each shoulder and elbow.
+This mode uses the same observations, leg controls and joint torque caps as
+`stepping`.
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space stepping --support-area --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 0 4 8 12 --seed 87 --workers 8 --steps 196608 --episodes 3 --output build/ragdoll-push-stepping-seed87.zip
+python -m tools.ragdoll_standing --stance tuned --action-space residual --support-area --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 0 4 8 12 --seed 87 --workers 8 --steps 196608 --episodes 3 --output build/ragdoll-push-residual-seed87.zip
+python -m tools.ragdoll_standing --stance tuned --action-space whole-body --support-area --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 0 4 8 12 --seed 87 --workers 8 --steps 196608 --episodes 3 --output build/ragdoll-push-whole-body-seed87.zip
+```

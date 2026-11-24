@@ -7,7 +7,7 @@ from scenes.benchmarks.benchmark_ragdoll_push_recovery import PUSH_TICK, run_tri
 from scenes.physics_geometry import collider_bounds
 from scenes.ragdoll_control import STANDING_MOTOR_CAPS
 from tools.ragdoll_project import default_project
-from tools.ragdoll_standing import CONTROL_HZ, MAX_OFFSET, MAX_RESIDUAL_TORQUE, StandingTask, _support_margin, evaluate
+from tools.ragdoll_standing import ARM_OFFSET, CONTROL_HZ, HIP_OFFSET, KNEE_BACKWARD_OFFSET, KNEE_FORWARD_OFFSET, MAX_OFFSET, MAX_RESIDUAL_TORQUE, StandingTask, _support_margin, evaluate
 
 
 @pytest.fixture
@@ -247,3 +247,68 @@ def test_push_waits_for_settled_stance_and_restarts_the_hold(project, monkeypatc
 		assert len(queued) == 1
 	finally:
 		passive.close()
+
+
+def test_joint_action_spaces_preserve_observations_and_pair_pushes(project, monkeypatch):
+	import pyjoltphysics as pj
+
+	queue = pj.World.add_impulses
+	queued = []
+
+	def record(world, uids, impulses):
+		queued.append((world.tick, np.asarray(impulses).tolist()))
+		return queue(world, uids, impulses)
+
+	monkeypatch.setattr(pj.World, "add_impulses", record)
+	options = dict(episode_steps=7 * CONTROL_HZ, tuned_stance=True, vary_start=True, support_area=True, push_impulses=(8,))
+	stepping = StandingTask(project, stepping=True, **options)
+	whole_body = StandingTask(project, whole_body=True, **options)
+	residual = StandingTask(project, residual=True, **options)
+	try:
+		initial = residual.reset(seed=22)[0]
+		np.testing.assert_array_equal(stepping.reset(seed=22)[0], initial)
+		np.testing.assert_array_equal(whole_body.reset(seed=22)[0], initial)
+		assert stepping.action_shape == (10,)
+		assert whole_body.action_shape == (26,)
+		for _ in range(2 * CONTROL_HZ + 1):
+			step_obs, step_reward, *_ = stepping.step(np.zeros(10))
+			ankle_obs, ankle_reward, *_ = residual.step(np.zeros(4))
+			whole_obs, whole_reward, *_ = whole_body.step(np.zeros(26))
+			np.testing.assert_array_equal(step_obs, ankle_obs)
+			np.testing.assert_array_equal(whole_obs, ankle_obs)
+			assert step_reward == ankle_reward == whole_reward
+		assert len(queued) == 3 and queued[0] == queued[1] == queued[2]
+		assert queued[0][0] == PUSH_TICK
+		assert np.linalg.norm(queued[0][1]) == pytest.approx(8)
+
+		leg_action = [0, 0, 0, 0, 1, -1, -1, 1, 1, -1]
+		stepping.step(leg_action)
+		whole_body.step(leg_action + [1] * 16)
+		controls = stepping.motor_action[0]
+		np.testing.assert_allclose(controls[stepping.hips, :3], HIP_OFFSET / np.sqrt(2) * np.array([[1, 0, -1], [-1, 0, 1]]))
+		np.testing.assert_allclose(controls[stepping.knees, 0], [KNEE_FORWARD_OFFSET, -KNEE_BACKWARD_OFFSET])
+		np.testing.assert_array_equal(controls[np.r_[0, stepping.feet]], np.zeros((3, 4)))
+		whole_controls = whole_body.motor_action[0]
+		np.testing.assert_array_equal(whole_controls[7:], controls[7:])
+		np.testing.assert_array_equal(whole_controls[0], controls[0])
+		np.testing.assert_allclose(np.linalg.norm(whole_controls[1:7, :3], axis=1), [MAX_OFFSET] * 2 + [ARM_OFFSET] * 4)
+	finally:
+		stepping.close()
+		whole_body.close()
+		residual.close()
+
+
+def test_scripted_backstep_lifts_and_loads_the_landing_foot(project):
+	task = StandingTask(project, whole_body=True, tuned_stance=True, vary_start=True, initial_angular_speed=0.1, support_area=True, episode_steps=7 * CONTROL_HZ)
+	zero = np.zeros(task.action_shape)
+	try:
+		result = run_trial(task, lambda _: zero, seed=58000, bone="chest", impulse=(0, 0, -12), scripted_step=True)
+		landing = next(landing for landing in result["landings"] if landing["foot"] == "foot_r")
+		assert landing["landing_xz_m"][1] < landing["takeoff_xz_m"][1] - 0.02
+		assert landing["contact_ticks"] >= 12
+		assert landing["peak_estimated_floor_impulse_ns"] > 0
+		assert task.settings.root_force == task.settings.root_torque == 0
+		options = dict(seed=58000, bone="chest", impulse=(0, 0, -2))
+		assert run_trial(task, lambda _: zero, scripted_step=True, **options) == run_trial(task, lambda _: zero, **options)
+	finally:
+		task.close()
