@@ -56,7 +56,8 @@ supported interface and the [status snapshot](skeletal_animation_current.md)
 for measurements and remaining work. `GraphPosePass` consumes existing playback
 rows, checks measured eligibility and records exact and crowd poses into a
 caller-owned palette. `DistancePoseLod` supplies that pass with a GPU preference
-mask using distance thresholds and a hold mask for blends. GPU pose overrides
+mask using distance thresholds and a hold mask for blends. `frustum_pose_mask`
+supplies a separate pose selection for either evaluator. GPU pose overrides
 remain a design target.
 
 The CPU evaluator costs roughly `N x B` NumPy work per frame plus Python dispatch overhead, so it will top out at some character count. A GPU path batches Python work into a gather, an upload and a few dispatches; gathered/uploaded data still scales with `N`. The idea is to bake clips into a GPU-resident pool, mix them in a compute pass, and let the CPU modify the result through overrides.
@@ -220,8 +221,14 @@ This is exact for crossfades and blend spaces, and it can support additive layer
 
 - **Two evaluators means two code paths.** The compute kernel needs a NumPy reference implementation of the same model-space blend, used in tests.
 - **Attachments on crowd characters** (weapons, hats) should be rigidly skinned meshes reading the same skin buffer, not objects positioned from the CPU.
-- **Culling.** Frustum and occlusion culling before the pose pass (with indirect dispatch) is an optimization for later. Initially, evaluate every GPU-tier character.
-- **Crowd skeletons.** Distant characters will likely use a reduced bone set. This needs a per-LOD skeleton and skin-weight variant, each with its own pool.
+- **Culling.** The river scene applies a conservative CPU frustum mask before
+  pose evaluation for both tiers. GPU-side frustum and occlusion culling before
+  the pose pass with indirect dispatch remain design options.
+- **Crowd skeletons.** The automatic reducer generates a compact skeleton,
+  remapped skin weights and clips. The graph pass can expand the reduced
+  pool's results into the original mesh's palette slots. Evaluate compact
+  palette allocation with dedicated mesh variants when the memory savings
+  justify changing draw membership.
 - Benchmark the CPU path first. If target character counts fit inside the NumPy budget, defer this backend.
 
 ## Validation and performance gates

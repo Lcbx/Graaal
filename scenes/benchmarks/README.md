@@ -37,28 +37,39 @@ root motion, events or graph blending; timings depend on the machine and workloa
 
 ```powershell
 python -m scenes.benchmarks.benchmark_river_crowd --rows 12 24 --frames 30 --rounds 3 --output river_crowd.json
+python -m scenes.benchmarks.benchmark_river_crowd --modes distance-lod reduced-rig --pose-culling on --rows 12 24 --frames 18 --rounds 3 --output river_skeleton_lod.json
 ```
 
 Install the `render`, `assets` and `physics` extras. The benchmark uses the
 river scene's physics, graph, skin palette and material draws at 640×480
 offscreen by default. Each crowd row adds 12 dummies. The three modes use exact
 CPU poses, GPU poses for every eligible row with CPU fallback, or the scene's
-18/22-unit distance LOD with CPU fallback. Every mode replays the same
-fixed ticks and camera sweep. The bank window starts at spawn and the swim
+18/22-unit distance LOD with CPU fallback. Select `reduced-rig` with `--modes`
+to test a compact pool with the same distance policy and source mesh. Every
+mode replays the same fixed ticks and camera sweep. The bank window starts at spawn and the swim
 window starts after `--swim-tick` simulation ticks. Each window discards
 `--warmup` frames before sampling. Mode order rotates between rounds.
 
-The report includes swimmer counts, actual CPU/GPU pose counts, and graph
-ineligibility split into swimming, active fades and other rows. Distance LOD
-reports how many otherwise eligible rows it kept on the CPU. Pose preparation
-includes CPU routing, evaluation, staging and command recording. Wall frame
-time includes simulation, rendering and waiting for GPU completion. GPU
+By default, each mode runs with pose culling off and on. Pass `--pose-culling
+off` or `--pose-culling on` to measure a single setting. The report includes
+swimmer counts, actual CPU/GPU pose counts and skipped poses. It reports
+graph ineligibility among evaluated rows, including swimming and active fades.
+Distance LOD reports how many otherwise eligible rows it kept on the CPU.
+Pose preparation includes the frustum test, CPU routing, evaluation, staging
+and command recording. Wall frame time includes simulation, rendering and
+waiting for GPU completion. GPU
 timestamps span the command buffer's initial marker through its last draw pass,
 including intervening palette copies. Queue staging uploads occur before the
 marker. The GPU pose time measures the crowd compute pass. Timestamp readback
 and fallback counting happen outside the wall timer. GPU times are `null` on
 devices without timestamp-query support. Use the JSON report for per-frame data
 and median and p95 timings.
+
+The skeleton LOD comparison reports the packed pool size including the clip
+table, evaluated joint count, and number of reduced poses. The report also
+includes asset preparation time and sampled vertex errors for each state
+and fade. Preparation happens before the measured windows. Both distance
+modes use the same palette allocation and draw geometry.
 
 ## Physics synchronization
 

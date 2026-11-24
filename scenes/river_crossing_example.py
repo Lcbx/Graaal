@@ -88,10 +88,10 @@ def make_animation_graph(rig, named_clips):
 	return definition.compile(rig, clips), travel / forward.duration
 
 
-def create_demo(rig, named_clips, *, row_count=ROWS):
+def create_demo(rig, named_clips, *, row_count=ROWS, graph_setup=None):
 	import pyjoltphysics as pj
 
-	graph, authored_swim_speed = make_animation_graph(rig, named_clips)
+	graph, authored_swim_speed = make_animation_graph(rig, named_clips) if graph_setup is None else graph_setup
 	world = ECS()
 	world.register(MaterialTransform, Collider, RigidBody, GraphPlayer)
 	dummies = world.create(LANES * row_count)
@@ -237,8 +237,23 @@ def crowd_eligibility(graph, primitive):
 	return validate_crowd_graph(graph, pool, error_budget=error_budget, phase_samples=32, playback_rates=rates)
 
 
+def crowd_skeleton_lod(graph, primitive):
+	from graaal.Animation.CrowdGraphValidation import validate_reduced_crowd_graph
+	from graaal.Animation.CrowdSkeletonLod import reduce_crowd_skeleton
+
+	clips = tuple(graph.clips[i] for i in range(len(graph.clips)))
+	budget = 0.02 * float(np.ptp(primitive.vertices["position"][:, 1]))
+	variant = reduce_crowd_skeleton(graph.plan.skeleton, clips, (primitive,), error_budget=budget)
+	if variant is None: return None, None
+	rates = np.array([LAND_SPEED_RANGE[0], RUN_THRESHOLD, LAND_SPEED_RANGE[1]]) / RUN_THRESHOLD
+	eligibility = validate_reduced_crowd_graph(graph, variant, error_budget=budget, phase_samples=32, playback_rates=rates)
+	return variant, eligibility
+
+
 @contextmanager
-def river_rendering(world, dummies, physics, rig, primitive, render_alpha):
+def river_rendering(world, dummies, physics, rig, primitive, render_alpha, *, pose_culling=True):
+	"""Share rendering setup. Sync the drawing adapter before querying pose visibility."""
+	from graaal.Animation.CrowdVisibility import frustum_pose_mask
 	from graaal.EcsAdapters.EcsMaterials import EcsMaterialAdapter, MaterialInstance
 	from graaal.Materials.DefaultMaterial import DefaultMaterialShader
 	from graaal.Materials.MaterialRenderer import MaterialMesh, MaterialRenderer
@@ -260,19 +275,32 @@ def river_rendering(world, dummies, physics, rig, primitive, render_alpha):
 		for dummy in dummies:
 			palette.acquire(dummy, bones)
 		renderer = MaterialRenderer(meshes=[mesh, ground, water], skin_palette=palette, base_textures=textures.view(dimension="2d-array"))
+		# The dummies have unit scale. Enclose the entire local draw box, with
+		# slack for packed rotations and CPU/GPU rounding near frustum planes.
+		center, extents = mesh.bounds
+		pose_radius = np.linalg.norm(np.abs(center) + extents) * 1.001 + 0.001
+		pose_positions = np.empty((len(dummies), 3), dtype=np.float32) if pose_culling else None
 
 		def render_transforms(owners):
 			position, rotation, scale = physics.render_transforms(owners, alpha=render_alpha())
-			position[np.isin(owners, dummies), 1] -= DUMMY_CENTER
+			is_dummy = np.isin(owners, dummies)
+			position[is_dummy, 1] -= DUMMY_CENTER
+			if pose_positions is not None:
+				pose_positions[np.searchsorted(dummies, owners[is_dummy])] = position[is_dummy]
 			return position, rotation, scale
 
+		def pose_visibility(camera, size, rows):
+			if pose_positions is None: return None
+			width, height = size
+			return frustum_pose_mask(camera.view() @ camera.projection(width / height), pose_positions[rows], pose_radius)
+
 		drawing = EcsMaterialAdapter(renderer, world, transform_source=render_transforms)
-		yield drawing, renderer, palette
+		yield drawing, renderer, palette, pose_visibility
 	finally:
 		palette.close()
 
 
-def run_scene(*, offscreen=False, frames=None, row_count=ROWS, crowd_poses=True):
+def run_scene(*, offscreen=False, frames=None, row_count=ROWS, crowd_poses=True, reduced_rig=False):
 	from graaal.Animation.AnimationLod import DistancePoseLod
 	from graaal.Math import Camera
 	from graaal.RenderContext import RenderContext
@@ -280,19 +308,23 @@ def run_scene(*, offscreen=False, frames=None, row_count=ROWS, crowd_poses=True)
 	from scenes.physics_viewing_utils import has_blue_pixels, read_pixels, viewing_target
 
 	rig, primitive, clips = load_dummy(swimming=True)
-	world, dummies, physics, schedule, animation, parameters, _ = create_demo(rig, clips, row_count=row_count)
+	graph_setup = make_animation_graph(rig, clips)
+	graph, _ = graph_setup
+	eligibility = None
+	if crowd_poses:
+		eligibility = crowd_skeleton_lod(graph, primitive)[1] if reduced_rig else crowd_eligibility(graph, primitive)
+	world, dummies, physics, schedule, animation, parameters, _ = create_demo(rig, clips, row_count=row_count, graph_setup=graph_setup)
 	accumulator, displayed = 0.0, 0
 	with (
 		physics,
 		viewing_target("River crossing", window_size=(1100, 760), offscreen=offscreen) as output,
-		river_rendering(world, dummies, physics, rig, primitive, lambda: accumulator * TICK_HZ) as (drawing, renderer, palette),
+		river_rendering(world, dummies, physics, rig, primitive, lambda: accumulator * TICK_HZ) as (drawing, renderer, palette, pose_visibility),
 	):
 		transforms = world.get(MaterialTransform)
-		eligibility = crowd_eligibility(animation.playback.graph, primitive) if crowd_poses else None
 		poses = GraphPosePass(palette, len(dummies), eligibility=eligibility)
 		try:
 			lod = DistancePoseLod(POSE_LOD_NEAR, POSE_LOD_FAR) if crowd_poses else None
-			gpu_mask = None
+			gpu_mask = previous_visible = None
 			camera = Camera((15, 10, -5), (0, 0, -2), (0, 1, 0), 50, near=0.1, far=120)
 			poses_dirty = True
 			if offscreen and frames is None: frames = 1
@@ -313,10 +345,14 @@ def run_scene(*, offscreen=False, frames=None, row_count=ROWS, crowd_poses=True)
 						mask = lod.update(owners, transforms[owners].position, camera.position, hold=playback.blending(values))
 						poses_dirty |= not np.array_equal(gpu_mask, mask)
 						gpu_mask = mask
-					if poses_dirty:
-						poses.record(commands, owners, playback, values, gpu_mask=gpu_mask)
-						poses_dirty = False
 					drawing.sync()
+					visible = pose_visibility(camera, size, rows)
+					if previous_visible is not None:
+						poses_dirty |= bool(np.any(visible & ~previous_visible))
+					previous_visible = visible
+					if poses_dirty:
+						poses.record(commands, owners, playback, values, gpu_mask=gpu_mask, pose_mask=visible)
+						poses_dirty = False
 					renderer.record(commands, size, camera, output.color_attachment() if output is not None else RenderContext.screen())
 					RenderContext.submit(commands.finish())
 				displayed += 1
@@ -354,9 +390,11 @@ if __name__ == "__main__":
 	mode.add_argument("--offscreen", action="store_true")
 	parser.add_argument("--frames", type=int)
 	parser.add_argument("--rows", type=int, default=ROWS, help="rows of dummies per lane")
-	parser.add_argument("--cpu-poses", action="store_true", help="evaluate all rendered poses on the CPU")
+	poses = parser.add_mutually_exclusive_group()
+	poses.add_argument("--cpu-poses", action="store_true", help="evaluate all rendered poses on the CPU")
+	poses.add_argument("--reduced-rig", action="store_true", help="generate and use a compact rig for validated distant poses")
 	args = parser.parse_args()
 	if args.frames is not None and args.frames <= 0: parser.error("--frames must be positive")
 	if args.rows < 1: parser.error("--rows must be positive")
 	if args.headless: run_headless(HEADLESS_TICKS if args.frames is None else args.frames, row_count=args.rows)
-	else: run_scene(offscreen=args.offscreen, frames=args.frames, row_count=args.rows, crowd_poses=not args.cpu_poses)
+	else: run_scene(offscreen=args.offscreen, frames=args.frames, row_count=args.rows, crowd_poses=not args.cpu_poses, reduced_rig=args.reduced_rig)

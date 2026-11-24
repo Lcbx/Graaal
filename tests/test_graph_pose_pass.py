@@ -54,6 +54,19 @@ def test_graph_passes_write_shared_palette_in_command_order():
 		RenderContext.submit(commands.finish())
 		actual = np.frombuffer(RenderContext.device.queue.read_buffer(palette.buffer.handle), dtype=np.float32).reshape(5, 3, 4)
 		np.testing.assert_allclose(actual[:, 0, 3], [1, 2, 3.0009, 2.0006, 1.0003], rtol=0, atol=1e-7)
+
+		graph = graph_at(4.0009)
+		eligibility = validate_crowd_graph(graph, BakedClipPool.from_graph(graph), error_budget=0.002)
+		pose_pass = GraphPosePass(palette, 5, eligibility=eligibility)
+		passes.append(pose_pass)
+		playback = AnimationGraphPlayback(graph, 5)
+		commands = RenderContext.commands("selected graph poses")
+		with pytest.raises(ValueError, match="pose_mask"):
+			pose_pass.record(commands, owners, playback, pose_mask=[1, 0, 1, 0, 0])
+		pose_pass.record(commands, owners, playback, gpu_mask=[False, True, True, False, True], pose_mask=[True, False, True, False, False])
+		RenderContext.submit(commands.finish())
+		actual = np.frombuffer(RenderContext.device.queue.read_buffer(palette.buffer.handle), dtype=np.float32).reshape(5, 3, 4)
+		np.testing.assert_array_equal(actual[:, 0, 3], np.array([4.0009, 2, 4, 2.0006, 1.0003], dtype=np.float32))
 	finally:
 		for pose_pass in passes: pose_pass.close()
 		palette.close()

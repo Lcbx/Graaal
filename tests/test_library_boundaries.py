@@ -47,7 +47,7 @@ class ForbidDependencies(importlib.abc.MetaPathFinder):
 		if name.startswith('graaal.ECS.') or name.split('.')[0] in {'wgpu', 'glfw', 'jinja2', 'PIL', 'pygltflib', 'pyjoltphysics', 'imgui_bundle', 'psutil'}:
 			raise AssertionError('Unexpected animation dependency: ' + name)
 sys.meta_path.insert(0, ForbidDependencies())
-for name in ('AnimationEvents', 'AnimationGraph', 'AnimationGraphPlayback', 'AnimationLod', 'AnimationStateMachine', 'AnimationSync', 'BakedClipPool', 'CrowdGraphSamples', 'CrowdGraphValidation', 'InverseKinematics', 'PosePalette', 'PoseTasks', 'RootMotion', 'SkeletalAnimation', 'SkeletalGltf'):
+for name in ('AnimationEvents', 'AnimationGraph', 'AnimationGraphPlayback', 'AnimationLod', 'AnimationStateMachine', 'AnimationSync', 'BakedClipPool', 'CrowdGraphSamples', 'CrowdGraphValidation', 'CrowdSkeletonLod', 'CrowdVisibility', 'InverseKinematics', 'PosePalette', 'PoseTasks', 'RootMotion', 'SkeletalAnimation', 'SkeletalGltf'):
 	importlib.import_module('graaal.Animation.' + name)
 '''], cwd=Path(__file__).resolve().parents[1], text=True, capture_output=True)
 	assert result.returncode == 0, result.stderr

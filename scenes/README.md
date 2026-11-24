@@ -168,6 +168,14 @@ These physics scenes also support windows through `python main.py scenes/<name>.
 | `character_example` | Animated native controller, collision foot IK, triggers and ragdoll hand-off; WASD moves, Space jumps, R falls, G requests recovery, T resumes the scripted hurdle-jump cycle | `python -m scenes.character_example --headless --frames 960` |
 
 Rendered modes need the rendering/scene dependencies as well as `physics`.
+The river crossing skips pose evaluation outside the camera frustum using
+conservative bounds around each dummy's interpolated render position. It updates
+poses for newly visible dummies before drawing them.
+Pass `--reduced-rig` in a rendered run to generate a compact rig from the dummy
+asset at startup. Validated distant poses use the compact clip pool. Swimming
+and transitions that exceed the vertex error budget use the exact CPU pose.
+[Benchmark options](benchmarks/README.md#river-crowd-animation)
+
 Use `python -m scenes.<name> --offscreen --frames N` for a bounded GPU check
 (for example, 2 frames for bodies or 6 for skinning). For the ragdoll replay,
 `--frames` sets the number of recorded 120 Hz physics ticks. Gameplay uses the latest

@@ -13,7 +13,7 @@ logs; validation evidence is scoped below.
 | 3: GPU crowd evaluator | Packed clip baking, CPU reference, sampled graph eligibility, CPU/GPU graph routing, distance tiering with hysteresis and a compute pass writing shared skin palettes | Crowd overrides |
 | 4: graphs | Pose plans, masks/additive layers, 1D/2D selectors, editable definitions, clip-state and graph ECS adapters, batched playback with events and root motion | Weighted cycle timing |
 | 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, stance locks, local twist limits, collision queries and ragdoll targets | Integration with full locomotion authoring and crowd overrides |
-| 6: advanced | Not started | Warping, skeleton LOD, exact GPU evaluator, GPU IK and debugging |
+| 6: advanced | Conservative single-view pose culling and automatic skeleton LOD | Warping, LOD validation on more rigs, exact GPU evaluator, GPU IK and debugging |
 | 7: tools | Headless event/graph authoring, Tk timeline, CPU-skinned preview, state/parameter/transition/blend-space forms, sync markers, manual/automatic clip and 1D/2D blend-state playback and explicit JSON project persistence | Forms for layers and masks, material-rendered preview |
 
 ## Integration choices to preserve
@@ -215,6 +215,58 @@ The table reports median wall time through GPU completion. The swim window
 had a median of 94 ineligible poses at 144 dummies (48 swimming and 46 fading)
 and 135 at 288 dummies (48 swimming and 87 fading). The ranges of round medians
 overlapped across modes in the 144-dummy swim window.
+
+The river scene and benchmark use `CrowdVisibility.frustum_pose_mask` with
+the same interpolated positions as material drawing. A padded sphere encloses
+the animated draw bounds. Both pose evaluators skip culled rows, and newly
+visible rows get a current pose before the draw. The camera-turn regression
+compares palette contents and the first visible frame against evaluation of
+every row.
+
+The culling comparison used the same GPU and offscreen resolution, with two
+rounds of 12 measured frames per mode and window. At every sampled tick, the
+swimmer count matched across culling settings. [Benchmark options](../scenes/benchmarks/README.md#river-crowd-animation)
+
+| Dummies | Window | Median poses skipped | Distance LOD with culling off (ms) | Distance LOD with culling on (ms) |
+| --- | --- | --- | --- | --- |
+| 144 | Bank | 107 | 5.54 | 5.06 |
+| 144 | Swim | 1 | 9.47 | 9.25 |
+| 288 | Bank | 251 | 6.15 | 5.60 |
+| 288 | Swim | 124 | 10.83 | 10.37 |
+
+The bank window improved in both distance-LOD rounds at each size. Swim-window
+timings varied between rounds. At 288 dummies, the CPU-only bank median dropped
+from 10.47 to 5.80 ms.
+
+Automatic skeleton LOD reduced the dummy from 52 to 40 joints with a
+3.48 cm displacement bound over 245 source clip frames. At a 3.52 cm
+budget, the combined bake, reduction and graph sample errors reached
+0.04 cm for stand, 3.31 cm for walk and 2.79 cm for run. Swim reached
+34.38 cm and the largest shoreline fade reached 75.83 cm on swim to walk.
+The reduced tier used exact CPU poses for swimming and all fades. At the
+18-unit near threshold, 3.52 cm corresponds to about one pixel of lateral
+displacement at the center of a 480-pixel-high view with a 50-degree FOV.
+
+The clip pool and table occupied 208,080 bytes for the full rig and 160,080
+bytes for the reduced rig. Generation, baking and validation took 15.25 s
+at startup. Both modes used the original draw mesh and full-sized palette
+ranges. The reduced pass wrote shared ancestor matrices into the source
+joint slots, avoiding mesh regrouping during tier changes.
+
+The reduced-rig comparison used the same GPU and resolution with pose culling
+enabled and three rounds of 18 measured frames per bank and swim window.
+Each pair dispatched the same GPU rows and evaluated the same CPU rows.
+[Reproduction command](../scenes/benchmarks/README.md#river-crowd-animation)
+
+| Dummies | Window | Full rig median (ms) | Reduced rig median (ms) |
+| --- | --- | --- | --- |
+| 144 | Bank | 4.81 | 4.80 |
+| 144 | Swim | 9.07 | 9.03 |
+| 288 | Bank | 5.75 | 6.04 |
+| 288 | Swim | 10.52 | 10.72 |
+
+Round medians varied, and the reduced rig supplied no repeatable frame-time
+gain. The scene exposes it through `--reduced-rig`.
 
 Documentation audit: consolidated delivery history and validation counts into
 capabilities, remaining work and maintenance contracts; API details remain in
