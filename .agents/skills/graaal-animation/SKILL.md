@@ -5,7 +5,7 @@ description: Use when editing Graaal skeletal sampling, pose tasks, animation gr
 
 # Animation and authoring changes
 
-Use the [animation guide](../../../graaal/skeletal_animation.md) for the affected API and `tools/module_inspection.py` for implementation navigation. CPU resources and evaluators live in `graaal/Animation/`, ECS playback in `graaal/EcsAdapters/`, GPU palettes in `graaal/RenderContext/SkinMatrixBuffer.py`, and the independent material bridge in `graaal/Materials/MaterialSkinning.py`.
+Use the [animation guide](../../../graaal/skeletal_animation.md) for the affected API. CPU resources and evaluators live in `graaal/Animation/`, ECS playback in `graaal/EcsAdapters/`, GPU palettes in `graaal/RenderContext/SkinMatrixBuffer.py`, and the independent material bridge in `graaal/Materials/MaterialSkinning.py`.
 
 ## Runtime contracts
 

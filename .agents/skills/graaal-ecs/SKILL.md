@@ -5,7 +5,7 @@ description: Use when changing Graaal ECS component storage, NumPy selections an
 
 # ECS changes
 
-Use the [ECS API guide](../../../graaal/ECS_API.md) for the contract being changed: entity lifecycle and selections for row validity, structural queries for invalidation, version tokens for cache notification, and commands/scheduling for visibility and recovery. Inspect `graaal/ECS/core.py`, `ecs_schema.py`, `ecs_types.py`, `ecs_commands.py` or `ecs_schedule.py` as appropriate, using `tools/module_inspection.py`.
+Use the [ECS API guide](../../../graaal/ECS_API.md) for the contract being changed: entity lifecycle and selections for row validity, structural queries for invalidation, version tokens for cache notification, and commands/scheduling for visibility and recovery. Inspect `graaal/ECS/core.py`, `ecs_schema.py`, `ecs_types.py`, `ecs_commands.py` or `ecs_schedule.py` as appropriate.
 
 ## Preserve storage and mutation semantics
 
