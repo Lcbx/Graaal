@@ -49,6 +49,11 @@ class AnimationStateMachine:
 			compiled.append((source, target, tuple(compiled_conditions), duration))
 		self._transitions = tuple(compiled)
 
+	@property
+	def transitions(self) -> tuple[tuple[int, int, float], ...]:
+		"""Return source, target and duration in authored priority order."""
+		return tuple((source, target, duration) for source, target, _, duration in self._transitions)
+
 	def select(self, states: ArrayLike, parameters: ArrayLike, transitioning: ArrayLike) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Return (selected, target states, durations) without changing inputs.
 

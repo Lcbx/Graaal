@@ -1,11 +1,11 @@
 ---
 name: graaal-performance
-description: Use when optimizing Graaal NumPy array access, allocations, ECS extraction or GPU uploads, or measuring CPU/native/GPU costs with the repository benchmarks and diagnostics.
+description: Use when optimizing Graaal CPU/native/GPU costs with the repository benchmarks and diagnostics.
 ---
 
 # Array performance and measurement
 
-Use the existing [benchmarks](../../../scenes/benchmarks/README.md) and [diagnostic APIs](../../../graaal/README.md#examples-and-diagnostics) for the workload in scope. Inspect candidate APIs with `tools/module_inspection.py`. Keep performance work within the requested scope; historical timings and roadmap budgets are not acceptance thresholds.
+Use the existing [benchmarks](../../../scenes/benchmarks/README.md) and [diagnostic APIs](../../../graaal/README.md#examples-and-diagnostics) for the workload in scope. Keep performance work within the requested scope; historical timings and roadmap budgets are not acceptance thresholds. Put new runnable benchmarks in [scenes/benchmarks/](../../../scenes/benchmarks/).
 
 ## Array and upload decisions
 

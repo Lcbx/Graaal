@@ -3,7 +3,8 @@
 Current delivery status: [status snapshot](skeletal_animation_current.md).
 Implemented APIs: [animation guide](../graaal/skeletal_animation.md).
 Esoterica informs behavior and phases; NumPy, WGPU and Graaal's ECS determine
-storage and execution. The crowd evaluator below remains proposed.
+storage and execution. The crowd section records the implemented evaluator and
+design targets for routing, tiering and overrides.
 
 ## Architecture and conventions
 
@@ -52,8 +53,11 @@ See the [tool guides](../tools/README.md) for available controls.
 The packed clip pool and one-skeleton compute pass are available. See the
 [crowd API](../graaal/skeletal_animation.md#crowd-pose-compute-pass) for the
 supported interface and the [status snapshot](skeletal_animation_current.md)
-for measurements and remaining work. Automatic tiering and overrides below
-are design targets.
+for measurements and remaining work. `GraphPosePass` consumes existing playback
+rows, checks measured eligibility and records exact and crowd poses into a
+caller-owned palette. `DistancePoseLod` supplies that pass with a GPU preference
+mask using distance thresholds and a hold mask for blends. GPU pose overrides
+remain a design target.
 
 The CPU evaluator costs roughly `N x B` NumPy work per frame plus Python dispatch overhead, so it will top out at some character count. A GPU path batches Python work into a gather, an upload and a few dispatches; gathered/uploaded data still scales with `N`. The idea is to bake clips into a GPU-resident pool, mix them in a compute pass, and let the CPU modify the result through overrides.
 
@@ -64,13 +68,9 @@ The CPU evaluator costs roughly `N x B` NumPy work per frame plus Python dispatc
 | Near / hero  | Player, close NPCs, anything needing exact poses     | CPU evaluator | Everything                                                                  |
 | Far / crowd  | Distant or numerous characters                       | GPU compute          | Single clip, crossfade, blends of up to 4 clips, soft masks, CPU overrides  |
 
-Tier is selected per character by an LOD system (distance, screen size, importance) with hysteresis:
-
-```python
-@component
-class AnimLod:
-	tier: np.uint8  # 0 = CPU evaluator, 1 = GPU evaluator
-```
+The [distance policy](../graaal/skeletal_animation.md#distance-based-evaluator-selection)
+tracks each owner across frames. Applications can use a different policy, such
+as screen size or character importance, to supply the same GPU mask.
 
 **Always on the CPU, for both tiers:** state machines, transitions, sync, animation events and root motion. The GPU only evaluates "which clips, at which times, with which weights". A far character therefore behaves identically to a near one; only the cost and precision of its pose differ.
 
@@ -143,7 +143,12 @@ The shortening is the same artifact as a vertex-space crossfade between two skin
 
 **Not supported on this path:** additive layers (they need local-space deltas), hard bone masks (a pose discontinuity at the mask boundary), IK and procedural work. Soft per-bone weight masks are possible because bones are independent. Anything else means the CPU tier.
 
-**Bake-time validator.** For every authored transition, compute the maximum bone-position error between this approximation and the exact local-space blend over the blend duration. Mark transitions below a threshold (start around 1 - 2% of character height and tune visually) as crowd-eligible. Characters whose active transition is ineligible stay on the CPU tier, or use a shorter fade.
+**Graph eligibility validator.** `validate_crowd_graph` compares the approximate
+and exact base poses at sampled phases and parameter values for every state and
+authored transition. It reports the maximum sampled bone-position error and
+counts poses that exceed the four-sample limit. Start around 1–2% of character
+height and tune visually. Runtime routing can use these results as an input
+when choosing CPU and GPU owners.
 
 For 10,000 characters × 60 bones × two samples, estimate 2.4 million
 16-byte sample loads and 29 MB of skin-matrix writes per evaluation. Benchmark
@@ -195,8 +200,11 @@ The IK solver runs in the post-physics phase and the override is consumed by the
 Controller state is identical in both tiers, so a hand-off changes only which evaluator writes the skin matrices.
 
 - Single-clip playback matches between tiers up to fp16 and bake-rate error, so validate switching outside a blend against the chosen error budget.
-- During an active blend the evaluators differ by the model-space blending error. Defer tier switches while any blend weight is strictly between 0 and 1.
-- Use hysteresis on the LOD thresholds to prevent flip-flopping.
+- Distance-driven switches can be deferred during active fades and while any
+  blend-space weight is strictly between 0 and 1. Graph eligibility still
+  takes precedence for each pose.
+- The distance policy uses different thresholds for entering and leaving the
+  GPU tier so camera motion within the band preserves the current preference.
 
 ### Exact GPU mode (escape hatch)
 

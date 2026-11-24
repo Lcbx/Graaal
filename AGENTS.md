@@ -17,7 +17,7 @@ guide/test map; read only references relevant to the task:
 - [Rendering](.agents/skills/graaal-rendering/SKILL.md): GPU resources, shaders/layouts, draws, materials, passes and UI.
 - [Animation](.agents/skills/graaal-animation/SKILL.md): sampling, graphs, IK, skinning and authoring tools.
 - [Physics](.agents/skills/graaal-physics/SKILL.md): native integration, fixed ticks, identity and interpolation.
-- [Performance](.agents/skills/graaal-performance/SKILL.md): array access, allocations, benchmarks and profiling.
+- [Benchmarks](.agents/skills/graaal-performance/SKILL.md): benchmarks and profiling.
 
 ## Architecture
 ECS, DrawBatches, Materials, RenderContext and Diagnostics expose their main APIs
@@ -30,6 +30,7 @@ Keep package imports free of optional backends until an API requiring them is re
 - Do what was asked. Suggestions are welcome, but wait for approval before acting on them.
 - Explain incorrect assumptions and ask before proceeding. Ask about missing information rather than making assumptions, even when they seem minor.
 - Don't add abstraction layers the task doesn't need. Low-level APIs must stay usable.
+- Put new runnable benchmarks in [scenes/benchmarks/](scenes/benchmarks/README.md).
 
 ## Code style
 - Indent Python code with tabs, never spaces. Respect required indentation in other formats.

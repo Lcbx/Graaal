@@ -442,6 +442,22 @@ class AnimationGraphPlayback:
 			for output, values in zip(pose, local): output[rows] = values
 		return pose
 
+	def blending(self, parameters: ArrayLike | None = None) -> np.ndarray:
+		"""Identify active fades and rows between blend-space samples."""
+		values = self._parameters(parameters)
+		blending = self.target_states >= 0
+		for state, name in self.graph.state_blend_spaces.items():
+			rows = np.flatnonzero((self.states == state) & ~blending)
+			if not len(rows): continue
+			_, weights = self.graph.blend_spaces[name].select(values[rows])
+			blending[rows] = np.any((weights > 0) & (weights < 1), axis=1)
+		for state, name in self.graph.state_blend_spaces_2d.items():
+			rows = np.flatnonzero((self.states == state) & ~blending)
+			if not len(rows): continue
+			_, horizontal, vertical = self.graph.blend_spaces_2d[name].select(values[rows])
+			blending[rows] = np.any((horizontal > 0) & (horizontal < 1), axis=1) | ((vertical > 0) & (vertical < 1))
+		return blending
+
 	def pose(self, parameters: ArrayLike | None = None, *, in_place: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 		"""Return independently owned batched local TRS before authored layers.
 

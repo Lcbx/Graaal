@@ -5,7 +5,7 @@ description: Use when locating Graaal modules and APIs, assessing downstream imp
 
 # Repository navigation and refactoring
 
-Run commands from the repository root. Prefer the [module inspection tool](../../../tools/module_inspection.py) for discovering Python APIs. Use focused text searches, AST inspection or direct file reads when module inspection cannot answer the question. Read its [usage guide](../../../tools/README.md#module-inspection) for filters and runtime behavior.
+Run commands from the repository root. Use focused text searches, AST inspection or direct file reads when module inspection cannot answer the question. Read its [usage guide](../../../tools/README.md#module-inspection) for filters and runtime behavior.
 
 ```sh
 python tools/module_inspection.py graaal/ECS/core.py --only classes methods properties --no-comments --no-docstrings

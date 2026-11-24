@@ -39,7 +39,8 @@ class EcsAnimationGraphAdapter:
 
 	Evaluate the parameter rows in `entities()` order each tick. `update()`
 	returns local TRS in the same order and publishes character-space movement
-	requests and crossed state events. The application owns physics and layers.
+	requests and crossed state events. `advance()` publishes the same clocks,
+	motion and events for applications that evaluate poses separately.
 	"""
 	def __init__(self, world: ECS, graph_id: int, graph: CompiledAnimationGraph, *, event_tracks: Mapping[int, EventTrack] | None = None, root_motions: Mapping[int, RootMotion] | None = None) -> None:
 		self.query = world.query(GraphPlayer)
@@ -59,7 +60,7 @@ class EcsAnimationGraphAdapter:
 		result = self.query.fetch()
 		return result.entities[result[GraphPlayer].selection.graph_id == self.graph_id]
 
-	def update(self, dt: ArrayLike, parameters: ArrayLike | None = None, *, in_place: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+	def _advanced(self, dt: ArrayLike, parameters: ArrayLike | None) -> tuple[AnimationGraphPlayback, np.ndarray, tuple[EntityGraphEvent, ...]]:
 		owners = self.entities()
 		if np.array_equal(self._owners, owners):
 			playback = copy(self.playback)
@@ -67,8 +68,17 @@ class EcsAnimationGraphAdapter:
 			previous_rows = {entity: row for row, entity in enumerate(self._owners)}
 			playback = self.playback.remap([previous_rows.get(entity, -1) for entity in owners])
 		events = playback.advance(dt, parameters)
-		pose = playback.pose(parameters, in_place=in_place)
 		owners.flags.writeable = False
-		self.playback, self._owners = playback, owners
-		self.events = tuple(EntityGraphEvent(int(owners[event.row]), event.state, event.name, event.offset, event.role, event.weight) for event in events)
+		return playback, owners, tuple(EntityGraphEvent(int(owners[event.row]), event.state, event.name, event.offset, event.role, event.weight) for event in events)
+
+	def advance(self, dt: ArrayLike, parameters: ArrayLike | None = None) -> tuple[EntityGraphEvent, ...]:
+		"""Advance graph state and publish owner-aligned events without evaluating poses."""
+		self.playback, self._owners, self.events = self._advanced(dt, parameters)
+		return self.events
+
+	def update(self, dt: ArrayLike, parameters: ArrayLike | None = None, *, in_place: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+		"""Advance graph state and evaluate local poses as one update."""
+		playback, owners, events = self._advanced(dt, parameters)
+		pose = playback.pose(parameters, in_place=in_place)
+		self.playback, self._owners, self.events = playback, owners, events
 		return pose

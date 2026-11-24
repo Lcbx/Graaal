@@ -5,7 +5,7 @@ description: Use when editing Graaal wgpu resources, WGSL or shader templates, N
 
 # Rendering changes
 
-Read the relevant [engine contracts](../../../graaal/README.md#architecture-and-maintenance-contracts), then use `tools/module_inspection.py` on the affected subsystem. Use [materials](../../../graaal/materials.md), [transparency](../../../graaal/stochastic_transparency.md) or [antialiasing](../../../graaal/antialiasing.md) only for the paths involved. Existing [direct drawing](../../../scenes/direct_draw_example.py), [material](../../../scenes/material_example.py) and [transparency](../../../scenes/transparency_example.py) scenes are integration examples.
+Read the relevant [engine contracts](../../../graaal/README.md#architecture-and-maintenance-contracts). Use [materials](../../../graaal/materials.md), [transparency](../../../graaal/stochastic_transparency.md) or [antialiasing](../../../graaal/antialiasing.md) only for the paths involved. Existing [direct drawing](../../../scenes/direct_draw_example.py), [material](../../../scenes/material_example.py) and [transparency](../../../scenes/transparency_example.py) scenes are integration examples.
 
 ## Ownership, ordering and lifetimes
 

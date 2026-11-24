@@ -1,13 +1,17 @@
 """Packed model-space clips and a CPU reference for crowd pose evaluation."""
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Self, Sequence, TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import ArrayLike
 
 from ..Math import Quaternion
 from .SkeletalAnimation import Clip, Skeleton, model_matrices, sample_clip, sample_clip_pairs
+
+
+if TYPE_CHECKING:
+	from .AnimationGraph import CompiledAnimationGraph
 
 
 CLIP_TABLE_DTYPE = np.dtype([("base", "<u4"), ("frames", "<u4"), ("fps", "<f4"), ("duration", "<f4")])
@@ -65,6 +69,11 @@ class BakedClipPool:
 		packed.flags.writeable = False
 		table.flags.writeable = False
 		self.packed, self.table = packed, table
+
+	@classmethod
+	def from_graph(cls, graph: CompiledAnimationGraph, *, fps: float = 30) -> Self:
+		"""Bake the graph's clips in their compiled ID order."""
+		return cls(graph.plan.skeleton, tuple(graph.clips[i] for i in range(len(graph.clips))), fps=fps)
 
 	def model(self, clip_ids: ArrayLike, times: ArrayLike, weights: ArrayLike) -> np.ndarray:
 		"""Evaluate 1–4 clamped clip samples per instance into approximate models."""

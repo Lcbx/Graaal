@@ -5,7 +5,7 @@ description: Use when changing Graaal optional pyjoltphysics integration, ECS bo
 
 # Physics integration changes
 
-Read the relevant [physics guide](../../../graaal/physics.md) sections and inspect affected modules with `tools/module_inspection.py`. The [integration status](../../../implementation_plans/physics_integration_plan.md) records delivered scope and remaining backend gaps; [learned active-ragdoll control](../../../implementation_plans/active_ragdolls.md) is a separate proposal.
+Read the relevant [physics guide](../../../graaal/physics.md) sections and inspect affected modules. The [integration status](../../../implementation_plans/physics_integration_plan.md) records delivered scope and remaining backend gaps; [learned active-ragdoll control](../../../implementation_plans/active_ragdolls.md) is a separate proposal.
 
 ## Dependency and authority boundaries
 

@@ -7,7 +7,11 @@ from typing import SupportsIndex
 from numpy.typing import ArrayLike
 import numpy as np
 
-from .core import BufferUsage, GpuBuffer
+from .core import BufferUsage, CommandContext, GpuBuffer
+
+
+MATRIX_BYTES = 3 * 4 * np.dtype(np.float32).itemsize
+STAGING_USAGE = BufferUsage.COPY_SRC | BufferUsage.COPY_DST
 
 
 def _uint(value: SupportsIndex, label: str, *, positive: bool=False) -> int:
@@ -32,6 +36,7 @@ class SkinMatrixBuffer:
 		self.buffer = GpuBuffer(np.zeros((capacity, 3, 4), dtype=np.float32), BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC)
 		self._free = [(0, capacity)]
 		self._ranges: dict[int, tuple[int, int]] = {}
+		self._staging: GpuBuffer | None = None
 
 	def acquire(self, owner: SupportsIndex, bones: int) -> int:
 		"""Allocate a range and return its base matrix index."""
@@ -68,8 +73,7 @@ class SkinMatrixBuffer:
 			else: merged.append((base, count))
 		self._free = merged
 
-	def write(self, owners: ArrayLike, matrices: ArrayLike) -> None:
-		"""Upload same-skeleton poses in owner order after validating the whole batch."""
+	def _write_batch(self, owners: ArrayLike, matrices: ArrayLike) -> tuple[np.ndarray, np.ndarray, list[int]]:
 		owners = np.asarray(owners)
 		matrices = np.asarray(matrices, dtype=np.float32)
 		if owners.ndim != 1 or owners.dtype.kind not in "iu" or np.any(owners < 0):
@@ -77,26 +81,56 @@ class SkinMatrixBuffer:
 		if len(np.unique(owners)) != len(owners): raise ValueError("owner IDs must be distinct")
 		if matrices.ndim != 4 or matrices.shape[0] != len(owners) or matrices.shape[2:] != (3, 4) or not np.isfinite(matrices).all():
 			raise ValueError("matrices must be finite with shape (owners, bones, 3, 4)")
-		entries = []
-		for owner, pose in zip(owners, matrices):
-			if int(owner) not in self._ranges: raise ValueError(f"No skin range for owner {int(owner)}")
-			base, count = self._ranges[int(owner)]
-			if len(pose) != count: raise ValueError("Pose bone count does not match allocated range")
-			entries.append((base, count, pose))
-		entries.sort(key=lambda entry: entry[0])
-		start = 0
-		while start < len(entries):
-			end = start + 1
-			boundary = entries[start][0] + entries[start][1]
-			while end < len(entries) and entries[end][0] == boundary:
-				boundary += entries[end][1]
-				end += 1
-			poses = [entry[2] for entry in entries[start:end]]
-			data = poses[0] if len(poses) == 1 else np.concatenate(poses)
-			self.buffer.write_range(data, offset=entries[start][0] * 48)
-			start = end
+		try:
+			ranges = self.ranges(owners)
+		except KeyError as exc:
+			raise ValueError(f"No skin range for owner {exc.args[0]}") from exc
+		if np.any(ranges[:, 1] != matrices.shape[1]):
+			raise ValueError("Pose bone count does not match allocated range")
+		bases = ranges[:, 0].astype(np.intp)
+		if np.any(bases[1:] < bases[:-1]):
+			order = np.argsort(bases)
+			bases, matrices = bases[order], matrices[order]
+		boundaries = np.r_[0, np.flatnonzero(np.diff(bases) != matrices.shape[1]) + 1, len(bases)].tolist()
+		return bases, matrices, boundaries
+
+	def write(self, owners: ArrayLike, matrices: ArrayLike) -> None:
+		"""Upload same-skeleton poses in owner order after validating the whole batch."""
+		bases, poses, boundaries = self._write_batch(owners, matrices)
+		if not len(bases): return
+		for start, end in zip(boundaries, boundaries[1:]):
+			self.buffer.write_range(poses[start:end], offset=int(bases[start]) * MATRIX_BYTES)
+
+	def record_write(self, commands: CommandContext, owners: ArrayLike, matrices: ArrayLike, *, staging: GpuBuffer | None = None) -> None:
+		"""Stage one pose batch and record copies to the owners' palette ranges.
+
+		Use distinct COPY_SRC | COPY_DST staging buffers for each write recorded
+		before one submission. By default the palette owns one reusable buffer.
+		Submit before reusing a staging buffer or closing it or the palette.
+		"""
+		bases, poses, boundaries = self._write_batch(owners, matrices)
+		if not len(bases): return
+		if staging is None:
+			if self._staging is None:
+				self._staging = GpuBuffer(poses, STAGING_USAGE, upload=False, label="skin palette staging")
+			staging = self._staging
+		if staging is self.buffer or staging.usage & STAGING_USAGE != STAGING_USAGE:
+			raise ValueError("staging must be a separate buffer with COPY_SRC and COPY_DST usage")
+		mirror = self.buffer.content
+		assert mirror is not None
+		staging.write(poses)
+		bones = poses.shape[1]
+		for start, end in zip(boundaries, boundaries[1:]):
+			base = int(bases[start])
+			count = (end - start) * bones
+			commands.copy_buffer(staging, self.buffer, source_offset=start * bones * MATRIX_BYTES,
+				destination_offset=base * MATRIX_BYTES, size=count * MATRIX_BYTES)
+			mirror[base:base + count] = poses[start:end].reshape(count, 3, 4)
 
 	def close(self) -> None:
+		if self._staging is not None:
+			self._staging.close()
+			self._staging = None
 		self.buffer.close()
 		self._ranges.clear()
 		self._free.clear()

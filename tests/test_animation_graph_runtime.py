@@ -80,6 +80,30 @@ def test_ecs_graph_remaps_fading_entities_and_event_cursors_by_full_handle():
 	assert adapter.events == ()
 
 
+def test_ecs_graph_clock_only_advance_preserves_events_and_motion_without_sampling(monkeypatch):
+	compiled = graph(duration=0.75)
+	world = ECS()
+	world.register(GraphPlayer)
+	owners = world.create(2)
+	world.add(owners, GraphPlayer(0))
+	options = {"event_tracks": {1: EventTrack(2, [0.5], ["step"])}, "root_motions": motion_tracks(compiled)}
+	combined = EcsAnimationGraphAdapter(world, 0, compiled, **options)
+	clock_only = EcsAnimationGraphAdapter(world, 0, compiled, **options)
+	values = [[0], [1]]
+	for dt in (0.25, 0.5, 0.25):
+		combined.update(dt, values)
+		with monkeypatch.context() as patch:
+			def unexpected_pose(*args, **kwargs):
+				pytest.fail("advance must not sample CPU poses")
+			patch.setattr(AnimationGraphPlayback, "pose", unexpected_pose)
+			events = clock_only.advance(dt, values)
+		assert events == clock_only.events == combined.events
+		if dt == 0.5: assert [(event.entity, event.name) for event in events] == [(owners[1], "step")]
+		np.testing.assert_array_equal(clock_only.owners, owners)
+		for field in (*FIELDS, "root_motion"):
+			np.testing.assert_array_equal(getattr(clock_only.playback, field), getattr(combined.playback, field))
+
+
 def test_state_events_cross_multiple_loops_in_tick_order_without_replaying_start():
 	compiled = graph()
 	track = EventTrack(1, [0.5, 0, 0.5], ["left", "loop", "right"])
