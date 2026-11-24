@@ -11,6 +11,7 @@ from .core import BufferUsage, CommandContext, GpuBuffer
 
 
 MATRIX_BYTES = 3 * 4 * np.dtype(np.float32).itemsize
+STAGING_USAGE = BufferUsage.COPY_SRC | BufferUsage.COPY_DST
 
 
 def _uint(value: SupportsIndex, label: str, *, positive: bool=False) -> int:
@@ -100,25 +101,31 @@ class SkinMatrixBuffer:
 		for start, end in zip(boundaries, boundaries[1:]):
 			self.buffer.write_range(poses[start:end], offset=int(bases[start]) * MATRIX_BYTES)
 
-	def record_write(self, commands: CommandContext, owners: ArrayLike, matrices: ArrayLike) -> None:
+	def record_write(self, commands: CommandContext, owners: ArrayLike, matrices: ArrayLike, *, staging: GpuBuffer | None = None) -> None:
 		"""Stage one pose batch and record copies to the owners' palette ranges.
 
-		Submit these commands before recording another write through this method
-		or closing the palette. The staging buffer is reused between submissions.
-		Record before any passes that consume the new matrices.
+		Use distinct COPY_SRC | COPY_DST staging buffers for each write recorded
+		before one submission. By default the palette owns one reusable buffer.
+		Submit before reusing a staging buffer or closing it or the palette.
 		"""
 		bases, poses, boundaries = self._write_batch(owners, matrices)
 		if not len(bases): return
-		if self._staging is None:
-			self._staging = GpuBuffer(poses, BufferUsage.COPY_SRC | BufferUsage.COPY_DST, upload=False, label="skin palette staging")
-		self._staging.write(poses)
+		if staging is None:
+			if self._staging is None:
+				self._staging = GpuBuffer(poses, STAGING_USAGE, upload=False, label="skin palette staging")
+			staging = self._staging
+		if staging is self.buffer or staging.usage & STAGING_USAGE != STAGING_USAGE:
+			raise ValueError("staging must be a separate buffer with COPY_SRC and COPY_DST usage")
+		mirror = self.buffer.content
+		assert mirror is not None
+		staging.write(poses)
 		bones = poses.shape[1]
 		for start, end in zip(boundaries, boundaries[1:]):
 			base = int(bases[start])
 			count = (end - start) * bones
-			commands.copy_buffer(self._staging, self.buffer, source_offset=start * bones * MATRIX_BYTES,
+			commands.copy_buffer(staging, self.buffer, source_offset=start * bones * MATRIX_BYTES,
 				destination_offset=base * MATRIX_BYTES, size=count * MATRIX_BYTES)
-			self.buffer.content[base:base + count] = poses[start:end].reshape(count, 3, 4)
+			mirror[base:base + count] = poses[start:end].reshape(count, 3, 4)
 
 	def close(self) -> None:
 		if self._staging is not None:

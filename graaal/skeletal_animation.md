@@ -564,11 +564,10 @@ before dispatching shaders.
 For a batch whose owners occupy scattered ranges, use
 `palette.record_write(commands, owners, matrices)`. It uploads the poses
 together and records one copy per contiguous palette range. Record the copies
-before any pass that needs those matrices. The staging buffer is reused, so
-submit the recorded commands before calling `record_write` again on the same
-palette or closing it. The [river crossing scene](../scenes/river_crossing_example.py)
-records these copies and the crowd compute pass before drawing from the shared
-palette.
+before any pass that needs those matrices. The palette owns a reusable default
+staging buffer. To record several batches before submission, pass a distinct
+`GpuBuffer` with `COPY_SRC | COPY_DST` usage as `staging=` for each additional
+batch. Submit before reusing a staging buffer or closing it or the palette.
 
 The reusable `graaal/shaders/skinning.shaderlib` defines `SkinMatrix` and
 `skin_vertex`: pass four palette entries and their weights to obtain a position
@@ -601,7 +600,7 @@ compiled ID order and pass a maximum bone-position error in rig units.
 from graaal.Animation.BakedClipPool import BakedClipPool
 from graaal.Animation.CrowdGraphValidation import validate_crowd_graph
 
-pool = BakedClipPool(graph.plan.skeleton, tuple(graph.clips[i] for i in range(len(graph.clips))))
+pool = BakedClipPool.from_graph(graph)
 report = validate_crowd_graph(graph, pool, error_budget=0.02 * character_height,
 	phase_samples=32, playback_rates=(0.75, 1.0, 1.25))
 ```
@@ -620,14 +619,73 @@ each edge from guards and priority so the validator can vary parameters during
 the fade. The result covers the sampled base poses. Applications account for
 authored layers, root anchoring and IK separately.
 
-`CrowdGraphRouter(report)` from `graaal.Animation.CrowdGraphSamples` partitions
-the current playback rows with `cpu_rows, crowd = router.split(playback,
-parameters)`. The result uses the same phase mapping and sample packing as the
-validator. The router sends ineligible poses and rows exceeding the sample
-limit to the CPU. For an ECS graph, `adapter.owners[crowd.rows]` gives the full
-owner handles for the crowd pass. Sample exact local poses for `cpu_rows`
-with `playback.remap(cpu_rows).pose(parameters[cpu_rows])` and write their skin
-matrices into the same palette. Both paths use the existing playback clocks.
+#### Record a graph's base poses
+
+`GraphPosePass` evaluates current `AnimationGraphPlayback` poses into a
+caller-owned `SkinMatrixBuffer`. Allocate the owner ranges for the rig first and
+pass the same palette to `MaterialRenderer`. Create the pass with a validation
+report to use crowd compute for eligible rows and exact local-space sampling
+for the rest. Omitting the report selects exact CPU poses for the whole batch.
+
+```python
+from graaal.RenderPasses.CrowdPose import GraphPosePass
+
+poses = GraphPosePass(palette, max_instances, eligibility=report)
+# After advancing playback, record before any draws that read the palette.
+poses.record(commands, owners, playback, parameters)
+```
+
+With ECS, call `EcsAnimationGraphAdapter.advance` at the simulation tick and
+pass `adapter.owners` and `adapter.playback` to `record`. Owners, parameters
+and the optional boolean `gpu_mask` use playback row order. A distance or
+importance policy can supply the mask to restrict which validated rows can use
+the GPU. Record again when either the pose inputs or the mask change. The
+application owns playback advancement, events and movement acceptance.
+
+CPU poses are staged and copied into the palette in command order, including
+when the entire batch uses the CPU. Different graph passes can write disjoint
+owner ranges of the same palette in one submission. Each pass owns its staging
+buffers. Submit before recording through the same pass again or calling
+`poses.close()`. Coordinate owner allocation and release with draw membership
+and recorded GPU work.
+
+#### Distance-based evaluator selection
+
+`DistancePoseLod` selects a GPU preference using world-space camera distance.
+Owners enter the GPU tier at or beyond `far` and return to the CPU at or within
+`near`. Between the thresholds they keep their previous preference. A new
+owner starts with a CPU preference and can enter the GPU tier on its first
+update. Pass the full live batch each time. Owner IDs can span the full `uint64`
+range, including generational ECS handles. History follows owners across row
+reordering and is discarded when they leave the batch. To clear all history,
+pass `owners=[]` and a position array of shape `(0, 3)`.
+
+```python
+from graaal.Animation.AnimationLod import DistancePoseLod
+
+lod = DistancePoseLod(near=18, far=22)
+# On each render update, positions and parameters follow playback row order.
+mask = lod.update(owners, positions, camera.position, hold=playback.blending(parameters))
+poses.record(commands, owners, playback, parameters, gpu_mask=mask)
+```
+
+`AnimationGraphPlayback.blending()` marks active fades and interior blend-space
+weights. Passing it as `hold` defers distance-driven switches while those poses
+are blended. The router still evaluates ineligible poses on the CPU. Update
+the policy when the camera or owner positions move, including render frames
+without a simulation tick. A changed mask can require recording a pose again
+at the same playback time.
+
+#### Compose custom pose paths
+
+`CrowdGraphRouter(report)` from `graaal.Animation.CrowdGraphSamples` exposes the
+same partition without a GPU. Call `cpu_rows, batch = router.split(playback,
+parameters, gpu_mask=mask)` to get exact rows and packed clip samples. The mask
+is optional. Validation and packing determine whether a masked-in row can use
+the compute pass. Use `playback.remap(cpu_rows).pose(...)` for exact local poses,
+then apply any root anchoring, authored layers or IK through the existing pose
+APIs before writing skin matrices. The exact and crowd writers own disjoint
+ranges for the frame.
 
 `CrowdPosePass(pool, palette, max_instances)` from
 `graaal.RenderPasses.CrowdPose` records one batch before the material draws.
@@ -640,13 +698,11 @@ again on the same pass, and release ranges after their use by recorded work.
 The palette's CPU mirror does not contain compute results. Call `crowd.close()`
 to release the pass's buffers.
 
-The application owns evaluator selection, gameplay clocks, events, root
-movement, IK and layered hero poses. The
-[river crossing](../scenes/river_crossing_example.py) shows graph routing with
-the CPU and compute writers sharing a palette.
-Model-space blending trades accuracy for throughput, particularly for dissimilar
-poses. Use the measurements in the [animation status](../implementation_plans/skeletal_animation_current.md)
-to interpret the performance and error of the example workload.
+The [river crossing](../scenes/river_crossing_example.py) uses `GraphPosePass` to
+share a palette between the CPU and compute writers. Model-space blending trades
+accuracy for throughput, particularly for dissimilar poses. See the
+[animation status](../implementation_plans/skeletal_animation_current.md) for
+performance and pose errors on that workload.
 
 ## Skinned glTF import
 

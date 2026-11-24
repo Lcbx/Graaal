@@ -27,7 +27,7 @@ def test_crowd_validator_compares_exact_graph_poses_and_validates_shadowed_edges
 		"transitions": [{"source": "idle", "target": "turn", "duration": duration, "conditions": conditions} for duration in (0.5, 1)],
 		"sample_slots": ["base"], "tasks": [{"name": "output", "op": "sample", "slot": "base"}],
 	}).compile(rig, {"idle": idle, "turn": turn})
-	pool = BakedClipPool(rig, [idle, turn])
+	pool = BakedClipPool.from_graph(graph)
 	report = validate_crowd_graph(graph, pool, error_budget=0.02, blend_samples=3, fade_samples=3)
 	assert report.states["idle"].eligible and report.states["turn"].eligible
 	assert report.states["blend"].samples == 3
@@ -69,6 +69,9 @@ def test_crowd_validator_accounts_for_sample_limits_and_identical_inputs(share_c
 	assert batch.rows.tolist() == ([0, 1] if share_clips else [0])
 	approx = router.pool.model(batch.clip_ids, batch.times, batch.weights)
 	np.testing.assert_allclose(approx, model_matrices(rig, *playback.pose(parameters))[batch.rows], atol=1e-6)
+	cpu, batch = router.split(playback, parameters, gpu_mask=[False, True])
+	assert cpu.tolist() == ([0] if share_clips else [0, 1])
+	assert batch.rows.tolist() == ([1] if share_clips else [])
 
 
 def test_crowd_validator_samples_synchronized_fade_clocks_at_requested_rates():

@@ -10,7 +10,7 @@ logs; validation evidence is scoped below.
 | --- | --- | --- |
 | 1: foundation | Immutable skeletons/clips, batched CPU sampling/FK/skin matrices, glTF subset importer, ECS playback, CPU material bridge, shared GPU skinning and palette lifecycle | Broader asset support and measured allocation improvements |
 | 2: transitions/root motion | Crossfades, named events, root extraction, clip-pair samples, separate advancement/finalization, bounded and native collision examples | Movement reconciliation policy remains application-owned |
-| 3: GPU crowd evaluator | Packed clip baking, CPU reference, sampled graph eligibility, CPU/GPU graph routing and a compute pass writing shared skin palettes | Automatic tiering and crowd overrides |
+| 3: GPU crowd evaluator | Packed clip baking, CPU reference, sampled graph eligibility, CPU/GPU graph routing, distance tiering with hysteresis and a compute pass writing shared skin palettes | Crowd overrides |
 | 4: graphs | Pose plans, masks/additive layers, 1D/2D selectors, editable definitions, clip-state and graph ECS adapters, batched playback with events and root motion | Weighted cycle timing |
 | 5: sync/physics | Marker-synchronized ECS fades, fixed-reference 1D/2D blend synchronization, two-bone IK, axis alignment, stance locks, local twist limits, collision queries and ragdoll targets | Integration with full locomotion authoring and crowd overrides |
 | 6: advanced | Not started | Warping, skeleton LOD, exact GPU evaluator, GPU IK and debugging |
@@ -136,8 +136,8 @@ reference. The GPU pass matches the CPU reference and can write beside CPU
 palette ranges. The compute probe used two equally weighted samples per
 instance. Over ten measured passes, median CPU staging and recording took
 0.41/2.71/15.10 ms and GPU compute took 0.004/0.041/0.198 ms at 1k/10k/50k
-instances. These GPU timestamps bracket the compute pass. Draw-inclusive
-frame timing and broader asset validation remain open. Use the
+instances. These GPU timestamps bracket the compute pass. The river benchmark
+below includes draws. Broader asset validation remains open. Use the
 [crowd roadmap](skeletal_animation_pipeline.md#gpu-pose-evaluation-for-crowds-and-distant-characters)
 for tier acceptance criteria.
 
@@ -149,24 +149,33 @@ of 0.58×, 1.0× and 1.60×, the 2% height budget was 3.52 cm. The maximum sampl
 errors for stand, walk and run were 0.05, 1.04 and 0.54 cm. The swim state
 reached 38.44 cm and the largest fade error was 58.22 cm on swim to walk.
 
-The river scene advances the ECS graph at fixed ticks and routes rendered poses
-at draw time. Stand, walk and run usually use the crowd pass. The CPU evaluates
-the swim state and fades. Both write disjoint owner ranges in one palette before
-the material draw. Tests check clock and event parity, GPU palette values, and
-the position error when switching evaluators at the start of a shoreline fade.
-Mixed frames upload CPU matrices in one staging write and copy them into their
-palette ranges before the crowd dispatch. GPU readback tests cover coalescing,
+The river scene advances the ECS graph at fixed ticks and records its rendered
+poses through the engine's `GraphPosePass`. Stand, walk and run usually use
+the crowd pass. The CPU evaluates the swim state and fades. Both write
+disjoint owner ranges in one palette before the material draw. Tests check
+clock and event parity, GPU palette values, and the position error when
+switching evaluators at the start of a shoreline fade.
+Graph passes upload CPU matrices in one staging write and record copies into
+their palette ranges. Mixed frames record the copies before the crowd dispatch.
+GPU readback tests cover command order after a palette clear, coalescing,
 untouched ranges between copies and staging reuse on the next submission.
+Independent graph passes can share a palette and submission through separate
+staging buffers. A row mask allows application policy to restrict GPU routing.
+The river scene uses camera distance with 18-unit CPU and 22-unit GPU
+thresholds. The preference follows full owner IDs and holds during active
+blends. Tests sweep the camera across both thresholds and compare skin matrices
+against the selected evaluator at the same playback time.
 
 Before batching, exact pose and matrix evaluation at one representative tick
 fell from 4.39 ms to 3.47 ms with hybrid routing, which took 0.16 ms. The 89
 CPU owners spanned 24 separate palette upload ranges.
 
-The upload comparison used 144 dummies at 640×480 offscreen on an NVIDIA GeForce
-RTX 5060 Ti (Vulkan). Each trial began after an 850-tick preroll and five warm-up
-frames. Each of the three trials per mode measured 12 frames from the fixed
-update through GPU completion. Hybrid frames dispatched 51–59 owners on the GPU.
-Both hybrid modes used the same poses and palette layout.
+The following comparisons predate staging for all-CPU graph batches. The
+upload comparison used 144 dummies at 640×480 offscreen on an NVIDIA GeForce
+RTX 5060 Ti (Vulkan). Each trial began after an 850-tick preroll and five
+warm-up frames. Each of the three trials per mode measured 12 frames from the
+fixed update through GPU completion. Hybrid frames dispatched 51–59 owners on
+the GPU. Both hybrid modes used the same poses and palette layout.
 
 | Pose mode | CPU palette uploads per frame | Median pose preparation and recording across trials (ms) | Median full frame across trials (ms) |
 | --- | --- | --- | --- |
@@ -176,6 +185,36 @@ Both hybrid modes used the same poses and palette layout.
 
 Staged copies lowered median frame time relative to direct uploads in two of
 three rounds. The frame-time ranges overlapped across all three modes.
+
+The distance-policy comparison used the same offscreen resolution, GPU,
+preroll, and warm-up. It measured two 12-frame trials per mode and crowd size.
+The table gives the range of median full-frame times across trials.
+
+| Dummies | GPU poses per frame with LOD | CPU-only frame time (ms) | Distance LOD frame time (ms) |
+| --- | --- | --- | --- |
+| 144 | 19–22 | 7.39–7.79 | 7.98–8.12 |
+| 288 | 103–115 | 10.30–10.47 | 11.42–11.82 |
+
+Distance LOD kept exact poses near the camera. Full frames took longer than
+CPU-only frames in both trials at each crowd size.
+
+The repeatable river crowd benchmark uses ordered palette copies for every
+CPU pose batch. The run below used 640×480 offscreen on an NVIDIA GeForce RTX
+5060 Ti (Vulkan), with three rounds of 30 measured frames per mode and window.
+Swimmer and graph-ineligibility counts matched across modes and rounds at every
+sampled tick. [Reproduction command](../scenes/benchmarks/README.md#river-crowd-animation)
+
+| Dummies | Window | CPU only (ms) | GPU eligible (ms) | Distance LOD (ms) |
+| --- | --- | --- | --- | --- |
+| 144 | Bank | 10.39 | 7.73 | 9.18 |
+| 144 | Swim | 14.13 | 14.01 | 14.75 |
+| 288 | Bank | 11.08 | 7.12 | 7.94 |
+| 288 | Swim | 14.78 | 12.56 | 13.31 |
+
+The table reports median wall time through GPU completion. The swim window
+had a median of 94 ineligible poses at 144 dummies (48 swimming and 46 fading)
+and 135 at 288 dummies (48 swimming and 87 fading). The ranges of round medians
+overlapped across modes in the 144-dummy swim window.
 
 Documentation audit: consolidated delivery history and validation counts into
 capabilities, remaining work and maintenance contracts; API details remain in

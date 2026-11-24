@@ -5,7 +5,7 @@ from graaal.Animation.AnimationGraphPlayback import state_sample
 from graaal.EcsAdapters.EcsPhysics import Collider
 from graaal.EcsAdapters.MaterialTransform import MaterialTransform
 from scenes.animation_dummy import load_dummy
-from scenes.river_crossing_example import CLEARANCE, DUMMY_RADIUS, FADE_TIME, FINISH, FIXED_DT, HEADLESS_TICKS, LAND_COLLIDER, RIVER_WIDTH, SWIM_COLLIDER, SWIM_LENGTH, SWIM_RADIUS, create_demo, record_graph_poses
+from scenes.river_crossing_example import CLEARANCE, DUMMY_RADIUS, FADE_TIME, FINISH, FIXED_DT, HEADLESS_TICKS, LAND_COLLIDER, RIVER_WIDTH, SWIM_COLLIDER, SWIM_LENGTH, SWIM_RADIUS, create_demo
 
 
 def test_crowd_swims_between_sensor_shores_and_teleports_to_spawn():
@@ -107,31 +107,38 @@ def test_river_routes_gpu_and_cpu_poses_through_the_same_palette():
 	pytest.importorskip("pyjoltphysics")
 	pytest.importorskip("pygltflib")
 	pytest.importorskip("wgpu")
+	from graaal.Animation.AnimationLod import DistancePoseLod
 	from graaal.Animation.BakedClipPool import BakedClipPool
 	from graaal.Animation.CrowdGraphSamples import CrowdGraphRouter
 	from graaal.Animation.CrowdGraphValidation import validate_crowd_graph
 	from graaal.Animation.SkeletalAnimation import model_matrices, skin_matrices
 	from graaal.RenderContext import RenderContext
 	from graaal.RenderContext.SkinMatrixBuffer import SkinMatrixBuffer
-	from graaal.RenderPasses.CrowdPose import CrowdPosePass
+	from graaal.RenderPasses.CrowdPose import GraphPosePass
 	from scenes.physics_viewing_utils import viewing_target
 
 	rig, _, clips = load_dummy(swimming=True)
 	_, owners, physics, _, animation, parameters, _ = create_demo(rig, clips, row_count=1)
 	graph = animation.playback.graph
-	pool = BakedClipPool(rig, tuple(graph.clips[i] for i in range(len(graph.clips))))
+	pool = BakedClipPool.from_graph(graph)
 	budget = 0.035
-	router = CrowdGraphRouter(validate_crowd_graph(graph, pool, error_budget=budget))
+	eligibility = validate_crowd_graph(graph, pool, error_budget=budget)
+	router = CrowdGraphRouter(eligibility)
+	lod = DistancePoseLod(8, 12)
+	positions = np.zeros((len(owners), 3))
+	positions[1:, 2] = 15
 	water = graph.parameter_columns["in_water"]
 	pace = graph.parameter_columns["swim_blend"]
 	with physics, viewing_target("River pose routing", offscreen=True):
 		palette = SkinMatrixBuffer(len(owners) * pool.bones)
-		crowd = CrowdPosePass(pool, palette, len(owners))
+		poses = GraphPosePass(palette, len(owners), eligibility=eligibility)
 		try:
 			for owner in owners: palette.acquire(owner, pool.bones)
 
-			def draw_pose(expected_cpu):
-				cpu, batch = router.split(animation.playback, parameters)
+			def draw_pose(expected_cpu, distance=12):
+				playback = animation.playback
+				gpu_mask = lod.update(owners, positions, [distance, 0, 0], hold=playback.blending(parameters))
+				cpu, batch = router.split(playback, parameters, gpu_mask=gpu_mask)
 				assert cpu.tolist() == expected_cpu
 				assert sorted(np.r_[cpu, batch.rows]) == list(range(len(owners)))
 				models = model_matrices(rig, *animation.playback.pose(parameters))
@@ -139,15 +146,22 @@ def test_river_routes_gpu_and_cpu_poses_through_the_same_palette():
 				assert np.max(np.linalg.norm(gpu[..., :3, 3] - models[batch.rows, :, :3, 3], axis=-1)) <= budget
 				models[batch.rows] = gpu
 				commands = RenderContext.commands("river pose routing")
-				record_graph_poses(commands, animation, parameters, palette, router=router, crowd=crowd)
+				poses.record(commands, animation.owners, playback, parameters, gpu_mask=gpu_mask)
 				RenderContext.submit(commands.finish())
 				actual = np.frombuffer(RenderContext.device.queue.read_buffer(palette.buffer.handle), dtype=np.float32)
 				expected = skin_matrices(rig, models)
 				np.testing.assert_allclose(actual.reshape(expected.shape), expected, atol=3e-6)
 				return models[0, :, :3, 3]
 
-			before = draw_pose([])
 			start_time = animation.playback.times[0]
+			near = draw_pose([0], distance=8)
+			np.testing.assert_array_equal(draw_pose([0], distance=10), near)
+			before = draw_pose([])
+			assert np.max(np.linalg.norm(before - near, axis=-1)) <= budget
+			np.testing.assert_array_equal(draw_pose([], distance=10), before)
+			np.testing.assert_array_equal(draw_pose([0], distance=8), near)
+			before = draw_pose([])
+			assert animation.playback.times[0] == start_time
 			parameters[[0, 2], water] = 1
 			parameters[[0, 2], pace] = (0.5, 0.8)
 			animation.advance(0, parameters)
@@ -160,5 +174,5 @@ def test_river_routes_gpu_and_cpu_poses_through_the_same_palette():
 			animation.advance(FADE_TIME, parameters)
 			draw_pose([])
 		finally:
-			crowd.close()
+			poses.close()
 			palette.close()

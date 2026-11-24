@@ -95,7 +95,7 @@ from graaal.EcsAdapters.EcsPhysics import EcsPhysicsAdapter
 | `RenderContext` | GPU backend, commands, resources, mesh storage, shader syntax/templates and skin palettes |
 | `DrawBatches` | Draw grouping, instance packing, visibility and culling |
 | `Materials` | Material schemas, packing, rendering and independent pose-to-mesh skinning |
-| `RenderPasses` | Transparency, postprocessing, HZB, resolution presentation, packed pass inputs and texture processing |
+| `RenderPasses` | Transparency, postprocessing, HZB, crowd pose evaluation, resolution presentation, packed pass inputs and texture processing |
 | `Diagnostics` | CPU timers, native physics inspection, render inspection and GPU timestamps |
 | `UI` | ImGui integration, rendering controls and diagnostic displays |
 
@@ -120,6 +120,7 @@ module names relative to their respective packages.
 | `EcsAdapters.EcsAnimation` | `SkeletonRef`, `ClipPlayer`, and `EcsAnimationAdapter` advance ECS playback and return batched poses with generational entity handles. |
 | `AnimationGraph` | `AnimationGraphDefinition.compile` validates editable named states, transitions, layered tasks and clip-pair sync settings into existing state-machine, pose-plan and sync resources. |
 | `AnimationGraphPlayback` | `AnimationGraphPlayback.advance/pose/reset` plays batches of clip/1D/2D graph states with independent clocks, synchronized fades and optional state events. |
+| [AnimationLod](skeletal_animation.md#distance-based-evaluator-selection) | `DistancePoseLod` computes a per-owner GPU preference using camera distance and hysteresis. |
 | `SkeletalGltf` | `load_skinned_gltf` imports a supported subset of skinned glTF and resamples joint tracks into CPU animation resources. |
 | `Materials.MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
 | `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |
@@ -138,6 +139,7 @@ module names relative to their respective packages.
 | `RenderContext` recording/shaders | `CommandContext.render_pass/compute_pass/finish`, `RenderPass.draw_mesh`, `ComputePass.dispatch`, `Shader.uniform_buffer/bind_group`, `RenderPipeline`, `ComputePipeline`, `BindGroupLayout`, and `PipelineLayout` compose work. Jinja `field()`/`binding()` declarations provide shader metadata; `ShaderInterface` supplies explicit metadata. |
 | `RenderContext.MeshArena` | `MeshArena.allocate/compact/inspect/close` pools mesh storage; `MeshAllocation.release` returns a range for reuse. |
 | `RenderContext.SkinMatrixBuffer` | `SkinMatrixBuffer` allocates stable GPU skin-matrix ranges for caller-owned IDs. |
+| [RenderPasses.CrowdPose](skeletal_animation.md#crowd-pose-compute-pass) | `GraphPosePass` writes exact and crowd graph poses to a shared palette. `CrowdPosePass` evaluates explicit clip samples. |
 | `DrawBatches` | `DrawBatches.register_mesh/register_lod_group/register_shader`, `sync`, `write_instances`, `create_visibility`, `draw` manage shared draws. `RenderShader` maps names to `ShaderPass`; `Visibility.all_visible/write` prepares visibility; `FrustumCuller.record` and `HiZCuller.record` record GPU culling. |
 | `EcsAdapters.EcsDrawing` | `EcsDrawAdapter.sync` extracts ECS mesh references; `mesh_field` returns attributes in draw order. |
 | `RenderPasses.PostprocessingPass` | Applies ordered antialiasing, ambient occlusion and custom effects; tuples fuse effects into one draw. |

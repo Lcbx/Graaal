@@ -84,11 +84,12 @@ class CrowdGraphRouter:
 			edges[key] = edges.get(key, True) and edge.result.eligible
 		self._transitions = tuple(key for key, eligible in edges.items() if eligible)
 
-	def split(self, playback: AnimationGraphPlayback, parameters: ArrayLike | None = None) -> tuple[np.ndarray, CrowdGraphBatch]:
+	def split(self, playback: AnimationGraphPlayback, parameters: ArrayLike | None = None, *, gpu_mask: ArrayLike | None = None) -> tuple[np.ndarray, CrowdGraphBatch]:
 		"""Return exact CPU row indices and a disjoint crowd batch from the same clocks.
 
 		Evaluate application layers and root anchoring on the CPU when they are
-		required. The supplied parameters use playback row order.
+		required. An optional boolean GPU mask further restricts validated rows.
+		Parameters and the mask use playback row order.
 		"""
 		if playback.graph is not self.graph: raise ValueError("crowd eligibility belongs to a different graph")
 		shape = (playback.count, len(self.graph.parameter_defaults))
@@ -98,6 +99,11 @@ class CrowdGraphRouter:
 		candidates = self._states[states] & (targets < 0)
 		for source, target, duration in self._transitions:
 			candidates |= (states == source) & (targets == target) & (playback.durations == duration)
+		if gpu_mask is not None:
+			mask = np.asarray(gpu_mask)
+			if mask.shape != (playback.count,) or mask.dtype.kind != "b":
+				raise ValueError("gpu_mask must contain one boolean per playback row")
+			candidates &= mask
 		batch = playback_crowd_samples(playback, values, np.flatnonzero(candidates))
 		cpu = np.ones(playback.count, dtype=bool)
 		cpu[batch.rows] = False
