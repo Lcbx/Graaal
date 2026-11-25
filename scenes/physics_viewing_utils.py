@@ -1,6 +1,7 @@
 """Shared window and playback helpers for the physics examples."""
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -76,16 +77,24 @@ def ragdoll_collider_instances(bones, cube, box_mesh, shader):
 	return parts
 
 
+@dataclass
+class Playback:
+	cursor: float = 0.0
+	paused: bool = False
+	speed: float = 1.0
+
+
 def play_frames(renderer, camera, output, update, *, label, sample_count, sample_hz, offscreen_samples=None, check_frame=None,
-		before_frame=None, draw_overlay=None):
+		before_frame=None, draw_overlay=None, playback=None, frame_limit=None):
 	"""Loop samples at their source rate, or draw selected samples offscreen.
 
 	In a window, before_frame can return True to restart at sample zero.
-	draw_overlay runs after the scene is submitted.
+	Pass a callable sample_count when changing clips and a Playback to drive
+	transport from draw_overlay, which runs after the scene is submitted.
 	"""
 	from graaal.RenderContext import RenderContext
 
-	last = sample_count - 1
+	last = (sample_count() if callable(sample_count) else sample_count) - 1
 	if output is not None:
 		samples = (0, last) if last > 0 else (0,)
 		if offscreen_samples is not None:
@@ -101,28 +110,35 @@ def play_frames(renderer, camera, output, update, *, label, sample_count, sample
 
 	import glfw
 
-	cursor, paused = 0.0, False
+	if playback is None:
+		playback = Playback()
 
 	def key_pressed(key, scancode, action, mods):
-		nonlocal cursor, paused
 		if action == glfw.PRESS:
 			if key == glfw.KEY_SPACE:
-				paused = not paused
+				playback.paused = not playback.paused
 			elif key == glfw.KEY_R:
-				cursor = 0.0
+				playback.cursor = 0.0
 
 	RenderContext.subscribe_event("key", key_pressed)
+	frames = 0
 	while RenderContext.window_loop():
+		if frame_limit is not None and frames >= frame_limit:
+			break
 		if before_frame is not None and before_frame():
-			cursor = 0.0
-		update(min(int(cursor), last))
+			playback.cursor = 0.0
+		if callable(sample_count):
+			last = sample_count() - 1
+		update(min(int(playback.cursor), last))
 		renderer.sync()
 		draw_frame(renderer, camera, output, label)
 		if draw_overlay is not None:
 			draw_overlay()
-		if not paused:
+		if not playback.paused:
 			# Hold the last pose for one second before restarting.
-			cursor = (cursor + min(RenderContext.frame_time, 0.1) * sample_hz) % (last + sample_hz)
+			advance = min(RenderContext.frame_time, 0.1) * sample_hz * playback.speed
+			playback.cursor = (playback.cursor + advance) % (last + sample_hz * playback.speed)
+		frames += 1
 
 
 def view_poses(title, camera, samples, moving, *, sample_hz, static=(), offscreen=False, offscreen_samples=None, check_frame=None):

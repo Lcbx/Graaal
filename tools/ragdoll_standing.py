@@ -27,11 +27,16 @@ PUSH_SECONDS = 2
 PUSH_TICK = PUSH_SECONDS * TICK_HZ
 PUSH_BONES = ("pelvis", "chest")
 PUSH_DIRECTIONS = {"+X": (1, 0, 0), "-X": (-1, 0, 0), "+Z": (0, 0, 1), "-Z": (0, 0, -1)}
+HARD_BACKWARD_PUSHES = (("chest", 8), ("chest", 12), ("pelvis", 12))
 HIP_OFFSET = 0.45
 KNEE_FORWARD_OFFSET = 0.55
 KNEE_BACKWARD_OFFSET = 0.05
 ARM_OFFSET = 0.55
 LEG_CHANNELS = 6
+LANDING_BRAKE_TICKS = TICK_HZ // 5
+RECOVERY_STEP_DISTANCE = 0.02
+DIRECT_REWARD_TERMS = ("braking", "support", "compliance")
+DIRECT_REWARD_KEYS = tuple(f"{term}_reward" for term in (*DIRECT_REWARD_TERMS, "effort"))
 
 
 def compact_axes(limits):
@@ -70,9 +75,16 @@ def _support_margin(points, center):
 class StandingTask:
 	"""Run one episode in a fresh native world, exposing only joint actions."""
 
-	def __init__(self, project, *, episode_steps=5 * CONTROL_HZ, initial_angular_speed=0.0, tuned_stance=False, compact=False, vary_start=False, max_start_tilt=DEFAULT_START_TILT, support_area=False, ankle_balance=False, residual=False, stepping=False, whole_body=False, push_impulses=()):
+	def __init__(self, project, *, episode_steps=5 * CONTROL_HZ, initial_angular_speed=0.0, tuned_stance=False, compact=False, vary_start=False, max_start_tilt=DEFAULT_START_TILT, support_area=False, ankle_balance=False, residual=False, stepping=False, whole_body=False, push_impulses=(), recovery=False, recovery_curriculum=False, replay_start_fraction=0.0, direct=False, without_direct_reward=()):
 		import pyjoltphysics as pj
 
+		if direct and (not tuned_stance or any((compact, ankle_balance, residual, stepping, whole_body, recovery))):
+			raise ValueError("direct motor control requires the tuned stance and its own action space")
+		disabled_rewards = set(without_direct_reward)
+		if disabled_rewards - set(DIRECT_REWARD_TERMS) or (disabled_rewards and not direct):
+			raise ValueError("only direct motor control can disable braking, support, or compliance rewards")
+		whole_body = whole_body or recovery
+		support_area = support_area or recovery or direct
 		stepping = stepping or whole_body
 		if episode_steps < 1 or not np.isfinite(initial_angular_speed) or initial_angular_speed < 0:
 			raise ValueError("episode steps must be positive and initial angular speed must be finite and nonnegative")
@@ -83,8 +95,15 @@ class StandingTask:
 		if stepping and not tuned_stance:
 			raise ValueError("hip and knee targets require the tuned stance")
 		self.push_impulses = tuple(push_impulses)
-		if self.push_impulses and (episode_steps * TICKS_PER_ACTION <= PUSH_TICK or not all(0 <= value <= np.finfo(np.float32).max for value in self.push_impulses)):
+		if (self.push_impulses or recovery_curriculum) and (episode_steps * TICKS_PER_ACTION <= PUSH_TICK or not all(0 <= value <= np.finfo(np.float32).max for value in self.push_impulses)):
 			raise ValueError("push training needs an episode longer than two seconds and finite nonnegative impulses")
+		if recovery_curriculum and self.push_impulses:
+			raise ValueError("the recovery curriculum replaces explicit push impulses")
+		if not 0 <= replay_start_fraction <= 1 or (replay_start_fraction and (not recovery or not recovery_curriculum or episode_steps < 4 * CONTROL_HZ)):
+			raise ValueError("replayed starts require recovery actions, the recovery curriculum, at least four seconds, and a fraction in [0, 1]")
+		self.recovery_curriculum = recovery_curriculum
+		self.replay_start_fraction = replay_start_fraction
+		self.direct = direct
 		settings = pj.RagdollSettings.from_dict(project.settings.as_dict())
 		if tuple(bone.name for bone in settings.bones) != HUMANOID_NAMES or tuple(settings.parents) != HUMANOID_PARENTS:
 			raise ValueError("standing requires the passive humanoid's bone names, parents and order")
@@ -107,9 +126,9 @@ class StandingTask:
 			if any(foot.shape.kind.name != "BOX" for foot in feet):
 				raise ValueError("support-area observations require box foot colliders")
 			self.foot_rotations = np.array([foot.shape_rotation for foot in feet])
-			half_sizes = np.array([foot.shape.params[:3] for foot in feet]) / 2
-			self.sole_corners = half_sizes[:, None] * [[-1, -1, -1], [1, -1, -1], [-1, -1, 1], [1, -1, 1]]
-			self.support_scale = float(half_sizes[:, [0, 2]].min())
+			self.foot_half_sizes = np.array([foot.shape.params[:3] for foot in feet]) / 2
+			self.sole_corners = self.foot_half_sizes[:, None] * [[-1, -1, -1], [1, -1, -1], [-1, -1, 1], [1, -1, 1]]
+			self.support_scale = float(self.foot_half_sizes[:, [0, 2]].min())
 		self.nonfeet = ~np.isin(np.arange(len(settings)), self.feet)
 		self.chest = settings.bone_index("chest")
 		self.full_action_shape = ((len(settings) - 1) * 4,)
@@ -126,6 +145,21 @@ class StandingTask:
 			self.fixed_pose_action = np.tile(np.array([0, 0, 0, 1], dtype=np.float32), len(settings) - 1)
 		self.motor_offset_caps = MAX_OFFSET
 		self.motor_offset_scale = MAX_OFFSET
+		if direct:
+			self.action_bones, self.action_axes = compact_axes(self.limits)
+			if not len(self.action_bones):
+				raise ValueError("direct motor control needs at least one usable joint axis")
+			self.action_shape = (len(self.action_bones),)
+			self.motor_offset_caps = np.full(len(settings), MAX_OFFSET)
+			arms = settings.bone_index("upper_arm_l")
+			legs = settings.bone_index("thigh_l")
+			self.landing_joints = np.array([[settings.bone_index(f"{part}_{side}") for part in ("thigh", "shin")] for side in ("l", "r")])
+			self.motor_offset_caps[arms:legs] = ARM_OFFSET
+			self.motor_offset_caps[legs:] = HIP_OFFSET
+			self.motor_offset_caps[self.landing_joints[:, 1]] = KNEE_FORWARD_OFFSET
+			self.motor_offset_scale = self.motor_offset_caps[1:, None]
+			self.end_effectors = np.r_[self.feet, [settings.bone_index(name) for name in ("lower_arm_l", "lower_arm_r")]]
+			self.direct_reward_weights = np.array([term not in disabled_rewards for term in (*DIRECT_REWARD_TERMS, "effort")])
 		if stepping:
 			self.hips = np.array([settings.bone_index(name) for name in ("thigh_l", "thigh_r")])
 			self.knees = np.array([settings.bone_index(name) for name in ("shin_l", "shin_r")])
@@ -148,6 +182,13 @@ class StandingTask:
 		self.positions, self.orientations = self._spawn_pose(self.reference)
 		self.spawn_height = float(self.positions[0, 1] - settings.rest_translations[0][1])
 		self.balance_torques = make_ankle_balance(settings, self.positions, self.orientations, self.feet) if self.ankle_balance else None
+		self.recovery = None
+		if recovery:
+			from tools.ragdoll_recovery_step import RECOVERY_CHANNELS, RecoveryStep
+
+			self.motor_channels = self.action_shape[0]
+			self.action_shape = (self.motor_channels + RECOVERY_CHANNELS,)
+			self.recovery = RecoveryStep(self)
 		self.world = None
 
 	def _spawn_pose(self, local_turns):
@@ -158,7 +199,19 @@ class StandingTask:
 		positions[:, 1] += 0.001 - lower[:, 1].min()
 		return positions, orientations
 
-	def reset(self, *, seed=None):
+	def reset(self, *, seed=None, replay=False):
+		observation, info = self._reset(seed, replay=replay)
+		if "replay_start" not in info:
+			return observation, info
+		try:
+			if self._replay_start(info["replay_start"]):
+				return self._features(), info
+			return self._reset(seed, replay=False)
+		except BaseException:
+			self.close()
+			raise
+
+	def _reset(self, seed, *, replay):
 		import pyjoltphysics as pj
 
 		self.close()
@@ -185,7 +238,15 @@ class StandingTask:
 				spin = speed * np.array([np.cos(angle), 0, np.sin(angle)])
 				self.world.set_velocities(self.uids[:, 0], angular=spin)
 			self.push = None
-			if self.push_impulses:
+			info = {}
+			if self.recovery_curriculum:
+				if replay and self.replay_start_fraction and rng.random() < self.replay_start_fraction:
+					info["replay_start"] = "before_landing" if rng.random() < 0.5 else "after_landing"
+					bone, magnitude = ("chest", 8) if rng.random() < 0.5 else ("chest", 12)
+					self.push = (self.settings.bone_index(bone), np.array([0, 0, -magnitude]))
+				else:
+					self.push = self._sample_recovery_push(rng)
+			elif self.push_impulses:
 				magnitude = rng.choice(self.push_impulses)
 				if magnitude:
 					# Give the disturbance that toppled the baseline extra practice.
@@ -210,16 +271,76 @@ class StandingTask:
 			self.minimum_support_margin = None
 			self.first_support_exit = None
 			self.done = False
-			return self._features(), {}
+			if self.direct:
+				self.direct_action = np.zeros(self.action_shape, dtype=np.float32)
+				self.push_tick = None
+				self.landing_tick = -LANDING_BRAKE_TICKS
+				self.relocated_tick = -LANDING_BRAKE_TICKS
+				self.relocated_feet = np.zeros(len(self.feet), dtype=bool)
+				self.direct_rewards = np.zeros(len(DIRECT_REWARD_KEYS))
+				self.target_saturation = 0
+				self.max_foot_clearance = np.zeros(len(self.feet))
+				self._measure_direct()
+			if self.recovery is not None:
+				self.recovery.reset()
+			return self._features(), info
 		except BaseException:
 			self.close()
 			raise
+
+	def _sample_recovery_push(self, rng):
+		draw = rng.random()
+		if draw < 0.20:
+			return None
+		bone = rng.choice(PUSH_BONES)
+		direction = rng.choice(tuple(PUSH_DIRECTIONS))
+		if draw < 0.55:
+			magnitude = rng.uniform(0.5, 4)
+		elif draw < 0.80:
+			bone, direction = (bone if self.direct else "chest"), "-Z"
+			magnitude = rng.uniform(8, 12) if self.direct else rng.uniform(4, 8)
+		else:
+			bone, magnitude = HARD_BACKWARD_PUSHES[rng.integers(len(HARD_BACKWARD_PUSHES))]
+			direction = "-Z"
+		return self.settings.bone_index(bone), magnitude * np.asarray(PUSH_DIRECTIONS[direction])
+
+	def _replay_start(self, window):
+		"""Advance a fresh native world to a swing or contact under a guided action."""
+		action = np.zeros(self.action_shape, dtype=np.float32)
+		limit = PUSH_TICK + TICK_HZ // 2
+		step = self.recovery
+		while self.world.tick < limit:
+			if self.world.tick == PUSH_TICK + 18:
+				action[self.motor_channels:] = [1, -0.25, -0.5, 0.2, -0.29, 0.24]
+				step.request(action[self.motor_channels:], guided=True)
+			_, _, fallen, completed, _ = self.step(action)
+			if fallen or completed:
+				return False
+			if window == "before_landing" and step.phase == 1 and step.airborne and self.world.tick - step.started >= 0.67 * step.duration * TICK_HZ:
+				return True
+			if window == "after_landing" and step.phase == 2 and step.landing_tick is not None and self.world.tick - step.loaded >= 2:
+				return True
+		return False
+
+	def apply_push(self, bone, impulse):
+		self.world.add_impulses(self.uids[:, bone], [impulse])
+		self.settled_ticks = 0
+		if self.recovery is not None:
+			self.recovery.pushed = True
+		if self.direct:
+			self.push_tick = self.world.tick
+			self.landing_tick = self.relocated_tick = -LANDING_BRAKE_TICKS
+			self.relocated_feet.fill(False)
+			self.last_contact_xz = self.state.position[0, self.feet][:, [0, 2]]
+			self.seen_contact = self.state.contacts[0, self.feet]
 
 	def _observe(self):
 		self.events = self.world.drain_events()
 		return observe_ragdoll(self.world, self.uids, self.settings, self.events, self.reference, self.motor_action, floor=self.floor)
 
 	def _features(self):
+		if self.direct:
+			return self._direct_features()
 		state = self.state
 		root, chest = Quaternion.matrix_batch(state.orientation[0, [0, self.chest]])[..., 1]
 		joints = state.joint_rotation[0, 1:]
@@ -233,6 +354,42 @@ class StandingTask:
 			center * 5, self._support_error() * 5, state.center_of_mass_velocity[0], feet.ravel(), state.linear_velocity[0, self.feet].ravel(),
 			joints.ravel(), state.joint_angular_velocity[0, 1:].ravel() / 5, state.contacts[0], self.residual_action if self.residual else self.action,
 			((self.support_margin or 0) / self.support_scale,) if self.support_area else (),
+			self.recovery.features() if self.recovery is not None else (),
+		), dtype=np.float32)
+
+	def _measure_direct(self):
+		state = self.state
+		centers, turns = collider_poses(state.position[0, self.feet], state.orientation[0, self.feet], self.foot_offsets, self.foot_rotations)
+		self.sole_axes = Quaternion.matrix_batch(turns)
+		self.sole_centers = centers
+		self.foot_clearance = centers[:, 1] - (np.abs(self.sole_axes[:, 1]) * self.foot_half_sizes).sum(axis=1)
+		self.body_axes = Quaternion.matrix_batch(state.orientation[0, [0, self.chest]])
+		x, z = self.body_axes[0, [0, 2], 2]
+		length = np.hypot(x, z)
+		self.heading = np.array([[z, 0, x], [0, length, 0], [-x, 0, z]]) / length if length > 1e-6 else np.eye(3)
+		self.support_center = centers[state.contacts[0, self.feet]].mean(axis=0) if state.contacts[0, self.feet].any() else centers.mean(axis=0)
+		self.capture = state.center_of_mass[0].copy()
+		self.capture[[0, 2]] += state.center_of_mass_velocity[0, [0, 2]] * np.sqrt(max(self.capture[1], 0) / 9.81)
+		points = self._support_points()
+		self.capture_margin = _support_margin(points, self.capture[[0, 2]]) if points is not None else None
+		self.max_foot_clearance = np.maximum(self.max_foot_clearance, self.foot_clearance)
+
+	def _direct_features(self):
+		state = self.state
+		hip = state.position[0, 0]
+		ends = self.end_effectors
+		joints = state.joint_rotation[0, 1:]
+		joints = np.where(joints[:, 3:] < 0, -joints, joints)
+		return np.concatenate((
+			[hip[1] / self.start_height], (self.body_axes[:, :, 1] @ self.heading).ravel(),
+			state.linear_velocity[0, 0] @ self.heading, (state.angular_velocity[0, [0, self.chest]] @ self.heading).ravel() / 5,
+			(state.center_of_mass[0] - hip) @ self.heading, ((state.center_of_mass[0] - self.support_center) @ self.heading)[[0, 2]] * 5,
+			state.center_of_mass_velocity[0] @ self.heading, ((self.capture - self.support_center) @ self.heading)[[0, 2]] * 5,
+			((state.position[0, ends] - hip) @ self.heading).ravel() / self.start_height,
+			((state.linear_velocity[0, ends] - state.linear_velocity[0, 0]) @ self.heading).ravel(),
+			self.foot_clearance * 5, (self.sole_axes[:, :, 1] @ self.heading).ravel(),
+			joints.ravel(), state.joint_angular_velocity[0, 1:].ravel() / 5, state.contacts[0],
+			[(self.support_margin or 0) / self.support_scale, (self.capture_margin or 0) / self.support_scale], self.direct_action,
 		), dtype=np.float32)
 
 	def _support_error(self):
@@ -241,14 +398,23 @@ class StandingTask:
 		centers = state.position[0, self.feet] + (axes @ self.foot_offsets[..., None])[..., 0]
 		return state.center_of_mass[0, [0, 2]] - centers.mean(axis=0)[[0, 2]]
 
-	def _measure_support(self):
+	def _support_points(self):
 		state = self.state
 		planted = state.contacts[0, self.feet]
 		if not planted.any():
 			return None
-		centers, turns = collider_poses(state.position[0, self.feet], state.orientation[0, self.feet], self.foot_offsets, self.foot_rotations)
-		soles = centers[:, None] + self.sole_corners @ Quaternion.matrix_batch(turns).transpose(0, 2, 1)
-		return _support_margin(soles[planted].reshape(-1, 3)[:, [0, 2]], state.center_of_mass[0, [0, 2]])
+		if self.direct:
+			soles = self.sole_centers[:, None] + self.sole_corners @ self.sole_axes.transpose(0, 2, 1)
+		elif self.recovery is None:
+			centers, turns = collider_poses(state.position[0, self.feet], state.orientation[0, self.feet], self.foot_offsets, self.foot_rotations)
+			soles = centers[:, None] + self.sole_corners @ Quaternion.matrix_batch(turns).transpose(0, 2, 1)
+		else:
+			soles = self.recovery.soles
+		return soles[planted].reshape(-1, 3)[:, [0, 2]]
+
+	def _measure_support(self):
+		points = self._support_points()
+		return _support_margin(points, self.state.center_of_mass[0, [0, 2]]) if points is not None else None
 
 	def _posture(self):
 		height = float(self.state.position[0, 0, 1])
@@ -269,6 +435,19 @@ class StandingTask:
 		if action.shape != self.action_shape or not np.isfinite(action).all():
 			raise ValueError(f"standing action must be finite with shape {self.action_shape}")
 		action = np.clip(action, -1, 1)
+		if self.direct:
+			if edit_motors is not None or joint_feedback is not None:
+				raise ValueError("direct motor control only accepts policy targets")
+			previous_speed = float(np.linalg.norm(self.state.center_of_mass_velocity[0, [0, 2]]))
+			previous_support, previous_capture = self.support_margin, self.capture_margin
+			self.direct_action = action
+			self.target_saturation += np.count_nonzero(np.abs(action) >= 0.98)
+			planted = self.state.contacts[0, self.feet]
+		if self.recovery is not None:
+			self.recovery.request(action[self.motor_channels:])
+			action = action[:self.motor_channels]
+			edit_motors = self.recovery.edit_motors
+			joint_feedback = self.recovery.feedback
 		residual_torques, residual_change = None, 0.0
 		if self.residual:
 			ankle_action = action[:self.ankle_channels]
@@ -290,9 +469,11 @@ class StandingTask:
 					upper = controls[:self.hips[0] - 1, :3]
 					np.add.at(upper, self.upper_bones - 1, self.upper_axes * pose_action[LEG_CHANNELS:, None])
 					upper /= np.maximum(1, np.linalg.norm(upper, axis=1, keepdims=True))
-		if self.compact:
+		if self.compact or self.direct:
 			controls = np.zeros((len(self.settings), 4), dtype=np.float32)
 			np.add.at(controls[:, :3], self.action_bones, self.action_axes * action[:, None])
+			if self.direct:
+				controls[:, :3] /= np.maximum(1, np.linalg.norm(controls[:, :3], axis=1, keepdims=True))
 			controls[:, 3] = 1
 			action = controls[1:].ravel()
 		if self.ankle_balance:
@@ -307,8 +488,7 @@ class StandingTask:
 		apply_ragdoll_motors([self.handle], self.reference, self.motor_action, max_offset=self.motor_offset_caps, max_strength=STANDING_MOTOR_CAPS)
 		if self.push is not None and self.world.tick == PUSH_TICK:
 			bone, impulse = self.push
-			self.world.add_impulses(self.uids[:, bone], [impulse])
-			self.settled_ticks = 0
+			self.apply_push(bone, impulse)
 		feedback = self.balance_torques if joint_feedback is None else joint_feedback
 		for tick in range(1, TICKS_PER_ACTION + 1):
 			torque = joint_spring_torques(self.parents, self.state.orientation, self.state.angular_velocity, self.neutral, **self.spring)
@@ -319,6 +499,20 @@ class StandingTask:
 			self.world.run_ticks(1)
 			self.state = self._observe()
 			height, upright, speed, fallen = self._posture()
+			if self.direct and self.push_tick is not None:
+				contact = self.state.contacts[0, self.feet]
+				landed = contact & ~planted
+				positions = self.state.position[0, self.feet][:, [0, 2]]
+				if landed.any():
+					self.landing_tick = self.world.tick
+					relocated = landed & self.seen_contact & (np.linalg.norm(positions - self.last_contact_xz, axis=1) >= RECOVERY_STEP_DISTANCE)
+					if relocated.any():
+						self.relocated_tick, self.relocated_feet = self.world.tick, relocated
+				self.last_contact_xz[contact] = positions[contact]
+				self.seen_contact |= contact
+				planted = contact
+			if self.recovery is not None:
+				self.recovery.after_tick()
 			if after_tick is not None:
 				after_tick()
 			if fallen:
@@ -329,6 +523,10 @@ class StandingTask:
 		foot_speed = self.state.linear_velocity[0, self.feet][:, [0, 2]]
 		sliding = (np.linalg.norm(foot_speed, axis=1) * self.state.contacts[0, self.feet]).mean()
 		drift = np.linalg.norm(self._support_error())
+		if self.direct:
+			self._measure_direct()
+		if self.recovery is not None:
+			self.recovery.measure()
 		if self.support_area:
 			self.support_margin = self._measure_support()
 			drift = 0.0
@@ -345,6 +543,29 @@ class StandingTask:
 		self.tracking_error += np.arccos(alignment.clip(0, 1)).mean() * 2 * tick
 		reward = 0.5 * min(height, 1.0) + 0.5 * upright.mean() - 0.6 * min(drift, 1) - 0.25 * min(speed, 1)
 		reward -= 0.05 * sliding + 0.02 * changes + 0.005 * residual_change
+		if self.direct:
+			braking = support = compliance = 0.0
+			if self.push_tick is not None and elapsed_ticks - self.push_tick > tick:
+				braking = np.clip(previous_speed - speed, -0.12, 0.12)
+				if elapsed_ticks - self.landing_tick <= LANDING_BRAKE_TICKS:
+					braking *= 2
+				for previous, current in ((previous_support, self.support_margin), (previous_capture, self.capture_margin)):
+					if previous is not None and current is not None:
+						support += np.clip((min(current, 0) - min(previous, 0)) / self.support_scale, -0.25, 0.25)
+			loading = self.relocated_feet & self.state.contacts[0, self.feet]
+			if elapsed_ticks - self.relocated_tick <= LANDING_BRAKE_TICKS and loading.any():
+				rates = self.state.joint_angular_velocity[0, self.landing_joints[loading], 0]
+				flexion = np.clip(rates * [-1, 1] / 3, 0, 1).mean()
+				height_weight = np.clip((height - 0.9) / 0.08, 0, 1)
+				compliance = 0.04 * flexion * height_weight - 0.01 * np.clip(np.abs(rates) - 3, 0, 5).mean()
+			effort = -0.02 * np.mean(self.direct_action ** 2)
+			rewards = np.array([braking, support, compliance, effort]) * self.direct_reward_weights
+			self.direct_rewards += rewards
+			reward += rewards.sum()
+		if self.recovery is not None:
+			if self.recovery.phase:
+				reward += 0.25 * (1 - min(height, 1.0) + 1 - upright.mean())
+			reward += self.recovery.reward(TICK_HZ * SETTLE_SECONDS)
 		if fallen:
 			reward -= 5
 		info = dict(elapsed_seconds=elapsed_ticks / TICK_HZ, minimum_pelvis_m=self.minimum_height, success=completed,
@@ -356,6 +577,10 @@ class StandingTask:
 		if self.residual:
 			self.residual_effort += float(np.linalg.norm(residual_torques, axis=1).mean()) * tick
 			info["mean_residual_command_nm"] = self.residual_effort / elapsed_ticks
+		if self.direct:
+			info.update(zip(DIRECT_REWARD_KEYS, map(float, self.direct_rewards)))
+			info["target_saturation_fraction"] = self.target_saturation / ((elapsed_ticks + TICKS_PER_ACTION - 1) // TICKS_PER_ACTION * self.action_shape[0])
+			info["max_foot_clearance_m"] = float(self.max_foot_clearance.max())
 		return self._features(), float(reward), fallen, completed, info
 
 	def close(self):
@@ -364,19 +589,28 @@ class StandingTask:
 			self.world = None
 
 
+def evaluate_episode(task, policy, *, seed, on_sample=None):
+	"""Evaluate one seeded episode and optionally observe every physics sample."""
+	observation, _ = task.reset(seed=seed)
+
+	def capture():
+		on_sample(task)
+
+	if on_sample is not None:
+		capture()
+	after_tick = capture if on_sample is not None else None
+	total_reward = 0.0
+	while True:
+		observation, reward, fallen, completed, info = task.step(policy(observation), after_tick=after_tick)
+		total_reward += reward
+		if fallen or completed:
+			return info | {"reward": total_reward}
+
+
 def evaluate(task, policy, *, seed, episodes):
 	if episodes < 1:
 		raise ValueError("evaluation requires at least one episode")
-	results = []
-	for i in range(episodes):
-		observation, _ = task.reset(seed=seed + i)
-		total_reward = 0.0
-		while True:
-			observation, reward, fallen, completed, info = task.step(policy(observation))
-			total_reward += reward
-			if fallen or completed:
-				results.append(info | {"reward": total_reward})
-				break
+	results = [evaluate_episode(task, policy, seed=seed + i) for i in range(episodes)]
 	report = {}
 	for key in results[0]:
 		values = [result[key] for result in results if result[key] is not None]
@@ -400,7 +634,7 @@ def _standing_env(project, task_options):
 
 		def reset(self, *, seed=None, options=None):
 			super().reset(seed=seed)
-			return self.task.reset(seed=int(self.np_random.integers(2**32)))
+			return self.task.reset(seed=int(self.np_random.integers(2**32)), replay=True)
 
 		def step(self, action):
 			return self.task.step(action)
@@ -411,34 +645,135 @@ def _standing_env(project, task_options):
 	return StandingEnv()
 
 
-def train_policy(project, *, steps, seed, workers=1, resume=None, **task_options):
+def _initialize_direct_balance(model, task):
+	"""Seed the MLP with COM position and velocity feedback at both ankle motors."""
+	import torch
+
+	ankles = np.flatnonzero(np.isin(task.action_bones, task.feet))
+	horizontal = np.array([0, 2])
+	rows = np.arange(2)
+	gains = np.zeros((2, model.observation_space.shape[0]), dtype=np.float32)
+	# COM and feet are relative to the pelvis. Subtract the mean ankle position
+	# from the COM position and undo the reference-height scaling of the feet.
+	gains[rows, 16 + horizontal] = 8
+	gains[rows, 21 + horizontal] = 3
+	gains[rows, 26 + horizontal] = gains[rows, 29 + horizontal] = -4 * task.positions[0, 1]
+	bias = np.array([0, -0.04], dtype=np.float32)
+	# Keep the two tanh layers near their linear region at standing velocities.
+	scale = 0.12
+	first, _, second, _ = model.policy.mlp_extractor.policy_net
+	with torch.no_grad():
+		model.policy.action_net.weight.zero_()
+		model.policy.action_net.bias.zero_()
+		first.weight[:2].copy_(torch.from_numpy(gains * scale))
+		first.bias[:2].copy_(torch.from_numpy(bias * scale))
+		second.weight[:2].zero_()
+		second.weight[:2, :2].copy_(torch.eye(2))
+		second.bias[:2].zero_()
+		axes = task.action_axes[ankles][:, [2, 0]] * [-1, 1]
+		caps = task.motor_offset_caps[task.action_bones[ankles]]
+		model.policy.action_net.weight[ankles, :2] = torch.tensor(axes / (scale * caps[:, None]), dtype=torch.float32)
+
+
+def train_policy(project, *, steps, seed, workers=1, resume=None, epochs=None, direct_balance_init=False, learning_rate=None, optimizer_trace=None, direct_limb_std=None, **task_options):
 	import torch
 	from stable_baselines3 import PPO
+	from stable_baselines3.common.callbacks import BaseCallback
 	from stable_baselines3.common.env_util import make_vec_env
 	from stable_baselines3.common.vec_env import SubprocVecEnv
 
-	if workers < 1:
-		raise ValueError("workers must be positive")
+	class DirectRewardLog(BaseCallback):
+		def _on_step(self):
+			return True
+
+		def _on_rollout_end(self):
+			for key in DIRECT_REWARD_KEYS:
+				values = [episode[key] for episode in self.model.ep_info_buffer if key in episode]
+				if values:
+					self.logger.record(f"rollout/{key}_mean", float(np.mean(values)))
+
+	class TracedPPO(PPO):
+		def train(self):
+			batches = self.rollout_buffer.get
+			epochs = []
+
+			def trace_batches(batch_size):
+				epoch = []
+				epochs.append(epoch)
+				for batch in batches(batch_size):
+					with torch.no_grad():
+						_, log_prob, _ = self.policy.evaluate_actions(batch.observations, batch.actions)
+						log_ratio = log_prob - batch.old_log_prob
+						approx_kl = ((log_ratio.exp() - 1) - log_ratio).mean().item()
+					record = dict(approx_kl=approx_kl if np.isfinite(approx_kl) else None, accepted=False)
+					epoch.append(record)
+					yield batch
+					# PPO stops iterating before applying a rejected minibatch.
+					record["accepted"] = True
+
+			self.rollout_buffer.get = trace_batches
+			try:
+				super().train()
+			finally:
+				del self.rollout_buffer.get
+			metrics = dict(timesteps=self.num_timesteps, epochs=epochs, learning_rate=self.lr_schedule(self._current_progress_remaining),
+				accepted_epochs=sum(all(batch["accepted"] for batch in epoch) for epoch in epochs),
+				action_variance=self.policy.log_std.detach().mul(2).exp().mean().item())
+			for key in ("clip_fraction", "entropy_loss", "value_loss", "explained_variance"):
+				value = float(self.logger.name_to_value[f"train/{key}"])
+				metrics[key] = value if np.isfinite(value) else None
+			with Path(optimizer_trace).open("a", encoding="utf-8") as output:
+				output.write(json.dumps(metrics, allow_nan=False) + "\n")
+
+	if workers < 1 or (epochs is not None and epochs < 1):
+		raise ValueError("workers and epochs must be positive")
+	if direct_balance_init and (not task_options.get("direct") or resume is not None):
+		raise ValueError("balance initialization requires a new direct policy")
+	if learning_rate is not None and (not np.isfinite(learning_rate) or learning_rate <= 0):
+		raise ValueError("learning rate must be positive and finite")
+	direct = task_options.get("direct")
+	if direct_limb_std is not None and (not direct or not 0 < direct_limb_std <= 1):
+		raise ValueError("limb exploration requires direct control and a standard deviation in (0, 1]")
+	setup_task = StandingTask(project, **task_options) if direct_balance_init or direct_limb_std is not None else None
+	algorithm = TracedPPO if optimizer_trace is not None else PPO
 	factory = partial(_standing_env, project, task_options)
 	parallel = dict(vec_env_cls=SubprocVecEnv, vec_env_kwargs={"start_method": "spawn"}) if workers > 1 else {}
-	environment = make_vec_env(factory, n_envs=workers, seed=seed, **parallel)
+	monitor = {"info_keywords": DIRECT_REWARD_KEYS} if direct else None
+	environment = make_vec_env(factory, n_envs=workers, seed=seed, monitor_kwargs=monitor, **parallel)
 	try:
 		# Keep complete minibatches when changing the number of workers.
 		batch_size = 128
 		n_steps = batch_size * max(1, 8 // workers)
 		options = dict(seed=seed, device="cpu", n_steps=n_steps, batch_size=batch_size)
+		if epochs is not None:
+			options["n_epochs"] = epochs
+		if learning_rate is not None:
+			options["learning_rate"] = learning_rate
 		if resume is None:
-			model = PPO("MlpPolicy", environment, gamma=0.997, target_kl=0.03, learning_rate=0.00015,
-				policy_kwargs={"log_std_init": -2.5}, verbose=1, **options)
-			with torch.no_grad():
-				if any(task_options.get(mode) for mode in ("residual", "stepping", "whole_body")):
-					model.policy.action_net.weight.zero_()
-					model.policy.action_net.bias.zero_()
-				elif not task_options.get("compact"):
-					model.policy.action_net.bias[3::4].fill_(1 if task_options.get("tuned_stance") else 0.8)
+			options.setdefault("n_epochs", 10)
+			options.setdefault("learning_rate", 0.00001 if direct_balance_init else (0.000075 if direct else 0.00015))
+			log_std = -4.2 if direct_balance_init else (-3.0 if direct else -2.5)
+			model = algorithm("MlpPolicy", environment, gamma=0.997, target_kl=0.03, policy_kwargs={"log_std_init": log_std}, verbose=1, **options)
+			if direct_balance_init:
+				_initialize_direct_balance(model, setup_task)
+			else:
+				with torch.no_grad():
+					if any(task_options.get(mode) for mode in ("residual", "stepping", "whole_body", "recovery", "direct")):
+						model.policy.action_net.weight.zero_()
+						model.policy.action_net.bias.zero_()
+					elif not task_options.get("compact"):
+						model.policy.action_net.bias[3::4].fill_(1 if task_options.get("tuned_stance") else 0.8)
+					if task_options.get("recovery"):
+						from tools.ragdoll_recovery_step import RECOVERY_CHANNELS
+
+						model.policy.log_std[-RECOVERY_CHANNELS:].fill_(-1.5)
 		else:
-			model = PPO.load(resume, env=environment, **options)
-		return model.learn(total_timesteps=steps, reset_num_timesteps=resume is None)
+			model = algorithm.load(resume, env=environment, **options)
+		if direct_limb_std is not None:
+			non_ankle_axes = ~np.isin(setup_task.action_bones, setup_task.feet)
+			with torch.no_grad():
+				model.policy.log_std[non_ankle_axes] = np.log(direct_limb_std)
+		return model.learn(total_timesteps=steps, reset_num_timesteps=resume is None, callback=DirectRewardLog() if direct else None)
 	finally:
 		environment.close()
 
@@ -451,8 +786,10 @@ def main():
 	parser.add_argument("--vary-start", action="store_true", help="vary start tilt and sample spin between zero and the requested speed")
 	parser.add_argument("--max-start-tilt", type=float, help=f"maximum tilt in radians with --vary-start (default {DEFAULT_START_TILT})")
 	parser.add_argument("--stance", choices=("rest", "tuned"), default="rest", help="initial pose and motor reference")
-	parser.add_argument("--action-space", choices=("full", "compact", "residual", "stepping", "whole-body"), default="full", help="choose a motor target or ankle balance policy layout")
+	parser.add_argument("--action-space", choices=("full", "compact", "residual", "stepping", "whole-body", "recovery", "direct"), default="full", help="choose a joint control or recovery step policy layout")
 	parser.add_argument("--push-impulses", type=float, nargs="+", default=(), help="sample an impulse magnitude in N s at two seconds, including zero for quiet starts")
+	parser.add_argument("--recovery-curriculum", action="store_true", help="mix quiet, light, near-threshold and hard push episodes")
+	parser.add_argument("--replay-start-fraction", type=float, default=0.0, help="fraction of training starts to attempt near a replayed landing")
 	parser.add_argument("--support-area", action="store_true", help="observe and reward support margin estimated from contacting box soles")
 	parser.add_argument("--ankle-balance", action="store_true", help="also evaluate a joint-only ankle torque feedback baseline")
 	parser.add_argument("--seed", type=int, default=0)
@@ -463,6 +800,12 @@ def main():
 	mode.add_argument("--checkpoint", type=Path, help="evaluate a saved Stable-Baselines3 checkpoint")
 	parser.add_argument("--resume", type=Path, help="resume training from a saved PPO checkpoint")
 	parser.add_argument("--workers", type=int, default=1, help="number of parallel Jolt environments during training")
+	parser.add_argument("--epochs", type=int, help="maximum PPO optimizer passes per rollout (default 10 for new policies)")
+	parser.add_argument("--learning-rate", type=float, help="override the PPO learning rate")
+	parser.add_argument("--optimizer-trace", type=Path, help="append per-minibatch KL and rollout optimizer metrics to a JSON Lines file")
+	parser.add_argument("--direct-balance-init", action="store_true", help="initialize a new direct policy with continuous ankle motor feedback")
+	parser.add_argument("--direct-limb-std", type=float, help="initial exploration standard deviation on the direct policy's non-ankle axes")
+	parser.add_argument("--without-direct-reward", nargs="+", choices=DIRECT_REWARD_TERMS, default=(), help="omit selected direct reward terms for ablation")
 	parser.add_argument("--output", type=Path, help="save the trained policy to this .zip file")
 	args = parser.parse_args()
 	if args.seconds < 1 or args.episodes < 1 or not 0 <= args.seed < 2**32 or (args.steps is not None and args.steps < 1):
@@ -475,14 +818,29 @@ def main():
 		parser.error("--output requires --steps and a .zip path")
 	if args.workers < 1 or (args.steps is None and (args.resume is not None or args.workers != 1)):
 		parser.error("workers must be positive, and --resume and parallel workers require --steps")
+	if args.epochs is not None and (args.steps is None or args.epochs < 1):
+		parser.error("--epochs requires --steps and a positive value")
+	if args.learning_rate is not None and (args.steps is None or not np.isfinite(args.learning_rate) or args.learning_rate <= 0):
+		parser.error("--learning-rate requires --steps and a positive finite value")
+	if args.optimizer_trace is not None and args.steps is None:
+		parser.error("--optimizer-trace requires --steps")
+	if args.direct_balance_init and (args.steps is None or args.action_space != "direct" or args.resume is not None):
+		parser.error("--direct-balance-init requires --steps, --action-space direct, and a new policy")
+	if args.direct_limb_std is not None and (args.steps is None or args.action_space != "direct" or not 0 < args.direct_limb_std <= 1):
+		parser.error("--direct-limb-std requires direct training and a value in (0, 1]")
+	if args.replay_start_fraction and args.steps is None:
+		parser.error("--replay-start-fraction requires --steps")
 	try:
 		project = default_project() if args.tuning is None else read_project(args.tuning)
 		options = dict(episode_steps=args.seconds * CONTROL_HZ, initial_angular_speed=args.initial_angular_speed,
-			tuned_stance=args.stance == "tuned", vary_start=args.vary_start, support_area=args.support_area, push_impulses=args.push_impulses)
+			tuned_stance=args.stance == "tuned", vary_start=args.vary_start, support_area=args.support_area, push_impulses=args.push_impulses,
+			recovery_curriculum=args.recovery_curriculum)
 		if args.max_start_tilt is not None:
 			options["max_start_tilt"] = args.max_start_tilt
 		action_options = {args.action_space.replace("-", "_"): True} if args.action_space != "full" else {}
-		task = StandingTask(project, **action_options, **options)
+		if args.without_direct_reward:
+			action_options["without_direct_reward"] = args.without_direct_reward
+		task = StandingTask(project, **action_options, **options, replay_start_fraction=args.replay_start_fraction)
 		balance_task = StandingTask(project, ankle_balance=True, **options) if args.ankle_balance or task.residual else None
 	except (OSError, ValueError) as error:
 		parser.error(str(error))
@@ -496,7 +854,7 @@ def main():
 			torch.set_num_threads(1)
 		evaluation = dict(seed=args.seed + 10_000 if args.eval_seed is None else args.eval_seed, episodes=args.episodes)
 		baselines = {}
-		baseline_task = StandingTask(project, **options) if task.compact or task.residual else task
+		baseline_task = StandingTask(project, **options) if task.compact or task.residual or task.direct else task
 		try:
 			for name, strength in (("passive", -1), ("tracking", 1)):
 				action = np.zeros(baseline_task.action_shape, dtype=np.float32)
@@ -509,7 +867,9 @@ def main():
 		print(json.dumps(baselines, indent=2))
 		if args.steps is not None or args.checkpoint is not None:
 			if args.steps is not None:
-				model = train_policy(project, steps=args.steps, seed=args.seed, workers=args.workers, resume=args.resume, **action_options, **options)
+				model = train_policy(project, steps=args.steps, seed=args.seed, workers=args.workers, resume=args.resume, epochs=args.epochs,
+					direct_balance_init=args.direct_balance_init, learning_rate=args.learning_rate, optimizer_trace=args.optimizer_trace, direct_limb_std=args.direct_limb_std,
+					**action_options, **options, replay_start_fraction=args.replay_start_fraction)
 			else:
 				model = PPO.load(args.checkpoint, device="cpu")
 				if model.action_space.shape != task.action_shape or model.observation_space.shape != task.reset(seed=evaluation["seed"])[0].shape:

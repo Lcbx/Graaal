@@ -111,9 +111,10 @@ bone names, parent relationships and order.
 
 Training and checkpoint evaluation also require
 [Stable-Baselines3](https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html).
+To use your regular Python, install it into that interpreter's user packages
+with `python -m pip install --user "stable-baselines3>=2.7,<3"`.
 
 ```sh
-python -m pip install "stable-baselines3>=2.7,<3"
 python -m tools.ragdoll_standing --stance tuned --action-space compact --seconds 10 --workers 8 --seed 77 --steps 65536 --output standing-quiet.zip
 python -m tools.ragdoll_standing --stance tuned --action-space compact --seconds 10 --workers 8 --seed 77 --steps 185344 --vary-start --initial-angular-speed 0.1 --resume standing-quiet.zip --output standing-varied.zip
 python -m tools.ragdoll_standing --stance tuned --action-space compact --seconds 10 --vary-start --initial-angular-speed 0.1 --checkpoint standing-varied.zip --eval-seed 50000 --episodes 30
@@ -199,4 +200,74 @@ This mode uses the same observations, leg controls and joint torque caps as
 python -m tools.ragdoll_standing --stance tuned --action-space stepping --support-area --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 0 4 8 12 --seed 87 --workers 8 --steps 196608 --episodes 3 --output build/ragdoll-push-stepping-seed87.zip
 python -m tools.ragdoll_standing --stance tuned --action-space residual --support-area --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 0 4 8 12 --seed 87 --workers 8 --steps 196608 --episodes 3 --output build/ragdoll-push-residual-seed87.zip
 python -m tools.ragdoll_standing --stance tuned --action-space whole-body --support-area --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 0 4 8 12 --seed 87 --workers 8 --steps 196608 --episodes 3 --output build/ragdoll-push-whole-body-seed87.zip
+```
+
+`--action-space recovery` enables support-area observations and extends the
+whole-body layout. On the built-in humanoid it uses 165 inputs and 32 outputs.
+The additional observations describe the heading-relative capture point
+estimate, signed support margin at that point, foot sole tilt and clearance,
+contact age, filtered Jolt contact impulse estimates, and chest angular
+velocity. The policy also observes the current step phase, target and last
+step command.
+
+Six outputs follow the 26 whole-body commands. A signed request selects a
+swing foot, two outputs offset the capture-based landing target in the
+ragdoll's heading frame, and the remaining outputs adjust clearance, swing
+duration and loading after touchdown. The controller keeps a stance foot
+and uses bounded, paired joint torques for the swing and landing. The task
+rewards braking and regaining support over the 0.2 seconds after a relocated
+landing and awards one bonus for a fresh one-second standing hold after a
+push. It keeps the fall and slip costs and relaxes the height and upright
+costs during the step.
+
+`--recovery-curriculum` samples quiet, light, near-threshold and hard
+episodes with probabilities 20%, 35%, 25% and 20% before optional replay
+sampling. `--replay-start-fraction` attempts to start that fraction of
+training episodes in swing or shortly after touchdown. Each attempt
+replays the push and a guided step in a fresh world. If the requested state
+is unavailable, the episode starts from the regular stance. Evaluation
+starts from stance. `--epochs` caps the optimizer passes per rollout
+(default 10 for a new policy), with KL early stopping still enabled.
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space recovery --seconds 7 --vary-start --initial-angular-speed 0.1 --recovery-curriculum --replay-start-fraction 0.15 --seed 87 --workers 8 --steps 196608 --epochs 10 --episodes 3 --output build/ragdoll-recovery-seed87.zip
+```
+
+Use [`--recovery-checkpoint` in the push benchmark](../scenes/benchmarks/README.md#ragdoll-push-recovery)
+to measure recovery from paired starts.
+
+`--action-space direct` gives the policy 30 continuous target offsets on the
+built-in rig, in bone and constraint-axis order. It uses the tuned stance as
+the motor reference and enables motor targets at the ankles, hips, knees,
+torso and arms on every control tick. The pelvis stays free. Its 187 observations
+include heading-relative body motion, COM and capture-point estimates, foot
+and lower-arm motion relative to the pelvis, joint state, foot contact and
+clearance, and the previous target commands. Support margin is estimated
+from the soles of the contacting feet.
+
+With `direct`, `--recovery-curriculum` samples 20% quiet episodes, 35% mixed
+0.5–4 N·s pushes, 25% backward 8–12 N·s pushes, and 20% from the three
+historically failing backward cells. Every scheduled push occurs at two seconds.
+The direct task tracks braking, support, landing compliance and effort
+rewards. Braking has higher weight in the first 0.2 seconds after foot
+contact resumes. Compliance rewards controlled leg flexion after a relocated
+foot lands. Training logs each component separately. For a reward ablation,
+pass `--without-direct-reward` with any of `braking support compliance`.
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space direct --seconds 7 --vary-start --initial-angular-speed 0.1 --recovery-curriculum --seed 87 --eval-seed 58100 --workers 8 --steps 196608 --epochs 6 --episodes 3 --output build/ragdoll-direct-seed87.zip
+```
+
+`--direct-balance-init` initializes the PPO network to use COM feedback at
+both ankle motors. Training and evaluation then run the MLP's motor targets
+at every tick. The warm-start pilot used a rig with 20 Hz joint motors and
+0.8 damping. Save the rig and use the same project with the checkpoint.
+`--direct-limb-std` sets the initial exploration noise on the non-ankle
+outputs for a new or resumed run. `--optimizer-trace` appends per-minibatch
+approximate KL, accepted epochs and optimizer metrics to a JSON Lines file.
+
+```sh
+python -c "from tools.ragdoll_project import default_project, write_project; project = default_project(); project.settings.motor_frequency = 20; project.settings.motor_damping = 0.8; write_project('build/ragdoll-direct-20hz-rig.json', project)"
+python -m tools.ragdoll_standing --tuning build/ragdoll-direct-20hz-rig.json --stance tuned --action-space direct --direct-balance-init --seconds 7 --vary-start --initial-angular-speed 0.1 --recovery-curriculum --seed 88 --workers 8 --steps 65536 --epochs 5 --learning-rate 0.000003 --output build/ragdoll-direct-warm-65536-seed88.zip
+python -m tools.ragdoll_standing --tuning build/ragdoll-direct-20hz-rig.json --stance tuned --action-space direct --seconds 10 --vary-start --initial-angular-speed 0.1 --eval-seed 58300 --episodes 30 --checkpoint build/ragdoll-direct-warm-65536-seed88.zip
 ```

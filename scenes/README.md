@@ -69,6 +69,7 @@ viewers when you want simulation results in the terminal.
 | `physics_joints_example` | Hinge/slider limits, motor reversal and a breakable attachment | `physics` |
 | `passive_ragdoll_example` | Python-authored 13-body humanoid with feet/ankles, passive neutral/limit forces and bounded zero-gravity/drop/stair/impact checks; no ECS or renderer | `physics` |
 | `active_ragdoll_example` | Headless powered pose tracking, support observations and root-assisted standing balance. `--no-balance` runs tracking alone | `physics` |
+| `ragdoll_recovery_viewer` | [3D playback of quiet standing and push-recovery trials](benchmarks/README.md#view-recovery-trials-in-3d), with controller, test and seed selection | `physics`, `render`, `ui` |
 
 Install the native backend with `python -m pip install -e ".[physics]"`.
 `physics_headless_example` defaults to 120 ticks at 120 Hz; use `--ticks`,

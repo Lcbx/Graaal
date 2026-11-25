@@ -194,7 +194,8 @@ Install the `physics` extra to evaluate classical ankle balance. `--checkpoint`
 adds a [residual PPO policy](../../tools/README.md#ragdoll-standing-task) trained
 with `--support-area`. Use `--stepping-checkpoint` and `--whole-body-checkpoint`
 for policies trained with `--action-space stepping` and `--action-space whole-body`
-respectively, both with `--support-area`. Checkpoint options require
+respectively, both with `--support-area`. `--recovery-checkpoint` loads a
+policy trained with `--action-space recovery`. Checkpoint options require
 Stable-Baselines3 and can be used together. The default grid applies
 0.5, 1, and 2 N·s to the pelvis or chest center of mass in world ±X and ±Z at
 2 seconds. Each cell uses the same 10 starts with tilt up to 0.025 rad and
@@ -218,13 +219,63 @@ python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --stepping-checkpoin
 
 `--scripted-step` compares classical balance with a timed right-foot backstep.
 It uses the benchmark's push timing and activates on −Z impulses of at least
-8 N·s at the chest or 12 N·s at the pelvis. The report records the duration of
-continuous floor contact after each landing in physics ticks and Jolt's peak
-estimated floor-contact impulse for that foot.
+8 N·s at the chest or 12 N·s at the pelvis. For that controller when it
+activates and for recovery policies, the report records continuous contact
+after each landing in physics ticks and Jolt's peak estimated floor impulse
+for that foot.
 
 ```powershell
 python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --scripted-step --impulses 2 4 8 12 --episodes 5 --seed 58200 --report build/ragdoll-scripted-backstep-evaluation.json
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --recovery-checkpoint build/ragdoll-recovery-seed87.zip --impulses 0.5 2 4 8 12 --episodes 3 --seed 58200 --report build/ragdoll-recovery-evaluation.json
 ```
+
+Use `--direct-checkpoint` for a policy trained with `--action-space direct`.
+Pass `--direct-tuning` when that policy was trained on a saved ragdoll project.
+The full grid reports the historically failing backward cells separately.
+`--hard-backward-only` runs those three cells for faster checkpoint comparisons.
+The trial data includes the first return below 0.05 m/s horizontal COM speed
+after exceeding it, COM speeds at relocated touchdown and 0.2 seconds later,
+and the estimated support margin at touchdown.
+
+```sh
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --checkpoint build/standing-residual-tilt025.zip --direct-checkpoint build/ragdoll-direct-warm-65536-seed88.zip --direct-tuning build/ragdoll-direct-20hz-rig.json --hard-backward-only --episodes 10 --seed 58300 --report build/ragdoll-direct-warm-65536-seed88-hard.json
+```
+
+### View recovery trials in 3D
+
+Open full benchmark JSON files with the [recovery viewer](../ragdoll_recovery_viewer.py).
+It reruns the selected trial using the report's controller, checkpoint, rig and
+seed, then plays its colliders at 120 Hz. The trial browser lists cases and seed
+outcomes for the selected scenario group and controller. Use **Results** to find
+passes, failures, or trials with steps. Switching controllers keeps the seed and
+playhead when the same trial exists. The playback bar can jump to the push or
+first landing. Space pauses and R restarts. **View** contains the camera and speed controls.
+
+```powershell
+python -m scenes.ragdoll_recovery_viewer --suite build/ragdoll-direct-warm-65536-seed87 --controller ppo_direct
+```
+
+`--suite` finds reports with a common filename prefix and the suffixes
+`-hard.json`, `-light.json`, `-original.json`, `-margin.json`, and
+`-quiet-replay.json`. You can also pass explicit report paths, on their own or
+alongside `--suite`. To inspect stepping, include
+`build/ragdoll-scripted-backstep-evaluation.json`, choose **Scripted backstep**
+from the controller list, and filter by **With steps**. Generate a replayable
+quiet report with `--quiet` and the same checkpoint and rig.
+
+```powershell
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --quiet --seed 58300 --episodes 30 --direct-checkpoint build/ragdoll-direct-warm-65536-seed87.zip --direct-tuning build/ragdoll-direct-20hz-rig.json --report build/ragdoll-direct-warm-65536-seed87-quiet-replay.json
+```
+
+Each quiet trial starts upright and runs for up to ten seconds. The final
+one-second settled hold uses the same test as the standing tool. The older
+`-quiet.json` files contain aggregate metrics. Playback uses the individual
+seeds saved in `-quiet-replay.json`.
+
+Install the `physics`, `render` and `ui` extras for the window. Install the
+[PPO dependencies](../../tools/README.md#ragdoll-standing-task) in the Python
+interpreter you use for the viewer. Add `--offscreen` to check rendered samples
+without a window.
 
 ## Transparency
 

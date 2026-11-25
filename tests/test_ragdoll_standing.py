@@ -1,11 +1,13 @@
 from dataclasses import replace
+import json
 
 import numpy as np
 import pytest
 
-from scenes.benchmarks.benchmark_ragdoll_push_recovery import PUSH_TICK, run_trial
+from scenes.benchmarks.benchmark_ragdoll_push_recovery import HARD_BACKWARD_CELLS, PUSH_TICK, TICK_HZ, benchmark, make_trial_controller, run_trial
 from scenes.physics_geometry import collider_bounds
 from scenes.ragdoll_control import STANDING_MOTOR_CAPS
+from scenes.ragdoll_recovery_viewer import filtered_trials, paired_selection, read_report, record_trial, suite_reports, view_reports
 from tools.ragdoll_project import default_project
 from tools.ragdoll_standing import ARM_OFFSET, CONTROL_HZ, HIP_OFFSET, KNEE_BACKWARD_OFFSET, KNEE_FORWARD_OFFSET, MAX_OFFSET, MAX_RESIDUAL_TORQUE, StandingTask, _support_margin, evaluate
 
@@ -310,5 +312,167 @@ def test_scripted_backstep_lifts_and_loads_the_landing_foot(project):
 		assert task.settings.root_force == task.settings.root_torque == 0
 		options = dict(seed=58000, bone="chest", impulse=(0, 0, -2))
 		assert run_trial(task, lambda _: zero, scripted_step=True, **options) == run_trial(task, lambda _: zero, **options)
+	finally:
+		task.close()
+
+
+def test_direct_targets_run_before_push_and_without_foot_contact(project):
+	task = StandingTask(project, direct=True, tuned_stance=True)
+	try:
+		initial, _ = task.reset(seed=0)
+		assert initial.shape == (187,) and task.action_shape == (30,)
+		assert not task.state.contacts.any()
+		action = np.full(task.action_shape, 2.0)
+		observation, reward, _, _, info = task.step(action)
+		assert np.isfinite(observation).all() and np.isfinite(reward)
+		np.testing.assert_array_equal(action, 2)
+		np.testing.assert_array_equal(observation[-len(action):], 1)
+		np.testing.assert_array_equal(task.motor_action[0, 0], 0)
+		np.testing.assert_array_equal(task.motor_action[0, 1:, 3], 1)
+		assert task.settings.root_force == task.settings.root_torque == 0
+		assert not task.ankle_balance and task.recovery is None
+		assert np.linalg.norm(task.motor_action[0, task.feet, :3], axis=1).min() > 0
+		assert np.all(np.linalg.norm(task.motor_action[0, :, :3], axis=1) <= task.motor_offset_caps + 1e-7)
+		assert info["target_saturation_fraction"] == 1 and info["effort_reward"] < 0
+		assert info["braking_reward"] == info["support_reward"] == info["compliance_reward"] == 0
+		np.testing.assert_array_equal(task.reset(seed=0)[0], initial)
+	finally:
+		task.close()
+
+
+def test_direct_curriculum_keeps_quiet_light_and_hard_pushes(project):
+	task = StandingTask(project, direct=True, tuned_stance=True, recovery_curriculum=True)
+	rng = np.random.default_rng(87)
+	samples = [task._sample_recovery_push(rng) for _ in range(256)]
+	assert None in samples
+	assert any(sample is not None and np.linalg.norm(sample[1]) < 2 for sample in samples)
+	hard = {(task.settings.bones[bone].name, -impulse[2], "-Z") for bone, impulse in (value for value in samples if value is not None)
+		if impulse[2] <= -8 and not impulse[:2].any()}
+	assert HARD_BACKWARD_CELLS <= hard
+	report = benchmark(seed=58200, episodes=1, impulses=(), hard_backward_only=True)
+	assert {(cell["bone"], cell["magnitude_ns"], cell["direction"]) for cell in report["cells"]} == HARD_BACKWARD_CELLS
+	assert report["hard_backward_summary"] == report["summary"]
+
+
+def test_direct_reward_ablation_changes_reward_without_changing_motion(project):
+	shaped = StandingTask(project, direct=True, tuned_stance=True)
+	ablation = StandingTask(project, direct=True, tuned_stance=True, without_direct_reward=("braking", "support", "compliance"))
+	try:
+		action = np.zeros(shaped.action_shape)
+		for task in (shaped, ablation):
+			task.reset(seed=1)
+			for _ in range(10):
+				task.step(action)
+			task.apply_push(task.chest, (0, 0, -12))
+		for _ in range(10):
+			shaped_obs, _, _, _, shaped_info = shaped.step(action)
+			basic_obs, _, _, _, basic_info = ablation.step(action)
+			np.testing.assert_array_equal(shaped_obs, basic_obs)
+		assert shaped_info["braking_reward"] != 0
+		assert basic_info["braking_reward"] == basic_info["support_reward"] == basic_info["compliance_reward"] == 0
+	finally:
+		shaped.close()
+		ablation.close()
+
+
+@pytest.mark.parametrize(("magnitude", "outcome"), [(0.5, "recovered"), (12, "post_push_fall")])
+def test_recovery_viewer_recording_matches_benchmark(project, magnitude, outcome):
+	task, policy, _ = make_trial_controller("ankle_balance", seed=58300)
+	cell = dict(bone="chest", impulse_ns=(0, 0, -magnitude), magnitude_ns=magnitude)
+	try:
+		expected = run_trial(task, policy, seed=58300, bone=cell["bone"], impulse=cell["impulse_ns"])
+		actual, (centers, rotations), mass_centers, speeds, bounds, push = record_trial(task, policy, cell, expected, "ankle_balance")
+		assert actual == expected and actual["outcome"] == outcome
+		assert len(centers) == len(rotations) == len(mass_centers) == len(speeds) == round(expected["elapsed_seconds"] * TICK_HZ) + 1
+		assert task.world is None
+		assert np.isfinite((centers.min(), rotations.min(), mass_centers.min(), speeds.min())).all()
+		assert np.all(bounds[1] >= bounds[0])
+		np.testing.assert_array_equal(push[0], centers[PUSH_TICK, task.settings.bone_index("chest")])
+		np.testing.assert_array_equal(push[1], [0, 0, -1])
+	finally:
+		task.close()
+
+
+def test_recovery_browser_keeps_matching_case_and_seed():
+	fell = dict(seed=41, outcome="post_push_fall", step_count=2)
+	recovered = dict(seed=42, outcome="recovered", step_count=0)
+	settled = dict(seed=42, outcome="settled")
+	controllers = {"ppo_direct": {"episodes": [fell, recovered]}, "scripted_step": {"episodes": [recovered, fell]}}
+	cases = [dict(bone="chest", direction="-Z", magnitude_ns=impulse, controllers=controllers) for impulse in (8, 12)]
+	quiet = dict(bone=None, controllers={"ppo_direct": {"episodes": [settled]}})
+	reports = [dict(cells=cases), dict(cells=list(reversed(cases))), dict(cells=[quiet])]
+	current = (0, 0, "ppo_direct", 1)
+	assert paired_selection(reports, current, 1) == (1, 1, "ppo_direct", 1)
+	assert paired_selection(reports, current, 0, name="scripted_step") == (0, 0, "scripted_step", 0)
+	assert paired_selection(reports, current, 0, case_index=1, result_filter="With steps") == (0, 1, "ppo_direct", 0)
+	assert paired_selection(reports, current, 2) == (2, 0, "ppo_direct", 0)
+	assert filtered_trials([fell, recovered], "With steps") == [(0, fell)]
+	assert filtered_trials([fell, recovered], "Failed") == [(0, fell)]
+	assert filtered_trials([fell, settled], "Passed") == [(1, settled)]
+
+
+def test_recovery_viewer_opens_quiet_standing_report(project, tmp_path):
+	quiet = benchmark(seed=58300, episodes=1, impulses=(), quiet=True)
+	trial, = quiet["cells"][0]["controllers"]["ankle_balance"]["episodes"]
+	task, policy, _ = make_trial_controller("ankle_balance", seed=58300, episode_seconds=quiet["episode_seconds"])
+	try:
+		expected = evaluate(task, policy, seed=58300, episodes=1)
+		assert quiet["episode_seconds"] == 10
+		assert quiet["summary"]["ankle_balance"]["settled"] == expected["settled_success"]
+		assert all(trial[key] == value for key, value in expected.items())
+		_, (centers, _), _, _, _, push = record_trial(task, policy, quiet["cells"][0], trial, "ankle_balance")
+		assert len(centers) == 10 * TICK_HZ + 1 and push is None
+	finally:
+		task.close()
+	path = tmp_path / "checkpoint-quiet-replay.json"
+	path.write_text(json.dumps(quiet), encoding="utf-8")
+	(tmp_path / "checkpoint-quiet.json").write_text(json.dumps(expected), encoding="utf-8")
+	assert suite_reports(tmp_path / "checkpoint") == [(path, "Quiet standing")]
+	assert view_reports([path], [read_report(path)], headless=True) == trial
+
+
+@pytest.mark.parametrize(("seed", "window", "phase"), [(1, "before_landing", 1), (0, "after_landing", 2)])
+def test_recovery_replays_real_swing_and_touchdown(project, seed, window, phase):
+	task = StandingTask(project, recovery=True, tuned_stance=True, vary_start=True, initial_angular_speed=0.1,
+		recovery_curriculum=True, replay_start_fraction=1)
+	try:
+		observation, info = task.reset(seed=seed)
+		assert info == {} and task.world.tick == 0
+		assert observation.shape == (165,) and task.action_shape == (32,)
+		replayed, info = task.reset(seed=seed, replay=True)
+		assert info["replay_start"] == window
+		assert task.recovery.phase == phase and task.world.tick > PUSH_TICK
+		foot = task.feet[task.recovery.side]
+		assert bool(task.state.contacts[0, foot]) == (phase == 2)
+		assert np.isfinite(replayed).all()
+		np.testing.assert_array_equal(task.reset(seed=seed, replay=True)[0], replayed)
+		torque = task.recovery.feedback(task.state, None)
+		np.testing.assert_allclose(torque.sum(axis=0), 0, atol=1e-12)
+		updated, reward, fallen, completed, _ = task.step(np.zeros(task.action_shape))
+		assert np.isfinite(updated).all() and np.isfinite(reward)
+		assert not fallen and not completed
+		np.testing.assert_array_equal(task.motor_action[0, 0], 0)
+	finally:
+		task.close()
+
+
+def test_recovery_quiet_step_request_and_single_settle_bonus(project):
+	task = StandingTask(project, recovery=True, tuned_stance=True, episode_steps=7 * CONTROL_HZ)
+	action = np.zeros(task.action_shape)
+	action[task.motor_channels] = 1
+	try:
+		task.reset(seed=0)
+		while task.world.tick < PUSH_TICK:
+			task.step(action)
+			assert task.recovery.phase == 0
+		step = task.recovery
+		assert task.settled_ticks >= 120 and not step.settle_awarded
+		task.apply_push(task.chest, (0, 0, -0.5))
+		while task.settled_ticks < 118:
+			task.step(action)
+		_, reward, *_ = task.step(action)
+		_, next_reward, *_ = task.step(action)
+		assert step.settle_awarded and step.phase == 0
+		assert reward - next_reward == pytest.approx(8, abs=0.01)
 	finally:
 		task.close()
