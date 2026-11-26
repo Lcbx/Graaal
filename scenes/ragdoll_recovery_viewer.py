@@ -13,11 +13,13 @@ from scenes.physics_viewing_utils import Playback, add_viewing_options, has_blue
 from tools.ragdoll_project import default_project, read_project
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTROLLER_LABELS = {"ankle_balance": "Ankle balance", "scripted_step": "Scripted backstep", "ppo_residual": "Residual PPO",
-	"ppo_stepping": "Stepping PPO", "ppo_whole_body": "Whole-body PPO", "ppo_recovery": "Recovery PPO", "ppo_direct": "Direct PPO"}
+	"ppo_stepping": "Stepping PPO", "ppo_whole_body": "Whole-body PPO", "ppo_recovery": "Recovery PPO", "ppo_direct": "Direct PPO",
+	"backstep_reference": "Reference backstep", "ppo_backstep": "Backstep + PPO", "ppo_backstep_no_swing": "Backstep PPO (swing disabled)"}
 SUITE_REPORTS = {"hard": "Hard backward pushes", "light": "Light pushes", "original": "Original push grid",
 	"margin": "Strong pushes", "quiet-replay": "Quiet standing"}
-RESULT_FILTERS = ("All results", "Passed", "Failed", "With steps")
+RESULT_FILTERS = ("All results", "Passed", "Failed", "With steps", "Recovered with steps")
 PASS_OUTCOMES = ("recovered", "settled")
 PASS_COLOR = (0.52, 0.92, 0.69, 1)
 FAIL_COLOR = (1.0, 0.66, 0.51, 1)
@@ -39,13 +41,45 @@ def report_assets(path, report, controller):
 	metadata = report.get("checkpoints", {}).get(controller, {})
 	checkpoint = metadata.get("path") or (report.get("ppo_checkpoint") if controller == "ppo_residual" else None)
 
-	def resolve(filename):
+	def resolve(filename, extension=""):
 		if filename is None:
 			return None
 		asset = Path(filename.replace("\\", "/"))
-		return next((candidate.resolve() for candidate in (asset, path.parent / asset, path.parent / asset.name) if candidate.is_file()), asset)
+		for candidate in (asset, path.parent / asset, REPO_ROOT / asset, path.parent / asset.name):
+			if candidate.is_file():
+				return candidate.resolve()
+			if extension and (with_extension := Path(f"{candidate}{extension}")).is_file():
+				return with_extension.resolve()
+		return asset
 
-	return resolve(checkpoint), resolve(metadata.get("tuning"))
+	return resolve(checkpoint, ".zip"), resolve(metadata.get("tuning"))
+
+
+def discover_reports(directory):
+	"""Find replayable benchmark reports, newest first."""
+	matches = []
+	for path in directory.glob("*.json"):
+		try:
+			report = read_report(path)
+			if not {"first_seed", "max_start_spin_rad_s", "max_start_tilt_rad"} <= report.keys():
+				continue
+			cells = report["cells"]
+			available = []
+			for name in cells[0]["controllers"]:
+				if name not in CONTROLLER_LABELS or not all(cell["controllers"].get(name, {}).get("episodes") for cell in cells):
+					continue
+				checkpoint, tuning = report_assets(path, report, name)
+				if name.startswith("ppo_") and (checkpoint is None or not checkpoint.is_file()):
+					continue
+				if tuning is None or tuning.is_file():
+					available.append(name)
+			if available:
+				for cell in cells:
+					cell["controllers"] = {name: cell["controllers"][name] for name in available}
+				matches.append((path.stat().st_mtime_ns, path, report))
+		except (AttributeError, KeyError, OSError, TypeError, ValueError):
+			continue
+	return [(path, report) for _, path, report in sorted(matches, key=lambda item: item[:2], reverse=True)]
 
 
 def record_trial(task, policy, cell, trial, controller):
@@ -97,6 +131,8 @@ def case_label(cell):
 
 
 def filtered_trials(trials, result_filter):
+	if result_filter == "Recovered with steps":
+		return [(index, trial) for index, trial in enumerate(trials) if trial["outcome"] == "recovered" and trial.get("step_count", 0)]
 	if result_filter == "With steps":
 		return [(i, trial) for i, trial in enumerate(trials) if trial.get("step_count", 0)]
 	if result_filter == "All results":
@@ -144,15 +180,18 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 		return report_assets(paths[report_index], reports[report_index], name)
 
 	@cache
-	def load_controller(name, checkpoint, tuning, seed, spin, tilt, seconds):
+	def load_controller(name, checkpoint, tuning, seed, spin, tilt, seconds, strong_backstep_reference, pose_recovery, release_backstep_hips):
 		task, policy, _ = make_trial_controller(name, seed=seed, checkpoint=checkpoint, tuning=tuning,
-			max_start_spin=spin, max_start_tilt=tilt, episode_seconds=seconds)
+			max_start_spin=spin, max_start_tilt=tilt, episode_seconds=seconds, strong_backstep_reference=strong_backstep_reference,
+			pose_recovery=pose_recovery, release_backstep_hips=release_backstep_hips)
 		return task, policy
 
 	def trial_controller(report_index, name):
 		report = reports[report_index]
 		return load_controller(name, *assets(report_index, name), report["first_seed"], report["max_start_spin_rad_s"],
-			report["max_start_tilt_rad"], report.get("episode_seconds", PUSH_SECONDS + RECOVERY_SECONDS))
+			report["max_start_tilt_rad"], report.get("episode_seconds", PUSH_SECONDS + RECOVERY_SECONDS),
+			"backstep" in name and report.get("strong_backstep_reference", False), report.get("pose_recovery", False),
+			report.get("release_backstep_hips", False))
 
 	@lru_cache(maxsize=24)
 	def recording(report_index, cell_index, name, start_index):
@@ -310,6 +349,8 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 							count = f"{passed}/{block['trials']} passed"
 							if filter_label == "With steps":
 								count = f"{matches}/{block['trials']} with steps"
+							elif filter_label == "Recovered with steps":
+								count = f"{matches}/{block['trials']} stepped and passed"
 							elif filter_label == "Failed":
 								count = f"{matches}/{block['trials']} failed"
 							label = f"{case_label(item)}   {count}##case{i}"
@@ -445,7 +486,7 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 
 def main():
 	parser = argparse.ArgumentParser(description=__doc__)
-	parser.add_argument("reports", type=Path, nargs="*", help="full benchmark JSON reports")
+	parser.add_argument("reports", type=Path, nargs="*", help="full benchmark JSON reports (default: discover replays in build/)")
 	parser.add_argument("--suite", type=Path, help="load standing and push reports sharing this filename prefix")
 	parser.add_argument("--controller", choices=CONTROLLER_LABELS, help="controller selected when the viewer opens")
 	parser.add_argument("--frames", type=int, help="close the window after this many rendered frames")
@@ -456,6 +497,7 @@ def main():
 	try:
 		paths = args.reports
 		labels = [path.stem for path in paths]
+		controller = args.controller
 		if args.suite is not None:
 			matches = suite_reports(args.suite)
 			if not matches:
@@ -463,10 +505,17 @@ def main():
 			suite_paths = {path.resolve() for path, _ in matches}
 			matches.extend((path, label) for path, label in zip(paths, labels, strict=True) if path.resolve() not in suite_paths)
 			paths, labels = zip(*matches)
-		if not paths:
-			raise ValueError("pass report paths or --suite")
-		reports = [read_report(path) for path in paths]
-		result = view_reports(paths, reports, controller=args.controller, labels=labels, headless=args.headless, offscreen=args.offscreen, frames=args.frames)
+		if paths:
+			reports = [read_report(path) for path in paths]
+		else:
+			directory = REPO_ROOT / "build"
+			discovered = discover_reports(directory)
+			if not discovered:
+				raise ValueError(f"no replayable benchmark reports in {directory}. Pass a report path or record one with the benchmark's --report option")
+			paths, reports = zip(*discovered)
+			labels = [path.stem for path in paths]
+			controller = controller or next((name for report in reports for name in report["cells"][0]["controllers"] if name.startswith("ppo_")), None)
+		result = view_reports(paths, reports, controller=controller, labels=labels, headless=args.headless, offscreen=args.offscreen, frames=args.frames)
 	except (ImportError, KeyError, OSError, RuntimeError, ValueError) as error:
 		parser.error(str(error))
 	if args.headless or args.offscreen:

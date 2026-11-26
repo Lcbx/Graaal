@@ -210,14 +210,137 @@ comparison accepted 2 full epochs at 1e-5 and 33 at 3e-6, out of 40
 available in each run. The KL target remained 0.03. The traces are
 `build/ragdoll-direct-optimizer-*.jsonl`.
 
+### 7. Stepped recovery from backward chest pushes
+
+The fitted right-foot reference produces relocated landings during training.
+Its optional stronger-push variant uses a farther landing target starting at 14 N·s. The
+backstep policy learns joint residuals after swing. It sees elapsed time
+since the push, and the benchmark uses the scheduled impulse to choose and
+trigger the reference. The pelvis remains freely simulated. These runs
+measure how well the policy loads the relocated foot and settles under that
+reference.
+
+The replayable grid pairs ten starts (60700–60709) at each magnitude from
+11 through 16 N·s. The swing ablation keeps the same checkpoint, reference
+timing and body motor targets and removes the swing and loading commands.
+The braking-step metric requires 5 cm of landing displacement along the
+push, 0.05 s of maintained contact and a speed drop of at least 0.02 m/s
+over the first 0.2 s after landing, in a trial that subsequently settles.
+The [training guide](../tools/README.md#ragdoll-standing-task) and
+[benchmark guide](../scenes/benchmarks/README.md#ragdoll-push-recovery)
+include commands to reproduce and browse the trials.
+
+| Controller | 11–13 N·s | 14 N·s | 15 N·s | 16 N·s | Recovered with braking step |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ankle balance | 0/30 | 0/10 | 0/10 | 0/10 | 0 |
+| Direct PPO seed 87 | 30/30 | 0/10 | 0/10 | 0/10 | 0 |
+| Fitted reference | 2/30 | 2/10 | 2/10 | 0/10 | 0 |
+| Backstep PPO, 33,024 steps | 3/30 | 2/10 | 2/10 | 0/10 | 2 |
+| Backstep PPO, 82,176 steps | 2/30 | 2/10 | 3/10 | 0/10 | 1 |
+| Strong-reference PPO, 57,600 steps | 4/30 | 0/10 | 0/10 | 1/10 | 1 |
+
+Every PPO backstep recovery included a relocated foot. Removing swing and
+loading reduced recovery to 0/60 for each checkpoint. The 82,176-step run added
+one recovery at 15 N·s while losing one at 11 N·s. The strong-impulse
+continuation recovered two-step seed 60700 at 16 N·s, with the first foot
+landing 8.5 cm farther back, and had fewer successful strong trials overall.
+The 33,024-step checkpoint also settled on all 30 ten-second quiet starts.
+The braking criterion was met only on the 11–12 N·s cells.
+
+The main paired report is `build/ragdoll-backstep-holdout.json`. The
+strong-reference report is
+`build/ragdoll-backstep-heavy-57344-seed93-holdout.json`. Training used seed 93
+for the first checkpoint and seeds 94 and 95 for the two continuations.
+
+### 8. Impact costs and episode length
+
+Backstep PPO now penalizes peak COM acceleration and estimated floor impulse
+above calibrated thresholds. The first physics tick of the scripted push is
+excluded. Supported posture earns the training hold bonus. The benchmark
+also requires slow horizontal motion for the settled hold.
+
+Two continuations from the 82,176-step checkpoint each collected 33,024 policy
+steps with seed 96 and the same push curriculum. They used five- and ten-second
+limits after the push. All policies were evaluated on the same 60 trials with
+ten seconds after the push. A sustained step here means a relocated landing
+after at least 0.05 s out of contact.
+
+| Policy | Recoveries | Trials with at least two sustained steps | Latest follow-up landing |
+| --- | ---: | ---: | ---: |
+| Prior checkpoint | 7/60 | 29/60 | 0.958 s |
+| Impact reward, 5 s after push | 9/60 | 30/60 | 0.992 s |
+| Impact reward, 10 s after push | 6/60 | 30/60 | 1.008 s |
+
+Every successful trial had at least two sustained steps, and all recoveries
+finished within five seconds. In the final training logs the last 100
+episodes averaged 2.72 and 2.78 seconds from the end of the scripted swing.
+The longer window offered little extra practice on this grid. The reference
+still prescribes one swing and overwrites both hip-pitch targets after its
+loading phase. This comparison shows the timing of subsequent landings for
+that controller. Impact peaks stayed similar across the three checkpoints.
+The full reports are `build/ragdoll-backstep-impact-{prior,7s,12s}-holdout.json`.
+
+### 9. Target-pose hold and post-landing hip control
+
+The pose-recovery mode ends on a full second near the target posture with foot
+support, slow COM motion and low pelvis spin. The five-second window allows an
+active hold to finish within one extra second. Early failure requires a persistently
+low or tilted pelvis while the trunk contacts the floor or motion has slowed.
+The dense impact costs still use acceleration and estimated floor impulse.
+
+Two continuations from the 115,200-step impact checkpoint collected 12,288
+policy steps each with seed 97 and the same push curriculum. The hip-release
+run blends both pitch targets back to PPO over 0.25 seconds after loading.
+All three policies used pose recovery on 60 paired held-out chest pushes.
+
+| Policy | Recoveries | Holds finished during grace | Recoveries at 14–15 N·s |
+| --- | ---: | ---: | ---: |
+| Starting checkpoint | 5/60 | 2 | 3/20 |
+| Continued with scripted hips | 3/60 | 2 | 2/20 |
+| Continued with released hips | 11/60 | 2 | 6/20 |
+
+Every recovery included at least two relocated landings with at least 0.05 s
+of airborne time and 0.05 s of contact each. One recovery with released hips
+met the benchmark braking-step threshold. All three policies failed at 16 N·s.
+The relaxed failure rule exposed hard floor impacts during failed trials.
+Across the 60 trials, mean peak COM acceleration and estimated floor impulse
+were 129 m/s² and 39.5 N·s at the start and 103 m/s² and 26.9 N·s with released
+hips. This is a single-seed comparison. The viewer discovers the three paired
+reports in `build/ragdoll-backstep-pose-{start,locked,hips}-holdout.json`.
+
+Standing CLI baseline comparisons use the Backstep push sampler for matching
+disturbances under both push sources. Training checks that the configured
+pushes can activate the reference. A resumed PPO rollout verified pose recovery
+with curriculum-generated pushes. The benchmark records landing contact duration
+for every controller so its braking-step criterion applies across comparisons.
+
+### 10. Touchdown support signal
+
+An optional Backstep reward measures the change in COM support margin during
+the first 0.2 seconds after each foot touchdown. It evaluates both COM positions
+against the current support polygon. The existing acceleration and impact
+costs remain active.
+
+Two 12,288-step continuations from the 127,488-step released-hip checkpoint
+used seed 98 and the same push curriculum. On the 60 paired held-out pushes,
+the reward run recovered 10 and the control recovered 12. Both recovered
+seed 60703 at 16 N·s. Neither had a recovery meeting the braking-step criterion.
+Mean peak COM acceleration and estimated floor impulse were 105.79 m/s² and
+28.01 N·s with the signal, and 103.66 m/s² and 28.91 N·s for the control.
+The starting checkpoint recovered 11/60 with one braking step. This single
+seed provides no evidence that the new signal improves recovery. Reports are
+`build/ragdoll-backstep-touchdown-holdout.json` and
+`build/ragdoll-backstep-touchdown-control-holdout.json`.
+
 ## Remaining work — priorities
 
 ### Extend the recovery range
 
 Keep the original quiet and push grids as regression checks. Oversample
 14–18 N·s pushes while keeping quiet, light and other-direction starts in
-training. Seek reliable relocations with effective braking in the stronger
-backward and lateral cells. Use paired checkpoints and inspect target
+training. Learn swing timing and foot placement from contact and COM state.
+Seek reliable relocations with effective braking in the stronger backward
+and lateral cells. Use paired checkpoints and inspect target
 saturation, foot clearance, action ranges, contact geometry and COM/capture
 traces when the stronger cases plateau.
 
@@ -302,6 +425,9 @@ is the reference; keep its recorded 2/4/8/12 N·s comparison and extend the
 hard `−Z` cases with multiple starts and training seeds.
 Use the [3D recovery viewer](../scenes/benchmarks/README.md#view-recovery-trials-in-3d)
 to inspect quiet-standing or push cases and compare controllers on the same seed.
+`python -m scenes.ragdoll_recovery_viewer` discovers replayable reports in `build/`.
+Automatic discovery found both impact-reward runs, and each initial replay
+matched its recorded trial.
 
 | Scenario | Initial acceptance / diagnostics |
 | --- | --- |

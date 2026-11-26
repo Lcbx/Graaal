@@ -7,7 +7,7 @@ import numpy as np
 from graaal.Math import Quaternion
 from scenes.physics_geometry import collider_poses
 from scenes.ragdoll_control import STANDING_MOTOR_CAPS
-from tools.ragdoll_standing import TICK_HZ, _support_margin
+from tools.ragdoll_standing import BACKSTEP_CHEST_MIN_IMPULSE, TICK_HZ, _support_margin
 
 
 class ScriptedBackstep:
@@ -22,10 +22,12 @@ class ScriptedBackstep:
 	landing_force = 427.0
 	stance_action = (-0.377, -0.392, -0.544)
 
-	def __init__(self, task):
+	def __init__(self, task, *, swing=True, release_hips=False):
 		if not task.whole_body:
 			raise ValueError("the scripted backstep uses the whole-body action layout")
 		self.task = task
+		self.swing_enabled = swing
+		self.release_hips = release_hips
 		self.push_tick = task.world.tick
 		self.swing = np.array([task.hips[1], task.knees[1], task.feet[1]])
 		self.parents = np.asarray(task.parents)[self.swing]
@@ -49,15 +51,19 @@ class ScriptedBackstep:
 	def edit_motors(self, action):
 		time = self._seconds()
 		end = self.swing_seconds + self.load_seconds
-		if 0 <= time < end:
-			action[0, self.swing, 3] = 0
-		elif time >= end:
+		if time >= end:
 			ease = np.interp(time, [end, end + 0.5, end + 1.5], [1, 1, 0])
-			action[0, self.task.hips, 0] = ease * np.array([-0.2, 0.4])
+			hip_pitch = ease * np.array([-0.2, 0.4])
+			if self.release_hips:
+				blend = min((time - end) / 0.25, 1)
+				hip_pitch += blend * (action[0, self.task.hips, 0] - hip_pitch)
+			action[0, self.task.hips, 0] = hip_pitch
+		elif self.swing_enabled and time >= 0:
+			action[0, self.swing, 3] = 0
 
 	def feedback(self, state, residual):
 		time = self._seconds()
-		if time < 0 or time >= self.swing_seconds + self.load_seconds:
+		if not self.swing_enabled or time < 0 or time >= self.swing_seconds + self.load_seconds:
 			return self.task.balance_torques(state, residual)
 		foot = self.swing[-1]
 		position = state.position[0]
@@ -91,6 +97,56 @@ class ScriptedBackstep:
 		torque[self.swing] += pair
 		torque[self.parents] -= pair
 		return torque
+
+
+class BackstepReference(ScriptedBackstep):
+	"""The fitted reference used to initialize touchdown and settling training."""
+
+	delay = 0.14387688194349282
+	swing_seconds = 0.1586975391393785
+	load_seconds = 0.29874593509199904
+	step_offset = (-0.03470655427714422, 0, -0.19524371726645115)
+	clearance = 0.16262734247767616
+	position_gain = 1227.430027626054
+	landing_force = 427.1651872768462
+	stance_action = (-0.37733810693470465, -0.39198731949498544, -0.54443129475441)
+
+	@staticmethod
+	def accepts(task, bone, impulse):
+		minimum = {"chest": BACKSTEP_CHEST_MIN_IMPULSE, "pelvis": 12}.get(task.settings.bones[bone].name, np.inf)
+		return tuple(impulse[:2]) == (0, 0) and -impulse[2] >= minimum
+
+	@classmethod
+	def start_for_push(cls, task, bone, impulse):
+		if cls.accepts(task, bone, impulse):
+			strong = task.strong_backstep_reference and bone == task.chest and -impulse[2] >= 14
+			reference = StrongBackstepReference if strong else cls
+			return reference(task, swing=task.backstep_swing, release_hips=task.release_backstep_hips)
+		return None
+
+	def progress(self):
+		return float(np.clip((self.task.world.tick - self.push_tick) / TICK_HZ, 0, 2))
+
+	def residual_active(self):
+		return self._seconds() >= self.swing_seconds
+
+	def learned_action(self, action):
+		# Keep the reference's swing intact. Learn how to load the foot and stand up.
+		weight = np.clip((self._seconds() - self.swing_seconds) / 0.10, 0, 1)
+		return np.clip(self.action() + 0.5 * weight * action, -1, 1)
+
+
+class StrongBackstepReference(BackstepReference):
+	"""Use a farther foot placement for backward chest pushes of at least 14 N s."""
+
+	delay = 0.17090484461244
+	swing_seconds = 0.1354020580978652
+	load_seconds = 0.31215124881300693
+	step_offset = (-0.027452342337965695, 0, -0.23677102539348102)
+	clearance = 0.14423303944384036
+	position_gain = 1323.4107298406195
+	landing_force = 464.0199225555542
+	stance_action = (-0.38178970007916635, -0.4634828142542544, -0.595489524676176)
 
 
 RECOVERY_CHANNELS = 6

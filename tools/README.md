@@ -271,3 +271,56 @@ python -c "from tools.ragdoll_project import default_project, write_project; pro
 python -m tools.ragdoll_standing --tuning build/ragdoll-direct-20hz-rig.json --stance tuned --action-space direct --direct-balance-init --seconds 7 --vary-start --initial-angular-speed 0.1 --recovery-curriculum --seed 88 --workers 8 --steps 65536 --epochs 5 --learning-rate 0.000003 --output build/ragdoll-direct-warm-65536-seed88.zip
 python -m tools.ragdoll_standing --tuning build/ragdoll-direct-20hz-rig.json --stance tuned --action-space direct --seconds 10 --vary-start --initial-angular-speed 0.1 --eval-seed 58300 --episodes 30 --checkpoint build/ragdoll-direct-warm-65536-seed88.zip
 ```
+
+`--action-space backstep` trains joint residuals to load the foot and settle
+after a reference right-foot swing. It uses the tuned stance, ankle feedback
+and whole-body action layout with an extra elapsed-push observation. The
+backstep curriculum samples 11–13 N·s backward chest pushes. Training replays
+the reference up to the end of swing in a fresh world, so the PPO rollout
+starts where its residuals can affect the motion. The benchmark replays each
+trial from the original standing start.
+
+The backstep reward penalizes sudden center-of-mass acceleration above
+8 m/s² and large estimated floor impulses. On the built-in rig the impulse
+threshold is about 1.26 N·s. Each control step uses the peak of each
+measurement across its two physics ticks. The tick that receives the
+external push is excluded. A one-time bonus rewards a full second of
+upright, supported posture. The benchmark's settled-stance test also
+checks horizontal speed.
+
+Use `--pose-recovery` with pushed backstep training to end an episode after
+a continuous one-second hold near the target pose. The regular time limit
+allows up to one extra second for a hold that has already started. A sustained
+topple ends the episode early. Speed gates the hold, while the per-action impact
+costs still use COM acceleration and floor impulse. The success reward includes
+the discounted standing reward for the unused portion of the regular window.
+`--release-backstep-hips` blends hip pitch from the script to the learned motor
+targets over 0.25 seconds after loading. Pass both options to the benchmark
+when evaluating a checkpoint trained with them.
+
+`--touchdown-support-reward` adds a training signal for changes in COM support
+margin during the first 0.2 seconds after a foot lands. It measures both COM
+positions against the current planted-foot support polygon, and logs the
+accumulated signal as `touchdown_support_reward`. The signal is zero without
+foot contact and does not penalize speed directly.
+
+Backstep training accepts `--recovery-curriculum` or `--push-impulses` with at
+least one backward chest push of 10 N·s or more. Both sources support
+`--pose-recovery`. The standing CLI uses the same seeded disturbances for
+Backstep PPO and the passive, tracking and ankle-balance baselines.
+`--strong-backstep-reference` uses a farther
+landing target at 14 N·s and above. Pass the same option to the benchmark
+when evaluating a checkpoint trained with it.
+
+The following continuations use equal PPO step budgets, with five and ten
+seconds after the push respectively. `--seconds` includes two seconds before
+the push. Omit `--resume` to train from scratch.
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space backstep --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 11 12 13 14 14 15 15 16 --steps 32768 --resume build/ragdoll-backstep-81920-seed93.zip --workers 6 --epochs 5 --learning-rate 0.00005 --seed 96 --episodes 3 --output build/ragdoll-backstep-impact-7s.zip
+python -m tools.ragdoll_standing --stance tuned --action-space backstep --seconds 12 --vary-start --initial-angular-speed 0.1 --push-impulses 11 12 13 14 14 15 15 16 --steps 32768 --resume build/ragdoll-backstep-81920-seed93.zip --workers 6 --epochs 5 --learning-rate 0.00005 --seed 96 --episodes 3 --output build/ragdoll-backstep-impact-12s.zip
+```
+
+```sh
+python -m tools.ragdoll_standing --stance tuned --action-space backstep --pose-recovery --release-backstep-hips --seconds 7 --vary-start --initial-angular-speed 0.1 --push-impulses 11 12 13 14 14 15 15 16 --steps 12288 --resume build/ragdoll-backstep-impact-7s.zip --workers 4 --epochs 5 --learning-rate 0.00005 --seed 97 --episodes 1 --output build/ragdoll-backstep-pose-hips-seed97.zip
+```

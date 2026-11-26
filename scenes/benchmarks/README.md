@@ -241,13 +241,62 @@ and the estimated support margin at touchdown.
 python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --checkpoint build/standing-residual-tilt025.zip --direct-checkpoint build/ragdoll-direct-warm-65536-seed88.zip --direct-tuning build/ragdoll-direct-20hz-rig.json --hard-backward-only --episodes 10 --seed 58300 --report build/ragdoll-direct-warm-65536-seed88-hard.json
 ```
 
+`--backstep-grid` runs backward chest pushes from 11 through 16 N·s.
+`--backstep-checkpoint` adds the fitted reference and the trained stabilizing
+residual. Add `--backstep-ablation` to replay the same checkpoint with the
+reference swing and loading removed. A braking-step recovery requires a
+successful trial with at least one foot landing 5 cm or farther in the push
+direction, staying planted for at least 0.05 seconds and decreasing horizontal
+COM speed by at least 0.02 m/s over the first 0.2 seconds after touchdown.
+Each landing records how long the foot was out of contact and how many
+consecutive physics ticks it stayed planted. Backstep trials
+also record peak COM acceleration, peak estimated floor impulse, and the
+training penalties accumulated for those measurements. Use
+`--recovery-seconds 10` to watch for later recoveries beyond the default
+five-second window. Both windows include the settled hold.
+
+```powershell
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --backstep-grid --backstep-checkpoint build/ragdoll-backstep-81920-seed93.zip --backstep-ablation --direct-checkpoint build/ragdoll-direct-warm-65536-seed87.zip --direct-tuning build/ragdoll-direct-20hz-rig.json --episodes 10 --seed 60700 --report build/ragdoll-backstep-holdout.json
+python -m scenes.ragdoll_recovery_viewer build/ragdoll-backstep-holdout.json build/ragdoll-backstep-heavy-57344-seed93-holdout.json --controller ppo_backstep
+```
+
+To compare the two impact-reward training windows on the same starts, open
+both recorded reports.
+
+```powershell
+python -m scenes.ragdoll_recovery_viewer build/ragdoll-backstep-impact-7s-holdout.json build/ragdoll-backstep-impact-12s-holdout.json --controller ppo_backstep
+```
+
+With `--pose-recovery`, recovery requires one continuous second of foot support,
+pelvis height within 10% of target, pelvis and chest tilt within 15 and 18 degrees
+of target respectively, joint errors within 15 degrees RMS and 30 degrees per
+joint, COM speed below 0.05 m/s and pelvis spin below 0.2 rad/s. The cutoff
+lets an active hold finish, for up to one additional second. A toppled pose
+must persist for 0.25 seconds before the trial ends in a fall. The report
+records the scoring and hip-control flags used by the viewer.
+
+```powershell
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --backstep-grid --pose-recovery --release-backstep-hips --backstep-checkpoint build/ragdoll-backstep-pose-hips-seed97.zip --episodes 10 --seed 60700 --report build/ragdoll-backstep-pose-hips-holdout.json
+```
+
 ### View recovery trials in 3D
 
-Open full benchmark JSON files with the [recovery viewer](../ragdoll_recovery_viewer.py).
+Launch the [recovery viewer](../ragdoll_recovery_viewer.py) to discover full
+benchmark JSON reports in the repository's `build/` directory.
+
+```powershell
+python -m scenes.ragdoll_recovery_viewer
+```
+
+The viewer opens the newest report with a replayable trained controller, or the
+newest replayable report if only scripted controllers are available. **Scenario
+group** lists the discovered reports. A controller's checkpoint and custom rig
+must be present for its trials to appear.
+
 It reruns the selected trial using the report's controller, checkpoint, rig and
 seed, then plays its colliders at 120 Hz. The trial browser lists cases and seed
 outcomes for the selected scenario group and controller. Use **Results** to find
-passes, failures, or trials with steps. Switching controllers keeps the seed and
+passes, failures, attempted steps, or **Recovered with steps**. Switching controllers keeps the seed and
 playhead when the same trial exists. The playback bar can jump to the push or
 first landing. Space pauses and R restarts. **View** contains the camera and speed controls.
 

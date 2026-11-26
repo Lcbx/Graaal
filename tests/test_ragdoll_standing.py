@@ -1,5 +1,7 @@
 from dataclasses import replace
 import json
+import os
+import sys
 
 import numpy as np
 import pytest
@@ -7,9 +9,10 @@ import pytest
 from scenes.benchmarks.benchmark_ragdoll_push_recovery import HARD_BACKWARD_CELLS, PUSH_TICK, TICK_HZ, benchmark, make_trial_controller, run_trial
 from scenes.physics_geometry import collider_bounds
 from scenes.ragdoll_control import STANDING_MOTOR_CAPS
-from scenes.ragdoll_recovery_viewer import filtered_trials, paired_selection, read_report, record_trial, suite_reports, view_reports
+from scenes.ragdoll_recovery_viewer import discover_reports, filtered_trials, paired_selection, read_report, record_trial, suite_reports, view_reports
+from tools import ragdoll_standing
 from tools.ragdoll_project import default_project
-from tools.ragdoll_standing import ARM_OFFSET, CONTROL_HZ, HIP_OFFSET, KNEE_BACKWARD_OFFSET, KNEE_FORWARD_OFFSET, MAX_OFFSET, MAX_RESIDUAL_TORQUE, StandingTask, _support_margin, evaluate
+from tools.ragdoll_standing import ARM_OFFSET, CONTROL_HZ, HIP_OFFSET, KNEE_BACKWARD_OFFSET, KNEE_FORWARD_OFFSET, MAX_OFFSET, MAX_RESIDUAL_TORQUE, POSE_FALL_TICKS, StandingTask, _support_margin, evaluate
 
 
 @pytest.fixture
@@ -316,6 +319,206 @@ def test_scripted_backstep_lifts_and_loads_the_landing_foot(project):
 		task.close()
 
 
+@pytest.mark.parametrize(("seed", "magnitude"), [(58000, 12), (60401, 16)])
+def test_backstep_reference_recovers_and_swing_ablation_falls(seed, magnitude):
+	task, policy, _ = make_trial_controller("backstep_reference", seed=seed, strong_backstep_reference=magnitude >= 14)
+	try:
+		options = dict(seed=seed, bone="chest", impulse=(0, 0, -magnitude))
+		result = run_trial(task, policy, **options)
+		assert result["outcome"] == "recovered"
+		landing = result["landings"][0]
+		assert landing["foot"] == "foot_r" and landing["displacement_along_push_m"] >= 0.05
+		assert landing["airborne_seconds"] >= 0.05
+		assert landing["contact_ticks"] >= 6
+		assert landing["com_speed_at_touchdown_m_s"] - landing["com_speed_after_0_2s_m_s"] >= 0.02
+		task.backstep_swing = False
+		result = run_trial(task, policy, **options)
+		assert result["outcome"] == "post_push_fall" and result["step_count"] == 0
+	finally:
+		task.close()
+
+
+def test_backstep_training_reset_replays_the_full_reference_swing(project):
+	task = StandingTask(project, backstep=True, tuned_stance=True, vary_start=True, initial_angular_speed=0.1,
+		push_impulses=(16,), episode_steps=7 * CONTROL_HZ, strong_backstep_reference=True)
+	try:
+		replayed, _ = task.reset(seed=60401, replay=True)
+		handoff = task.world.tick
+		assert PUSH_TICK < handoff < PUSH_TICK + TICK_HZ // 2
+		assert task.backstep_reference.residual_active()
+		task.reset(seed=60401)
+		while task.world.tick < handoff:
+			observed, _, _, _, _ = task.step(task.backstep_zero)
+		np.testing.assert_array_equal(observed, replayed)
+	finally:
+		task.close()
+
+
+@pytest.mark.parametrize("impulses", [(), (0, 8, 9.99), (float("inf"),)])
+def test_backstep_training_requires_an_activating_push(impulses):
+	with pytest.raises(ValueError, match="backstep training requires --recovery-curriculum or a push of at least 10 N s"):
+		ragdoll_standing.train_policy(None, steps=1, seed=0, backstep=True, push_impulses=impulses)
+
+
+@pytest.mark.parametrize("curriculum", [False, True])
+def test_backstep_cli_pairs_baseline_pushes_and_accepts_pose_curriculum(project, monkeypatch, curriculum):
+	impulses = (11, 12, 13, 14, 14, 15, 15, 16)
+	args = ["ragdoll_standing", "--stance", "tuned", "--action-space", "backstep", "--pose-recovery", "--seconds", "7",
+		"--vary-start", "--initial-angular-speed", "0.1", "--eval-seed", "10098", "--episodes", "1"]
+	args += ["--recovery-curriculum"] if curriculum else ["--push-impulses", *map(str, impulses)]
+	task = StandingTask(project, episode_steps=7 * CONTROL_HZ, tuned_stance=True, vary_start=True, initial_angular_speed=0.1,
+		backstep=True, recovery_curriculum=curriculum, push_impulses=() if curriculum else impulses)
+	try:
+		task.reset(seed=10098)
+		bone, impulse = task.push
+	finally:
+		task.close()
+	seen = []
+
+	def evaluate_baseline(baseline, policy, *, seed, episodes):
+		assert not baseline.backstep and baseline.pose_recovery and episodes == 1
+		observation, _ = baseline.reset(seed=seed)
+		assert baseline.push[0] == bone
+		np.testing.assert_array_equal(baseline.push[1], impulse)
+		assert policy(observation).shape == baseline.action_shape
+		seen.append(baseline.ankle_balance)
+		return {}
+
+	monkeypatch.setattr(sys, "argv", args)
+	monkeypatch.setattr(ragdoll_standing, "evaluate", evaluate_baseline)
+	ragdoll_standing.main()
+	assert seen == [False, False, True]
+
+
+def test_backstep_impact_uses_velocity_change_and_active_floor_contacts(project):
+	import pyjoltphysics as pj
+
+	task = StandingTask(project, backstep=True, tuned_stance=True)
+	try:
+		task.reset(seed=0)
+		_, reward, *_ = task.step(task.backstep_zero)
+		task.reset(seed=0)
+		posture = task._posture
+
+		def fast_posture():
+			height, upright, _, fallen = posture()
+			return height, upright, 2.0, fallen
+
+		task._posture = fast_posture
+		assert task.step(task.backstep_zero)[1] == reward
+
+		task.apply_push(task.chest, (0, 0, -12))
+		task.world.run_ticks(1)
+		velocity = np.array([3.0, 0, 0])
+		task.state = replace(task.state, center_of_mass_velocity=velocity[None])
+		task.events = np.zeros(3, dtype=task.events.dtype)
+		task.events["a"] = task.uids[0, task.feet[0]]
+		task.events["b"] = [task.floor[0], task.floor[0], task.uids[0, task.chest]]
+		task.events["kind"] = pj.EventKind.CONTACT
+		task.events["phase"] = [pj.EventPhase.BEGIN, pj.EventPhase.END, pj.EventPhase.PERSIST]
+		task.events["impulse"] = [2, 5, 8]
+		assert task._backstep_impact(velocity - 1) == (0, 0)
+		task.world.run_ticks(1)
+		assert task._backstep_impact(velocity) == (0, 2)
+		assert task._backstep_impact(velocity - [0.1, 0, 0]) == pytest.approx((12, 2))
+	finally:
+		task.close()
+
+
+def test_touchdown_support_reward_preserves_motion_and_scores_support_improvement(project):
+	options = dict(backstep=True, tuned_stance=True, pose_recovery=True, episode_steps=7 * CONTROL_HZ)
+	plain = StandingTask(project, **options)
+	shaped = StandingTask(project, touchdown_support_reward=True, **options)
+	try:
+		for task in (plain, shaped):
+			task.reset(seed=60700)
+			while task.world.tick < PUSH_TICK:
+				task.step(task.backstep_zero)
+			task.apply_push(task.chest, [0, 0, -12])
+		reward_difference = 0.0
+		while not plain.done and not shaped.done:
+			_, reward, fallen, completed, _ = plain.step(plain.backstep_zero)
+			_, shaped_reward, shaped_fallen, shaped_completed, info = shaped.step(shaped.backstep_zero)
+			assert (fallen, completed) == (shaped_fallen, shaped_completed)
+			np.testing.assert_allclose(plain.state.position, shaped.state.position)
+			reward_difference += shaped_reward - reward
+		assert reward_difference == pytest.approx(info["touchdown_support_reward"])
+		assert abs(reward_difference) > 1e-5
+	finally:
+		plain.close()
+		shaped.close()
+
+
+def test_recovery_pose_hold_checks_joint_angles_motion_and_sustained_fall(project):
+	task = StandingTask(project, tuned_stance=True, pose_recovery=True)
+	task.reset(seed=0)
+	try:
+		contacts = np.zeros_like(task.state.contacts)
+		contacts[0, task.feet[0]] = True
+		rotations = task.reference[None].copy()
+		still = np.zeros_like(task.state.angular_velocity)
+		velocity = np.zeros_like(task.state.center_of_mass_velocity)
+		settled = replace(task.state, contacts=contacts, joint_rotation=rotations, angular_velocity=still, center_of_mass_velocity=velocity)
+		task.state = settled
+		assert not task._recovery_posture(task.target_up, 1.0) and task.pose_hold_ticks == 1
+		spin = still.copy()
+		spin[0, 0, 1] = 0.3
+		bad_pose = rotations.copy()
+		bad_pose[0, 1] = [1, 0, 0, 0]
+		for state in (replace(settled, angular_velocity=spin), replace(settled, center_of_mass_velocity=velocity + [0, 0.06, 0]),
+				replace(settled, joint_rotation=bad_pose), replace(settled, contacts=np.zeros_like(contacts))):
+			task.pose_hold_ticks = 20
+			task.state = state
+			assert not task._recovery_posture(task.target_up, 1.0) and task.pose_hold_ticks == 0
+		task.state = settled
+		for _ in range(POSE_FALL_TICKS - 1):
+			assert not task._recovery_posture(task.target_up, 0.6)
+		assert task._recovery_posture(task.target_up, 0.6)
+		assert not task._recovery_posture(task.target_up, 1.0) and task.toppled_ticks == 0
+	finally:
+		task.close()
+
+
+@pytest.mark.parametrize(("break_at", "expected_tick", "recovered"), [(1, 4, False), (5, 5, False), (None, 5, True)])
+def test_recovery_pose_grace_only_finishes_an_active_hold(project, monkeypatch, break_at, expected_tick, recovered):
+	task = StandingTask(project, episode_steps=2, tuned_stance=True, pose_recovery=True)
+	task.reset(seed=0)
+	try:
+		task.apply_push(task.chest, [0, 0, 0])
+		task.pose_hold_ticks = TICK_HZ - 5
+
+		def hold(up, height):
+			task.pose_hold_ticks = task.pose_hold_ticks + 1 if break_at is None or task.world.tick < break_at else 0
+			return False
+
+		monkeypatch.setattr(task, "_recovery_posture", hold)
+		samples = []
+		action = np.zeros(task.action_shape, dtype=np.float32)
+		while not task.done:
+			_, _, fallen, completed, info = task.step(action, after_tick=lambda: samples.append(task.world.tick))
+		assert not fallen and completed and info["pose_recovered"] is recovered
+		assert info["settled_success"] is recovered
+		assert samples == list(range(1, expected_tick + 1))
+	finally:
+		task.close()
+
+
+def test_backstep_releases_hip_pitch_after_loading(project, monkeypatch):
+	task = StandingTask(project, tuned_stance=True, backstep=True, release_backstep_hips=True)
+	task.reset(seed=0)
+	try:
+		task.apply_push(task.chest, [0, 0, -14])
+		reference = task.backstep_reference
+		end = reference.swing_seconds + reference.load_seconds
+		for offset, expected in ((0, [-0.2, 0.4]), (0.125, [0.2, 0.5]), (0.25, [0.6, 0.6])):
+			monkeypatch.setattr(reference, "_seconds", lambda: end + offset)
+			action = np.full_like(task.motor_action, 0.6)
+			reference.edit_motors(action)
+			np.testing.assert_allclose(action[0, task.hips, 0], expected)
+	finally:
+		task.close()
+
+
 def test_direct_targets_run_before_push_and_without_foot_contact(project):
 	task = StandingTask(project, direct=True, tuned_stance=True)
 	try:
@@ -349,9 +552,10 @@ def test_direct_curriculum_keeps_quiet_light_and_hard_pushes(project):
 	hard = {(task.settings.bones[bone].name, -impulse[2], "-Z") for bone, impulse in (value for value in samples if value is not None)
 		if impulse[2] <= -8 and not impulse[:2].any()}
 	assert HARD_BACKWARD_CELLS <= hard
-	report = benchmark(seed=58200, episodes=1, impulses=(), hard_backward_only=True)
+	report = benchmark(seed=58200, episodes=1, impulses=(), hard_backward_only=True, recovery_seconds=10)
 	assert {(cell["bone"], cell["magnitude_ns"], cell["direction"]) for cell in report["cells"]} == HARD_BACKWARD_CELLS
 	assert report["hard_backward_summary"] == report["summary"]
+	assert report["episode_seconds"] == 12 and report["recovery_window_seconds"] == 10
 
 
 def test_direct_reward_ablation_changes_reward_without_changing_motion(project):
@@ -373,6 +577,25 @@ def test_direct_reward_ablation_changes_reward_without_changing_motion(project):
 	finally:
 		shaped.close()
 		ablation.close()
+
+
+def test_benchmark_counts_continuous_landing_contact_without_impulse_diagnostics(project):
+	task, policy, _ = make_trial_controller("ankle_balance", seed=60700, pose_recovery=True)
+	contacts = []
+	try:
+		result = run_trial(task, policy, seed=60700, bone="chest", impulse=[0, 0, -11],
+			on_sample=lambda task: contacts.append(task.state.contacts[0].copy()))
+		assert len(result["landings"]) == 2
+		for landing in result["landings"]:
+			foot = task.settings.bone_index(landing["foot"])
+			tick = PUSH_TICK + round(landing["seconds_after_push"] * TICK_HZ)
+			planted = np.array(contacts)[tick:, foot]
+			breaks = np.flatnonzero(~planted)
+			expected = int(breaks[0]) if len(breaks) else len(planted)
+			assert landing["contact_ticks"] == expected > 0
+			assert "peak_estimated_floor_impulse_ns" not in landing
+	finally:
+		task.close()
 
 
 @pytest.mark.parametrize(("magnitude", "outcome"), [(0.5, "recovered"), (12, "post_push_fall")])
@@ -407,6 +630,8 @@ def test_recovery_browser_keeps_matching_case_and_seed():
 	assert paired_selection(reports, current, 0, case_index=1, result_filter="With steps") == (0, 1, "ppo_direct", 0)
 	assert paired_selection(reports, current, 2) == (2, 0, "ppo_direct", 0)
 	assert filtered_trials([fell, recovered], "With steps") == [(0, fell)]
+	stepped = dict(recovered, step_count=1)
+	assert filtered_trials([fell, recovered, stepped], "Recovered with steps") == [(2, stepped)]
 	assert filtered_trials([fell, recovered], "Failed") == [(0, fell)]
 	assert filtered_trials([fell, settled], "Passed") == [(1, settled)]
 
@@ -429,6 +654,32 @@ def test_recovery_viewer_opens_quiet_standing_report(project, tmp_path):
 	(tmp_path / "checkpoint-quiet.json").write_text(json.dumps(expected), encoding="utf-8")
 	assert suite_reports(tmp_path / "checkpoint") == [(path, "Quiet standing")]
 	assert view_reports([path], [read_report(path)], headless=True) == trial
+
+
+def test_recovery_viewer_discovers_reports_with_available_assets(tmp_path):
+	session = tmp_path / "session"
+	session.mkdir()
+	(session / "trained.zip").touch()
+	trial = dict(episodes=[dict(seed=42, outcome="settled")])
+	setup = dict(tick_hz=TICK_HZ, first_seed=42, max_start_spin_rad_s=0.1, max_start_tilt_rad=0.025)
+
+	def save(path, timestamp, controllers, checkpoints=None):
+		report = setup | dict(cells=[dict(bone=None, controllers=controllers)], checkpoints=checkpoints or {})
+		path.write_text(json.dumps(report), encoding="utf-8")
+		os.utime(path, (timestamp, timestamp))
+
+	trained = tmp_path / "trained.json"
+	quiet = tmp_path / "quiet.json"
+	save(trained, 20, dict(ankle_balance=trial, ppo_backstep=trial, ppo_direct=trial),
+		dict(ppo_backstep=dict(path="session/trained"), ppo_direct=dict(path="session/trained.zip", tuning="missing-rig.json")))
+	save(quiet, 10, dict(ankle_balance=trial))
+	save(session / "scratch.json", 40, dict(ankle_balance=trial))
+	save(tmp_path / "missing.json", 30, dict(ppo_backstep=trial), dict(ppo_backstep=dict(path="missing.zip")))
+	(tmp_path / "summary.json").write_text(json.dumps(setup), encoding="utf-8")
+	(tmp_path / "incomplete.json").write_text("{", encoding="utf-8")
+
+	assert [(path, list(report["cells"][0]["controllers"])) for path, report in discover_reports(tmp_path)] == [
+		(trained, ["ankle_balance", "ppo_backstep"]), (quiet, ["ankle_balance"])]
 
 
 @pytest.mark.parametrize(("seed", "window", "phase"), [(1, "before_landing", 1), (0, "after_landing", 2)])

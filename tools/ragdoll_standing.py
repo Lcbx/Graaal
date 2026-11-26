@@ -37,6 +37,15 @@ LANDING_BRAKE_TICKS = TICK_HZ // 5
 RECOVERY_STEP_DISTANCE = 0.02
 DIRECT_REWARD_TERMS = ("braking", "support", "compliance")
 DIRECT_REWARD_KEYS = tuple(f"{term}_reward" for term in (*DIRECT_REWARD_TERMS, "effort"))
+BACKSTEP_CHEST_MIN_IMPULSE = 10
+BACKSTEP_ACCELERATION_LIMIT = 8.0
+BACKSTEP_IMPACT_KEYS = ("acceleration_penalty", "floor_impulse_penalty", "peak_com_acceleration_m_s2", "peak_floor_impulse_ns")
+PPO_GAMMA = 0.997
+POSE_PELVIS_UP = np.cos(np.deg2rad(15))
+POSE_CHEST_UP = np.cos(np.deg2rad(18))
+POSE_JOINT_RMS = np.deg2rad(15)
+POSE_JOINT_MAX = np.deg2rad(30)
+POSE_FALL_TICKS = TICK_HZ // 4
 
 
 def compact_axes(limits):
@@ -75,16 +84,24 @@ def _support_margin(points, center):
 class StandingTask:
 	"""Run one episode in a fresh native world, exposing only joint actions."""
 
-	def __init__(self, project, *, episode_steps=5 * CONTROL_HZ, initial_angular_speed=0.0, tuned_stance=False, compact=False, vary_start=False, max_start_tilt=DEFAULT_START_TILT, support_area=False, ankle_balance=False, residual=False, stepping=False, whole_body=False, push_impulses=(), recovery=False, recovery_curriculum=False, replay_start_fraction=0.0, direct=False, without_direct_reward=()):
+	def __init__(self, project, *, episode_steps=5 * CONTROL_HZ, initial_angular_speed=0.0, tuned_stance=False, compact=False, vary_start=False, max_start_tilt=DEFAULT_START_TILT, support_area=False, ankle_balance=False, residual=False, stepping=False, whole_body=False, push_impulses=(), recovery=False, recovery_curriculum=False, replay_start_fraction=0.0, direct=False, without_direct_reward=(), backstep=False, backstep_swing=True, strong_backstep_reference=False, pose_recovery=False, release_backstep_hips=False, backward_chest_pushes=False, touchdown_support_reward=False):
 		import pyjoltphysics as pj
 
-		if direct and (not tuned_stance or any((compact, ankle_balance, residual, stepping, whole_body, recovery))):
+		if direct and (not tuned_stance or any((compact, ankle_balance, residual, stepping, whole_body, recovery, backstep))):
 			raise ValueError("direct motor control requires the tuned stance and its own action space")
 		disabled_rewards = set(without_direct_reward)
 		if disabled_rewards - set(DIRECT_REWARD_TERMS) or (disabled_rewards and not direct):
 			raise ValueError("only direct motor control can disable braking, support, or compliance rewards")
-		whole_body = whole_body or recovery
-		support_area = support_area or recovery or direct
+		if backstep and recovery:
+			raise ValueError("a backstep reference and recovery requests use different controllers")
+		if strong_backstep_reference and not backstep:
+			raise ValueError("the strong backstep reference requires backstep control")
+		if release_backstep_hips and not backstep:
+			raise ValueError("releasing the hip targets requires backstep control")
+		if touchdown_support_reward and not backstep:
+			raise ValueError("touchdown support reward requires backstep control")
+		whole_body = whole_body or recovery or backstep
+		support_area = support_area or recovery or direct or backstep
 		stepping = stepping or whole_body
 		if episode_steps < 1 or not np.isfinite(initial_angular_speed) or initial_angular_speed < 0:
 			raise ValueError("episode steps must be positive and initial angular speed must be finite and nonnegative")
@@ -104,6 +121,17 @@ class StandingTask:
 		self.recovery_curriculum = recovery_curriculum
 		self.replay_start_fraction = replay_start_fraction
 		self.direct = direct
+		self.backstep = backstep
+		self.touchdown_support_reward = touchdown_support_reward
+		self.backward_chest_pushes = backstep or backward_chest_pushes
+		self.backstep_swing = backstep_swing
+		self.strong_backstep_reference = strong_backstep_reference
+		self.pose_recovery = pose_recovery
+		self.release_backstep_hips = release_backstep_hips
+		if backstep:
+			from tools.ragdoll_recovery_step import BackstepReference
+
+			self.backstep_type = BackstepReference
 		settings = pj.RagdollSettings.from_dict(project.settings.as_dict())
 		if tuple(bone.name for bone in settings.bones) != HUMANOID_NAMES or tuple(settings.parents) != HUMANOID_PARENTS:
 			raise ValueError("standing requires the passive humanoid's bone names, parents and order")
@@ -174,12 +202,21 @@ class StandingTask:
 			self.upper_bones, self.upper_axes = bones[upper], axes[upper]
 			self.motor_offset_caps[settings.bone_index("upper_arm_l"):first_hip] = ARM_OFFSET
 			self.action_shape = (self.action_shape[0] + len(self.upper_bones),)
+		if backstep:
+			self.motor_offset_caps[self.hips] = 1.0
+			self.motor_offset_caps[self.knees] = 1.2
+			self.backstep_zero = np.zeros(self.action_shape, dtype=np.float32)
+			self.floor_impulse_limit = 0.22 * sum(bone.mass for bone in settings.bones) * 9.81 / TICK_HZ
+			self.contact_kind = pj.EventKind.CONTACT
+			self.contact_phases = (pj.EventPhase.BEGIN, pj.EventPhase.PERSIST)
 		self.episode_steps = episode_steps
 		self.initial_angular_speed = initial_angular_speed
 		self.vary_start = vary_start
 		self.max_start_tilt = max_start_tilt
 		self.tuned_stance = tuned_stance
 		self.positions, self.orientations = self._spawn_pose(self.reference)
+		if pose_recovery:
+			self.target_up = Quaternion.matrix_batch(self.orientations[[0, self.chest]])[:, :, 1]
 		self.spawn_height = float(self.positions[0, 1] - settings.rest_translations[0][1])
 		self.balance_torques = make_ankle_balance(settings, self.positions, self.orientations, self.feet) if self.ankle_balance else None
 		self.recovery = None
@@ -201,12 +238,18 @@ class StandingTask:
 
 	def reset(self, *, seed=None, replay=False):
 		observation, info = self._reset(seed, replay=replay)
-		if "replay_start" not in info:
-			return observation, info
 		try:
-			if self._replay_start(info["replay_start"]):
-				return self._features(), info
-			return self._reset(seed, replay=False)
+			if "replay_start" in info:
+				if self._replay_start(info["replay_start"]):
+					return self._features(), info
+				return self._reset(seed, replay=False)
+			if replay and self.backstep and self.push is not None and self.backstep_type.accepts(self, *self.push):
+				# The residual cannot act before the reference has swung the foot.
+				while not self.done and (self.backstep_reference is None or not self.backstep_reference.residual_active()):
+					observation, _, _, _, _ = self.step(self.backstep_zero)
+				if self.done:
+					return self._reset(seed, replay=False)
+			return observation, info
 		except BaseException:
 			self.close()
 			raise
@@ -238,6 +281,15 @@ class StandingTask:
 				spin = speed * np.array([np.cos(angle), 0, np.sin(angle)])
 				self.world.set_velocities(self.uids[:, 0], angular=spin)
 			self.push = None
+			self.backstep_reference = None
+			self.backstep_settled = False
+			if self.backstep:
+				self.backstep_push_tick = None
+				self.backstep_stance_ticks = 0
+				self.backstep_impact_cost = np.zeros(2)
+				self.backstep_peak_impact = np.zeros(2)
+				self.touchdown_tick = -LANDING_BRAKE_TICKS
+				self.touchdown_support_total = 0.0
 			info = {}
 			if self.recovery_curriculum:
 				if replay and self.replay_start_fraction and rng.random() < self.replay_start_fraction:
@@ -250,7 +302,7 @@ class StandingTask:
 				magnitude = rng.choice(self.push_impulses)
 				if magnitude:
 					# Give the disturbance that toppled the baseline extra practice.
-					bone, direction = ("chest", "-Z") if rng.random() < 0.5 else (rng.choice(PUSH_BONES), rng.choice(tuple(PUSH_DIRECTIONS)))
+					bone, direction = ("chest", "-Z") if self.backward_chest_pushes or rng.random() < 0.5 else (rng.choice(PUSH_BONES), rng.choice(tuple(PUSH_DIRECTIONS)))
 					self.push = (self.settings.bone_index(bone), magnitude * np.asarray(PUSH_DIRECTIONS[direction]))
 			self.world.flush()
 			self.action = np.zeros(self.full_action_shape, dtype=np.float32)
@@ -264,6 +316,8 @@ class StandingTask:
 			self.start_center = self.state.center_of_mass[0, [0, 2]]
 			self.minimum_height = self.start_height
 			self.settled_ticks = 0
+			self.pose_push_tick = None
+			self.pose_hold_ticks = self.toppled_ticks = 0
 			self.peak_drift = 0.0
 			self.foot_slip = 0.0
 			self.tracking_error = 0.0
@@ -289,6 +343,8 @@ class StandingTask:
 			raise
 
 	def _sample_recovery_push(self, rng):
+		if self.backward_chest_pushes:
+			return self.settings.bone_index("chest"), np.array([0, 0, -rng.uniform(11, 13)])
 		draw = rng.random()
 		if draw < 0.20:
 			return None
@@ -325,8 +381,17 @@ class StandingTask:
 	def apply_push(self, bone, impulse):
 		self.world.add_impulses(self.uids[:, bone], [impulse])
 		self.settled_ticks = 0
+		if self.pose_recovery:
+			self.pose_push_tick = self.world.tick
+			self.pose_hold_ticks = self.toppled_ticks = 0
 		if self.recovery is not None:
 			self.recovery.pushed = True
+		if self.backstep:
+			self.backstep_reference = self.backstep_type.start_for_push(self, bone, impulse)
+			self.backstep_push_tick = self.world.tick
+			self.backstep_stance_ticks = 0
+			self.touchdown_contact = self.state.contacts[0, self.feet].copy()
+			self.touchdown_tick = -LANDING_BRAKE_TICKS
 		if self.direct:
 			self.push_tick = self.world.tick
 			self.landing_tick = self.relocated_tick = -LANDING_BRAKE_TICKS
@@ -355,6 +420,7 @@ class StandingTask:
 			joints.ravel(), state.joint_angular_velocity[0, 1:].ravel() / 5, state.contacts[0], self.residual_action if self.residual else self.action,
 			((self.support_margin or 0) / self.support_scale,) if self.support_area else (),
 			self.recovery.features() if self.recovery is not None else (),
+			(self.backstep_reference.progress(),) if self.backstep_reference is not None else ((0,) if self.backstep else ()),
 		), dtype=np.float32)
 
 	def _measure_direct(self):
@@ -419,14 +485,47 @@ class StandingTask:
 	def _posture(self):
 		height = float(self.state.position[0, 0, 1])
 		self.minimum_height = min(self.minimum_height, height)
-		upright = Quaternion.matrix_batch(self.state.orientation[0, [0, self.chest]])[:, 1, 1]
+		up = Quaternion.matrix_batch(self.state.orientation[0, [0, self.chest]])[:, :, 1]
+		upright = up[:, 1]
 		height_ratio = height / self.start_height
 		tilt = upright.min()
 		speed = np.linalg.norm(self.state.center_of_mass_velocity[0, [0, 2]])
 		fallen = bool(self.state.contacts[0, self.nonfeet].any() or height_ratio < 0.7 or tilt < 0.5)
-		settled = not fallen and tilt >= 0.95 and height >= 0.9 * self.positions[0, 1] and speed < 0.05 and self.state.contacts[0, self.feet].any()
+		if self.pose_push_tick is not None:
+			fallen = self._recovery_posture(up, height / self.positions[0, 1])
+		standing = not fallen and tilt >= 0.95 and height >= 0.9 * self.positions[0, 1] and self.state.contacts[0, self.feet].any()
+		settled = standing and speed < 0.05
 		self.settled_ticks = self.settled_ticks + 1 if settled else 0
+		if self.backstep:
+			self.backstep_stance_ticks = self.backstep_stance_ticks + 1 if standing else 0
 		return height_ratio, upright, speed, fallen
+
+	def _recovery_posture(self, up, height_ratio):
+		state = self.state
+		pelvis_up, chest_up = np.einsum("ij,ij->i", up, self.target_up)
+		speed = np.linalg.norm(state.center_of_mass_velocity[0])
+		spin = np.linalg.norm(state.angular_velocity[0, 0])
+		trunk_contact = state.contacts[0, [0, self.chest]].any()
+		toppled = (height_ratio < 0.7 or pelvis_up < 0.5) and (trunk_contact or (speed < 0.15 and spin < 0.5))
+		self.toppled_ticks = self.toppled_ticks + 1 if toppled else 0
+		settled = (0.9 <= height_ratio <= 1.1 and pelvis_up >= POSE_PELVIS_UP and chest_up >= POSE_CHEST_UP
+			and speed < 0.05 and spin < 0.2 and state.contacts[0, self.feet].any() and not state.contacts[0, self.nonfeet].any())
+		if settled:
+			alignment = np.abs(np.einsum("ij,ij->i", self.reference[1:], state.joint_rotation[0, 1:]))
+			error = 2 * np.arccos(alignment.clip(0, 1))
+			settled = error.max() <= POSE_JOINT_MAX and np.mean(error ** 2) <= POSE_JOINT_RMS ** 2
+		self.pose_hold_ticks = self.pose_hold_ticks + 1 if settled else 0
+		return self.toppled_ticks >= POSE_FALL_TICKS
+
+	def _backstep_impact(self, previous_velocity):
+		# The imposed push is the disturbance. Its first native tick includes the external impulse.
+		if self.backstep_push_tick is not None and self.world.tick == self.backstep_push_tick + 1:
+			return 0.0, 0.0
+		acceleration = np.linalg.norm(self.state.center_of_mass_velocity[0] - previous_velocity) * TICK_HZ
+		events = self.events
+		floor = (events["a"] == self.floor[0]) | (events["b"] == self.floor[0])
+		active = floor & (events["kind"] == self.contact_kind) & np.isin(events["phase"], self.contact_phases)
+		return acceleration, np.max(events["impulse"][active], initial=0)
 
 	def step(self, action, *, after_tick=None, edit_motors=None, joint_feedback=None):
 		if self.world is None or self.done:
@@ -435,6 +534,13 @@ class StandingTask:
 		if action.shape != self.action_shape or not np.isfinite(action).all():
 			raise ValueError(f"standing action must be finite with shape {self.action_shape}")
 		action = np.clip(action, -1, 1)
+		if self.backstep:
+			if self.push is not None and self.world.tick == PUSH_TICK:
+				self.apply_push(*self.push)
+			action = self.backstep_zero if self.backstep_reference is None else self.backstep_reference.learned_action(action)
+			if self.backstep_reference is not None:
+				edit_motors = self.backstep_reference.edit_motors
+				joint_feedback = self.backstep_reference.feedback
 		if self.direct:
 			if edit_motors is not None or joint_feedback is not None:
 				raise ValueError("direct motor control only accepts policy targets")
@@ -486,11 +592,20 @@ class StandingTask:
 		if edit_motors is not None:
 			edit_motors(self.motor_action)
 		apply_ragdoll_motors([self.handle], self.reference, self.motor_action, max_offset=self.motor_offset_caps, max_strength=STANDING_MOTOR_CAPS)
-		if self.push is not None and self.world.tick == PUSH_TICK:
+		if not self.backstep and self.push is not None and self.world.tick == PUSH_TICK:
 			bone, impulse = self.push
 			self.apply_push(bone, impulse)
 		feedback = self.balance_torques if joint_feedback is None else joint_feedback
+		measure_impact = self.backstep and self.backstep_push_tick is not None
+		pose_recovery = self.pose_push_tick is not None
+		limit = self.episode_steps * TICKS_PER_ACTION
+		pose_recovered = pose_timeout = False
+		peak_acceleration = peak_impulse = 0.0
+		touchdown_reward = 0.0
 		for tick in range(1, TICKS_PER_ACTION + 1):
+			if measure_impact:
+				previous_velocity = self.state.center_of_mass_velocity[0]
+				previous_center = self.state.center_of_mass[0, [0, 2]].copy()
 			torque = joint_spring_torques(self.parents, self.state.orientation, self.state.angular_velocity, self.neutral, **self.spring)
 			torque += joint_limit_torques(orientations=self.state.orientation, angular_velocity=self.state.angular_velocity, **self.limits)
 			if feedback is not None:
@@ -499,6 +614,21 @@ class StandingTask:
 			self.world.run_ticks(1)
 			self.state = self._observe()
 			height, upright, speed, fallen = self._posture()
+			if measure_impact:
+				acceleration, impulse_estimate = self._backstep_impact(previous_velocity)
+				peak_acceleration = max(peak_acceleration, acceleration)
+				peak_impulse = max(peak_impulse, impulse_estimate)
+				if self.touchdown_support_reward:
+					contact = self.state.contacts[0, self.feet]
+					if (contact & ~self.touchdown_contact).any():
+						self.touchdown_tick = self.world.tick
+					self.touchdown_contact = contact.copy()
+					if self.world.tick - self.touchdown_tick <= LANDING_BRAKE_TICKS:
+						points = self._support_points()
+						if points is not None:
+							before = _support_margin(points, previous_center)
+							after = _support_margin(points, self.state.center_of_mass[0, [0, 2]])
+							touchdown_reward += 0.5 * np.clip((min(after, 0) - min(before, 0)) / self.support_scale, -0.1, 0.1)
 			if self.direct and self.push_tick is not None:
 				contact = self.state.contacts[0, self.feet]
 				landed = contact & ~planted
@@ -515,10 +645,14 @@ class StandingTask:
 				self.recovery.after_tick()
 			if after_tick is not None:
 				after_tick()
-			if fallen:
+			if pose_recovery:
+				pose_recovered = self.pose_hold_ticks >= TICK_HZ * SETTLE_SECONDS
+				pose_timeout = self.world.tick >= limit and (self.pose_hold_ticks == 0 or self.world.tick >= limit + TICK_HZ * SETTLE_SECONDS)
+			if fallen or pose_recovered or pose_timeout:
 				break
 		elapsed_ticks = self.world.tick
-		completed = elapsed_ticks >= self.episode_steps * TICKS_PER_ACTION and not fallen
+		timed_out = pose_timeout if pose_recovery else elapsed_ticks >= limit
+		completed = not fallen and (pose_recovered or timed_out)
 		self.done = fallen or completed
 		foot_speed = self.state.linear_velocity[0, self.feet][:, [0, 2]]
 		sliding = (np.linalg.norm(foot_speed, axis=1) * self.state.contacts[0, self.feet]).mean()
@@ -541,8 +675,20 @@ class StandingTask:
 		self.foot_slip += sliding * tick / TICK_HZ
 		alignment = np.abs(np.einsum("ij,ij->i", self.reference[1:], self.state.joint_rotation[0, 1:]))
 		self.tracking_error += np.arccos(alignment.clip(0, 1)).mean() * 2 * tick
-		reward = 0.5 * min(height, 1.0) + 0.5 * upright.mean() - 0.6 * min(drift, 1) - 0.25 * min(speed, 1)
-		reward -= 0.05 * sliding + 0.02 * changes + 0.005 * residual_change
+		reward = 0.5 * min(height, 1.0) + 0.5 * upright.mean() - 0.6 * min(drift, 1)
+		if self.backstep:
+			reward -= 0.02 * changes + 0.005 * residual_change
+			impact = np.array([peak_acceleration, peak_impulse])
+			cost = 0.12 * np.clip(impact / [BACKSTEP_ACCELERATION_LIMIT, self.floor_impulse_limit] - 1, 0, 2)
+			self.backstep_peak_impact = np.maximum(self.backstep_peak_impact, impact)
+			self.backstep_impact_cost += cost
+			self.touchdown_support_total += touchdown_reward
+			reward += touchdown_reward - cost.sum()
+			if self.support_margin is None or self.support_margin < 0:
+				self.backstep_stance_ticks = 0
+		else:
+			reward -= 0.25 * min(speed, 1)
+			reward -= 0.05 * sliding + 0.02 * changes + 0.005 * residual_change
 		if self.direct:
 			braking = support = compliance = 0.0
 			if self.push_tick is not None and elapsed_ticks - self.push_tick > tick:
@@ -566,11 +712,22 @@ class StandingTask:
 			if self.recovery.phase:
 				reward += 0.25 * (1 - min(height, 1.0) + 1 - upright.mean())
 			reward += self.recovery.reward(TICK_HZ * SETTLE_SECONDS)
+		if self.backstep and pose_recovered:
+			# Credit the discounted standing reward that early success would leave uncollected.
+			remaining = max(0, self.episode_steps - (elapsed_ticks + TICKS_PER_ACTION - 1) // TICKS_PER_ACTION)
+			reward += 12 + PPO_GAMMA * (1 - PPO_GAMMA ** remaining) / (1 - PPO_GAMMA)
+		elif not pose_recovery and self.backstep_reference is not None and not self.backstep_settled and self.backstep_stance_ticks >= TICK_HZ * SETTLE_SECONDS:
+			self.backstep_settled = True
+			reward += 12
 		if fallen:
 			reward -= 5
 		info = dict(elapsed_seconds=elapsed_ticks / TICK_HZ, minimum_pelvis_m=self.minimum_height, success=completed,
 			settled_success=completed and self.settled_ticks >= TICK_HZ * SETTLE_SECONDS, peak_drift_m=self.peak_drift,
 			mean_foot_slip_m=self.foot_slip, mean_reference_error_rad=self.tracking_error / elapsed_ticks)
+		if self.pose_recovery:
+			info["pose_recovered"] = pose_recovered
+			if pose_recovery:
+				info.update(success=pose_recovered, settled_success=pose_recovered)
 		if self.support_area:
 			info["minimum_support_margin_m"] = self.minimum_support_margin
 			info["first_support_exit_seconds"] = self.first_support_exit
@@ -581,6 +738,10 @@ class StandingTask:
 			info.update(zip(DIRECT_REWARD_KEYS, map(float, self.direct_rewards)))
 			info["target_saturation_fraction"] = self.target_saturation / ((elapsed_ticks + TICKS_PER_ACTION - 1) // TICKS_PER_ACTION * self.action_shape[0])
 			info["max_foot_clearance_m"] = float(self.max_foot_clearance.max())
+		if self.backstep:
+			info.update(zip(BACKSTEP_IMPACT_KEYS, map(float, (*self.backstep_impact_cost, *self.backstep_peak_impact))))
+			if self.touchdown_support_reward:
+				info["touchdown_support_reward"] = float(self.touchdown_support_total)
 		return self._features(), float(reward), fallen, completed, info
 
 	def close(self):
@@ -637,7 +798,9 @@ def _standing_env(project, task_options):
 			return self.task.reset(seed=int(self.np_random.integers(2**32)), replay=True)
 
 		def step(self, action):
-			return self.task.step(action)
+			observation, reward, fallen, completed, info = self.task.step(action)
+			recovered = info.get("pose_recovered", False)
+			return observation, reward, fallen or recovered, completed and not recovered, info
 
 		def close(self):
 			self.task.close()
@@ -675,19 +838,29 @@ def _initialize_direct_balance(model, task):
 		model.policy.action_net.weight[ankles, :2] = torch.tensor(axes / (scale * caps[:, None]), dtype=torch.float32)
 
 
+def _require_backstep_training_push(push_impulses, recovery_curriculum):
+	if not recovery_curriculum and not any(BACKSTEP_CHEST_MIN_IMPULSE <= magnitude <= np.finfo(np.float32).max for magnitude in push_impulses):
+		raise ValueError(f"backstep training requires --recovery-curriculum or a push of at least {BACKSTEP_CHEST_MIN_IMPULSE} N s in --push-impulses")
+
+
 def train_policy(project, *, steps, seed, workers=1, resume=None, epochs=None, direct_balance_init=False, learning_rate=None, optimizer_trace=None, direct_limb_std=None, **task_options):
+	if task_options.get("backstep"):
+		push_impulses = tuple(task_options.get("push_impulses", ()))
+		_require_backstep_training_push(push_impulses, task_options.get("recovery_curriculum", False))
+		task_options["push_impulses"] = push_impulses
+
 	import torch
 	from stable_baselines3 import PPO
 	from stable_baselines3.common.callbacks import BaseCallback
 	from stable_baselines3.common.env_util import make_vec_env
 	from stable_baselines3.common.vec_env import SubprocVecEnv
 
-	class DirectRewardLog(BaseCallback):
+	class RewardLog(BaseCallback):
 		def _on_step(self):
 			return True
 
 		def _on_rollout_end(self):
-			for key in DIRECT_REWARD_KEYS:
+			for key in reward_keys:
 				values = [episode[key] for episode in self.model.ep_info_buffer if key in episode]
 				if values:
 					self.logger.record(f"rollout/{key}_mean", float(np.mean(values)))
@@ -738,7 +911,10 @@ def train_policy(project, *, steps, seed, workers=1, resume=None, epochs=None, d
 	algorithm = TracedPPO if optimizer_trace is not None else PPO
 	factory = partial(_standing_env, project, task_options)
 	parallel = dict(vec_env_cls=SubprocVecEnv, vec_env_kwargs={"start_method": "spawn"}) if workers > 1 else {}
-	monitor = {"info_keywords": DIRECT_REWARD_KEYS} if direct else None
+	reward_keys = DIRECT_REWARD_KEYS if direct else BACKSTEP_IMPACT_KEYS if task_options.get("backstep") else ()
+	if task_options.get("touchdown_support_reward"):
+		reward_keys += ("touchdown_support_reward",)
+	monitor = {"info_keywords": reward_keys} if reward_keys else None
 	environment = make_vec_env(factory, n_envs=workers, seed=seed, monitor_kwargs=monitor, **parallel)
 	try:
 		# Keep complete minibatches when changing the number of workers.
@@ -753,12 +929,12 @@ def train_policy(project, *, steps, seed, workers=1, resume=None, epochs=None, d
 			options.setdefault("n_epochs", 10)
 			options.setdefault("learning_rate", 0.00001 if direct_balance_init else (0.000075 if direct else 0.00015))
 			log_std = -4.2 if direct_balance_init else (-3.0 if direct else -2.5)
-			model = algorithm("MlpPolicy", environment, gamma=0.997, target_kl=0.03, policy_kwargs={"log_std_init": log_std}, verbose=1, **options)
+			model = algorithm("MlpPolicy", environment, gamma=PPO_GAMMA, target_kl=0.03, policy_kwargs={"log_std_init": log_std}, verbose=1, **options)
 			if direct_balance_init:
 				_initialize_direct_balance(model, setup_task)
 			else:
 				with torch.no_grad():
-					if any(task_options.get(mode) for mode in ("residual", "stepping", "whole_body", "recovery", "direct")):
+					if any(task_options.get(mode) for mode in ("residual", "stepping", "whole_body", "recovery", "direct", "backstep")):
 						model.policy.action_net.weight.zero_()
 						model.policy.action_net.bias.zero_()
 					elif not task_options.get("compact"):
@@ -773,7 +949,7 @@ def train_policy(project, *, steps, seed, workers=1, resume=None, epochs=None, d
 			non_ankle_axes = ~np.isin(setup_task.action_bones, setup_task.feet)
 			with torch.no_grad():
 				model.policy.log_std[non_ankle_axes] = np.log(direct_limb_std)
-		return model.learn(total_timesteps=steps, reset_num_timesteps=resume is None, callback=DirectRewardLog() if direct else None)
+		return model.learn(total_timesteps=steps, reset_num_timesteps=resume is None, callback=RewardLog() if reward_keys else None)
 	finally:
 		environment.close()
 
@@ -786,8 +962,8 @@ def main():
 	parser.add_argument("--vary-start", action="store_true", help="vary start tilt and sample spin between zero and the requested speed")
 	parser.add_argument("--max-start-tilt", type=float, help=f"maximum tilt in radians with --vary-start (default {DEFAULT_START_TILT})")
 	parser.add_argument("--stance", choices=("rest", "tuned"), default="rest", help="initial pose and motor reference")
-	parser.add_argument("--action-space", choices=("full", "compact", "residual", "stepping", "whole-body", "recovery", "direct"), default="full", help="choose a joint control or recovery step policy layout")
-	parser.add_argument("--push-impulses", type=float, nargs="+", default=(), help="sample an impulse magnitude in N s at two seconds, including zero for quiet starts")
+	parser.add_argument("--action-space", choices=("full", "compact", "residual", "stepping", "whole-body", "recovery", "direct", "backstep"), default="full", help="choose a joint control or recovery step policy layout")
+	parser.add_argument("--push-impulses", type=float, nargs="+", default=(), help="sample an impulse magnitude in N s at two seconds, including zero for quiet starts; backstep uses backward chest pushes")
 	parser.add_argument("--recovery-curriculum", action="store_true", help="mix quiet, light, near-threshold and hard push episodes")
 	parser.add_argument("--replay-start-fraction", type=float, default=0.0, help="fraction of training starts to attempt near a replayed landing")
 	parser.add_argument("--support-area", action="store_true", help="observe and reward support margin estimated from contacting box soles")
@@ -806,6 +982,10 @@ def main():
 	parser.add_argument("--direct-balance-init", action="store_true", help="initialize a new direct policy with continuous ankle motor feedback")
 	parser.add_argument("--direct-limb-std", type=float, help="initial exploration standard deviation on the direct policy's non-ankle axes")
 	parser.add_argument("--without-direct-reward", nargs="+", choices=DIRECT_REWARD_TERMS, default=(), help="omit selected direct reward terms for ablation")
+	parser.add_argument("--strong-backstep-reference", action="store_true", help="use the longer reference step for backward chest pushes of at least 14 N s")
+	parser.add_argument("--pose-recovery", action="store_true", help="end pushed backstep episodes using a slow target-pose hold and up to one second of grace")
+	parser.add_argument("--release-backstep-hips", action="store_true", help="blend hip pitch back to policy control after the scripted loading phase")
+	parser.add_argument("--touchdown-support-reward", action="store_true", help="reward COM movement toward foot support after touchdown")
 	parser.add_argument("--output", type=Path, help="save the trained policy to this .zip file")
 	args = parser.parse_args()
 	if args.seconds < 1 or args.episodes < 1 or not 0 <= args.seed < 2**32 or (args.steps is not None and args.steps < 1):
@@ -830,16 +1010,27 @@ def main():
 		parser.error("--direct-limb-std requires direct training and a value in (0, 1]")
 	if args.replay_start_fraction and args.steps is None:
 		parser.error("--replay-start-fraction requires --steps")
+	backstep = args.action_space == "backstep"
+	if args.pose_recovery and (not backstep or not (args.recovery_curriculum or any(value > 0 for value in args.push_impulses))):
+		parser.error("--pose-recovery requires backstep control with --recovery-curriculum or positive --push-impulses")
 	try:
+		if backstep and args.steps is not None:
+			_require_backstep_training_push(args.push_impulses, args.recovery_curriculum)
 		project = default_project() if args.tuning is None else read_project(args.tuning)
 		options = dict(episode_steps=args.seconds * CONTROL_HZ, initial_angular_speed=args.initial_angular_speed,
 			tuned_stance=args.stance == "tuned", vary_start=args.vary_start, support_area=args.support_area, push_impulses=args.push_impulses,
-			recovery_curriculum=args.recovery_curriculum)
+			recovery_curriculum=args.recovery_curriculum, pose_recovery=args.pose_recovery, backward_chest_pushes=backstep)
 		if args.max_start_tilt is not None:
 			options["max_start_tilt"] = args.max_start_tilt
 		action_options = {args.action_space.replace("-", "_"): True} if args.action_space != "full" else {}
 		if args.without_direct_reward:
 			action_options["without_direct_reward"] = args.without_direct_reward
+		if args.strong_backstep_reference:
+			action_options["strong_backstep_reference"] = True
+		if args.release_backstep_hips:
+			action_options["release_backstep_hips"] = True
+		if args.touchdown_support_reward:
+			action_options["touchdown_support_reward"] = True
 		task = StandingTask(project, **action_options, **options, replay_start_fraction=args.replay_start_fraction)
 		balance_task = StandingTask(project, ankle_balance=True, **options) if args.ankle_balance or task.residual else None
 	except (OSError, ValueError) as error:
