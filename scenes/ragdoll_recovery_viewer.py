@@ -7,14 +7,16 @@ from pathlib import Path
 
 import numpy as np
 
+from graaal.Math import Quaternion
 from scenes.benchmarks.benchmark_ragdoll_push_recovery import PUSH_SECONDS, PUSH_TICK, RECOVERY_SECONDS, TICK_HZ, make_trial_controller, run_quiet_trial, run_trial
 from scenes.physics_geometry import collider_bounds, collider_poses, cube_vertices, segment_transform
 from scenes.physics_viewing_utils import Playback, add_viewing_options, has_blue_pixels, play_frames, ragdoll_collider_instances, viewing_target
 from tools.ragdoll_project import default_project, read_project
+from tools.ragdoll_standing import _support_edges, _support_margin
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CONTROLLER_LABELS = {"ankle_balance": "Ankle balance", "scripted_step": "Scripted backstep", "ppo_residual": "Residual PPO",
+CONTROLLER_LABELS = {"ankle_balance": "Ankle balance", "scripted_step": "Scripted backstep", "adaptive_step": "Adaptive step", "ppo_residual": "Residual PPO",
 	"ppo_stepping": "Stepping PPO", "ppo_whole_body": "Whole-body PPO", "ppo_recovery": "Recovery PPO", "ppo_direct": "Direct PPO",
 	"backstep_reference": "Reference backstep", "ppo_backstep": "Backstep + PPO", "ppo_backstep_no_swing": "Backstep PPO (swing disabled)"}
 SUITE_REPORTS = {"hard": "Hard backward pushes", "light": "Light pushes", "original": "Original push grid",
@@ -82,9 +84,14 @@ def discover_reports(directory):
 	return [(path, report) for _, path, report in sorted(matches, key=lambda item: item[:2], reverse=True)]
 
 
-def record_trial(task, policy, cell, trial, controller):
+def record_trial(task, policy, cell, trial, controller, *, balance_samples=None):
 	"""Record the benchmark's 120 Hz samples as owned collider and COM arrays."""
 	positions, orientations, centers, speeds = [], [], [], []
+	push_direction = np.zeros(2) if cell["bone"] is None else np.asarray(cell["impulse_ns"])[[0, 2]] / float(cell["magnitude_ns"])
+	if balance_samples is not None:
+		from pyjoltphysics import EventKind, EventPhase
+
+		contact_phases = (EventPhase.BEGIN, EventPhase.PERSIST)
 
 	def capture(task):
 		state = task.state
@@ -92,6 +99,30 @@ def record_trial(task, policy, cell, trial, controller):
 		orientations.append(state.orientation[0].copy())
 		centers.append(state.center_of_mass[0].copy())
 		speeds.append(np.hypot(*state.center_of_mass_velocity[0, [0, 2]]))
+		if balance_samples is not None:
+			feet = task.feet
+			planted = state.contacts[0, feet]
+			velocity = state.center_of_mass_velocity[0, [0, 2]]
+			center = state.center_of_mass[0]
+			point = center[[0, 2]] + velocity * np.sqrt(max(center[1], 0) / 9.81)
+			edges, margin = None, None
+			if planted.any():
+				sole, rotation = collider_poses(state.position[0, feet], state.orientation[0, feet], task.foot_offsets, task.foot_rotations)
+				corners = sole[:, None] + task.sole_corners @ Quaternion.matrix_batch(rotation).transpose(0, 2, 1)
+				points = corners[planted].reshape(-1, 3)[:, [0, 2]]
+				starts, delta, _, _, boundary = _support_edges(points)
+				edges = np.insert(np.stack((starts[boundary], (starts + delta)[boundary]), axis=1), 1, 0.018, axis=-1)
+				margin = _support_margin(points, point)
+			events = task.events
+			floor = np.isin(events["a"], task.floor) | np.isin(events["b"], task.floor)
+			active = events[floor & (events["kind"] == EventKind.CONTACT) & np.isin(events["phase"], contact_phases)]
+			uids = task.uids[0, feet]
+			contacts = (active["a"][:, None] == uids) | (active["b"][:, None] == uids)
+			loads = TICK_HZ * (active["impulse"][:, None] * contacts).sum(axis=0)
+			slip = np.linalg.norm(state.linear_velocity[0, feet][:, [0, 2]], axis=1) * planted
+			reference = task.backstep_reference
+			target = (reference.start + reference.step_offset)[[0, 2]] if reference is not None and reference.start is not None else None
+			balance_samples.append((point, edges, margin, float(velocity @ push_direction), loads, slip, target))
 
 	try:
 		if cell["bone"] is None:
@@ -198,7 +229,8 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 		cell = reports[report_index]["cells"][cell_index]
 		trial = cell["controllers"][name]["episodes"][start_index]
 		task, policy = trial_controller(report_index, name)
-		return record_trial(task, policy, cell, trial, name)
+		balance = None if headless else []
+		return (*record_trial(task, policy, cell, trial, name, balance_samples=balance), balance)
 
 	current = selection
 	clip = recording(*current)
@@ -211,6 +243,7 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 
 	playback = Playback()
 	yaw, pitch, zoom = 42.0, 22.0, 1.0
+	show_balance = "adaptive_step" in reports[current[0]]["cells"][0]["controllers"]
 	view_offset = (0.0, 0.0)
 	error_message = ""
 	with viewing_target("Ragdoll tests", window_size=(1280, 800), offscreen=offscreen) as output:
@@ -222,6 +255,10 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 			for offset in range(-3, 4) for point, size in (((offset, 0.003, 0), (0.012, 0.004, 8)), ((0, 0.003, offset), (8, 0.004, 0.012)))]
 		com = DrawInstance(box, material={"base_color": (0.20, 0.95, 0.63, 1)}, scale=(0.07, 0.012, 0.07))
 		arrow = [DrawInstance(box, material={"base_color": (1, 0.80, 0.12, 1)}) for _ in range(3)]
+		hull = [DrawInstance(box, material={"base_color": (0.30, 0.78, 0.92, 1)}) for _ in range(28)]
+		capture_marker = DrawInstance(box, material={"base_color": (0.89, 0.40, 1, 1)}, scale=(0.04, 0.014, 0.04))
+		target_marker = DrawInstance(box, material={"base_color": (1, 0.80, 0.12, 1)}, scale=(0.07, 0.012, 0.07))
+		landing_marker = DrawInstance(box, material={"base_color": (1, 1, 1, 1)}, scale=(0.04, 0.014, 0.04))
 		static = [floor, *grid, com]
 		initial_tuning = assets(current[0], current[2])[1]
 		all_tunings = {initial_tuning} if offscreen else {assets(index, name)[1] for index, report in enumerate(reports)
@@ -259,12 +296,32 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 			return True
 
 		def update(tick):
-			_, (centers, rotations), mass_centers, _, (lower, upper), push = clip
+			result, (centers, rotations), mass_centers, _, (lower, upper), push, balance = clip
 			group = parts[assets(current[0], current[2])[1]]
 			for part, position, rotation in zip(group, centers[tick], rotations[tick], strict=True):
 				part.position, part.rotation = position, rotation
 			com.position = (mass_centers[tick, 0], 0.013, mass_centers[tick, 2])
 			renderer.instances[:] = [*static, *group]
+			if show_balance:
+				point, boundary, _, _, _, _, target = balance[tick]
+				capture_marker.position = (point[0], 0.021, point[1])
+				renderer.instances.append(capture_marker)
+				if boundary is not None:
+					for segment, (a, b) in zip(hull, boundary):
+						segment.position, segment.rotation, segment.scale = segment_transform(a, b, 0.009)
+					renderer.instances.extend(hull[:len(boundary)])
+				elapsed = tick - PUSH_TICK
+				plan = next((p for p in reversed(result.get("step_plans", ())) if p["start_tick_after_push"] <= elapsed), None)
+				if plan is not None:
+					target = plan["target_xz_m"]
+					touchdown = plan["touchdown_xz_m"] if elapsed >= plan.get("touchdown_tick_after_push", np.inf) else None
+				else:
+					landings = result.get("landings", ())
+					touchdown = next((row["landing_xz_m"] for row in reversed(landings) if round(row["seconds_after_push"] * TICK_HZ) <= elapsed), None)
+				for marker, xz, height in ((target_marker, target, 0.025), (landing_marker, touchdown, 0.032)):
+					if xz is not None:
+						marker.position = (xz[0], height, xz[1])
+						renderer.instances.append(marker)
 			if push is not None and PUSH_TICK <= tick < PUSH_TICK + TICK_HZ // 3:
 				start, direction = push
 				tip = start + direction * 0.85
@@ -289,7 +346,9 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 		if offscreen:
 			last = sample_count() - 1
 			midpoint = min(PUSH_TICK + 6, last) if clip[5] is not None else last // 2
-			samples = tuple(sorted({0, midpoint, last}))
+			landing = clip[0].get("landings")
+			touchdown = PUSH_TICK + round(landing[0]["seconds_after_push"] * TICK_HZ) if landing else midpoint
+			samples = tuple(sorted({0, midpoint, touchdown, last}))
 			play_frames(renderer, camera, output, update, label="Ragdoll replay", sample_count=sample_count, sample_hz=TICK_HZ,
 				offscreen_samples=samples, check_frame=has_blue_pixels)
 			return clip[0]
@@ -396,7 +455,7 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 				scroll_to_selection = selection != current
 
 			def draw_transport(width):
-				nonlocal yaw, pitch, zoom
+				nonlocal yaw, pitch, zoom, show_balance
 				report_index, cell_index, name, start_index = current
 				cell = reports[report_index]["cells"][cell_index]
 				saved = cell["controllers"][name]["episodes"][start_index]
@@ -441,6 +500,7 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 						_, pitch = imgui.slider_float("Elevation", pitch, 5.0, 80.0, "%.0f deg")
 						imgui.set_next_item_width(134)
 						_, zoom = imgui.slider_float("Zoom", zoom, 0.5, 2.5, "%.2fx")
+						_, show_balance = imgui.checkbox("Balance overlay", show_balance)
 					finally:
 						imgui.end_popup()
 				if width >= 520:
@@ -450,13 +510,18 @@ def view_reports(paths, reports, *, controller=None, labels=None, headless=False
 				changed, seconds = imgui.slider_float("##Timeline", tick / TICK_HZ, 0, last / TICK_HZ, f"%.2f / {last / TICK_HZ:.2f} s")
 				if changed:
 					playback.cursor, playback.paused = round(seconds * TICK_HZ), True
+				if show_balance:
+					_, _, margin, along_push, load, slip, _ = clip[6][tick]
+					margin_text = f"{margin * 100:+.1f} cm" if margin is not None else "airborne"
+					imgui.text_wrapped("Cyan support  |  Purple capture point  |  Gold target  |  White touchdown")
+					imgui.text_wrapped(f"Capture margin {margin_text}  |  Along push {along_push:+.2f} m/s  |  Est. load L/R {load[0]:.0f}/{load[1]:.0f} N  |  Slip L/R {slip[0]:.2f}/{slip[1]:.2f} m/s")
 
 			def draw_controls():
 				nonlocal view_offset
 				width, height = imgui.get_io().display_size
 				margin = 12.0
 				sidebar_width = min(390, width * 0.43)
-				transport_height = 138
+				transport_height = 190 if show_balance else 138
 				view_offset = (sidebar_width / max(height, 1), transport_height / max(height, 1))
 				sidebar_height = max(1, height - 2 * margin - (transport_height + margin if width < 850 else 0))
 				imgui.set_next_window_pos((margin, margin))

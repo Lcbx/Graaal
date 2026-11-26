@@ -6,7 +6,7 @@ import sys
 import numpy as np
 import pytest
 
-from scenes.benchmarks.benchmark_ragdoll_push_recovery import HARD_BACKWARD_CELLS, PUSH_TICK, TICK_HZ, benchmark, make_trial_controller, run_trial
+from scenes.benchmarks.benchmark_ragdoll_push_recovery import HARD_BACKWARD_CELLS, PUSH_TICK, TICK_HZ, benchmark, make_trial_controller, run_quiet_trial, run_trial
 from scenes.physics_geometry import collider_bounds
 from scenes.ragdoll_control import STANDING_MOTOR_CAPS
 from scenes.ragdoll_recovery_viewer import discover_reports, filtered_trials, paired_selection, read_report, record_trial, suite_reports, view_reports
@@ -612,6 +612,31 @@ def test_recovery_viewer_recording_matches_benchmark(project, magnitude, outcome
 		assert np.all(bounds[1] >= bounds[0])
 		np.testing.assert_array_equal(push[0], centers[PUSH_TICK, task.settings.bone_index("chest")])
 		np.testing.assert_array_equal(push[1], [0, 0, -1])
+	finally:
+		task.close()
+
+
+def test_adaptive_step_uses_observed_motion_and_replays_touchdown():
+	seed = 62700
+	task, policy, _ = make_trial_controller("adaptive_step", seed=seed, pose_recovery=True)
+	cell = dict(bone="chest", impulse_ns=[0, 0, -16], magnitude_ns=16)
+	try:
+		quiet = run_quiet_trial(task, policy, seed=58305)
+		assert quiet["settled_success"] and task.recovery.planned_goal is None
+		light = run_trial(task, policy, seed=seed, bone="chest", impulse=[0, 0, -0.5])
+		assert light["outcome"] == "recovered" and not light["step_plans"]
+		expected = run_trial(task, policy, seed=seed, bone=cell["bone"], impulse=cell["impulse_ns"])
+		first, *followups = expected["step_plans"]
+		assert 0 < first["start_tick_after_push"] < first["touchdown_tick_after_push"]
+		assert first["peak_swing_torque_ratio"] > 0
+		assert all(p["start_tick_after_push"] > first["touchdown_tick_after_push"] for p in followups)
+		samples = []
+		actual, *_ = record_trial(task, policy, cell, expected, "adaptive_step", balance_samples=samples)
+		assert actual == expected
+		tick = PUSH_TICK + first["touchdown_tick_after_push"]
+		point, support, margin, velocity, load, slip, _ = samples[tick]
+		assert np.isfinite(point).all() and np.isfinite(margin) and np.isfinite(velocity)
+		assert len(support) >= 4 and len(load) == len(slip) == 2
 	finally:
 		task.close()
 

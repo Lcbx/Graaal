@@ -56,8 +56,7 @@ def compact_axes(limits):
 	return bones + 1, Quaternion.matrix_batch(limits["child_frames"])[bones + 1, :, axes]
 
 
-def _support_margin(points, center):
-	"""Return the signed distance to the boundary of a planar convex hull."""
+def _support_edges(points):
 	left, right = np.triu_indices(len(points), k=1)
 	start = points[left]
 	edges = points[right] - start
@@ -65,7 +64,12 @@ def _support_margin(points, center):
 	sides = np.einsum("evi,ei->ev", points - start[:, None], normals)
 	positive = sides.max(axis=1) > 1e-9
 	negative = sides.min(axis=1) < -1e-9
-	boundary = positive ^ negative
+	return start, edges, normals, positive, positive ^ negative
+
+
+def _support_margin(points, center):
+	"""Return the signed distance to the boundary of a planar convex hull."""
+	start, edges, normals, positive, boundary = _support_edges(points)
 	length_squared = np.einsum("ei,ei->e", edges, edges)
 	if not boundary.any():
 		if not length_squared.any():
@@ -84,9 +88,10 @@ def _support_margin(points, center):
 class StandingTask:
 	"""Run one episode in a fresh native world, exposing only joint actions."""
 
-	def __init__(self, project, *, episode_steps=5 * CONTROL_HZ, initial_angular_speed=0.0, tuned_stance=False, compact=False, vary_start=False, max_start_tilt=DEFAULT_START_TILT, support_area=False, ankle_balance=False, residual=False, stepping=False, whole_body=False, push_impulses=(), recovery=False, recovery_curriculum=False, replay_start_fraction=0.0, direct=False, without_direct_reward=(), backstep=False, backstep_swing=True, strong_backstep_reference=False, pose_recovery=False, release_backstep_hips=False, backward_chest_pushes=False, touchdown_support_reward=False):
+	def __init__(self, project, *, episode_steps=5 * CONTROL_HZ, initial_angular_speed=0.0, tuned_stance=False, compact=False, vary_start=False, max_start_tilt=DEFAULT_START_TILT, support_area=False, ankle_balance=False, residual=False, stepping=False, whole_body=False, push_impulses=(), recovery=False, recovery_curriculum=False, replay_start_fraction=0.0, direct=False, without_direct_reward=(), backstep=False, backstep_swing=True, strong_backstep_reference=False, pose_recovery=False, release_backstep_hips=False, backward_chest_pushes=False, touchdown_support_reward=False, adaptive_step=False):
 		import pyjoltphysics as pj
 
+		recovery = recovery or adaptive_step
 		if direct and (not tuned_stance or any((compact, ankle_balance, residual, stepping, whole_body, recovery, backstep))):
 			raise ValueError("direct motor control requires the tuned stance and its own action space")
 		disabled_rewards = set(without_direct_reward)
@@ -221,11 +226,11 @@ class StandingTask:
 		self.balance_torques = make_ankle_balance(settings, self.positions, self.orientations, self.feet) if self.ankle_balance else None
 		self.recovery = None
 		if recovery:
-			from tools.ragdoll_recovery_step import RECOVERY_CHANNELS, RecoveryStep
+			from tools.ragdoll_recovery_step import RECOVERY_CHANNELS, AdaptiveRecoveryStep, RecoveryStep
 
 			self.motor_channels = self.action_shape[0]
 			self.action_shape = (self.motor_channels + RECOVERY_CHANNELS,)
-			self.recovery = RecoveryStep(self)
+			self.recovery = (AdaptiveRecoveryStep if adaptive_step else RecoveryStep)(self)
 		self.world = None
 
 	def _spawn_pose(self, local_turns):

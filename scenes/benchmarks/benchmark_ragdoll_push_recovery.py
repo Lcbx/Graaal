@@ -10,7 +10,7 @@ import numpy as np
 from graaal.Math import Quaternion
 from scenes.physics_geometry import collider_poses
 from tools.ragdoll_project import default_project, read_project
-from tools.ragdoll_recovery_step import ScriptedBackstep
+from tools.ragdoll_recovery_step import AdaptiveRecoveryStep, ScriptedBackstep
 from tools.ragdoll_standing import BACKSTEP_IMPACT_KEYS, CONTROL_HZ, DEFAULT_START_TILT, DIRECT_REWARD_KEYS, HARD_BACKWARD_PUSHES, PUSH_BONES, PUSH_DIRECTIONS, PUSH_SECONDS, PUSH_TICK, RECOVERY_STEP_DISTANCE, SETTLE_SECONDS, TICK_HZ, StandingTask, _support_margin, evaluate_episode
 
 
@@ -64,15 +64,40 @@ def run_trial(task, policy, *, seed, bone, impulse, scripted_step=False, on_samp
 	last_contact_tick = np.full(len(task.feet), task.world.tick)
 	seen_contact = planted.copy()
 	result.update(peak_com_speed_m_s=0.0, arrest_seconds=None)
+	adaptive = task.recovery if isinstance(task.recovery, AdaptiveRecoveryStep) else None
+	if adaptive is not None:
+		result["step_plans"] = []
+		impact = result["impact_diagnostics"] = dict(peak_com_acceleration_m_s2=0.0, peak_floor_impulse_ns=0.0)
+		last_velocity = task.state.center_of_mass_velocity[0].copy()
 
 	def after_tick():
-		nonlocal planted
+		nonlocal planted, last_velocity
 		if result["recovery_seconds"] is not None:
 			return
 		if on_sample is not None:
 			capture()
 		tick = task.world.tick
-		com_speed = float(np.hypot(*task.state.center_of_mass_velocity[0, [0, 2]]))
+		velocity = task.state.center_of_mass_velocity[0, [0, 2]]
+		com_speed = float(np.hypot(*velocity))
+		if adaptive is not None:
+			current_velocity = task.state.center_of_mass_velocity[0]
+			if tick > PUSH_TICK + 1:
+				acceleration = TICK_HZ * np.linalg.norm(current_velocity - last_velocity)
+				events = task.events
+				floor = (events["a"] == task.floor[0]) | (events["b"] == task.floor[0])
+				active = floor & (events["kind"] == pj.EventKind.CONTACT) & np.isin(events["phase"], (pj.EventPhase.BEGIN, pj.EventPhase.PERSIST))
+				impact["peak_com_acceleration_m_s2"] = max(impact["peak_com_acceleration_m_s2"], float(acceleration))
+				impact["peak_floor_impulse_ns"] = max(impact["peak_floor_impulse_ns"], float(np.max(events["impulse"][active], initial=0)))
+			last_velocity = current_velocity.copy()
+		if adaptive is not None and adaptive.phase:
+			plans = result["step_plans"]
+			start = adaptive.started - PUSH_TICK
+			if not plans or plans[-1]["start_tick_after_push"] != start:
+				plans.append(dict(foot=task.settings.bones[task.feet[adaptive.side]].name, start_tick_after_push=start,
+					planned_swing_seconds=adaptive.duration, target_xz_m=adaptive.planned_goal[[0, 2]].tolist(), touchdown_xz_m=None))
+			plans[-1]["peak_swing_torque_ratio"] = adaptive.peak_swing_torque_ratio
+			if adaptive.touchdown is not None and plans[-1]["touchdown_xz_m"] is None:
+				plans[-1].update(touchdown_xz_m=adaptive.touchdown[[0, 2]].tolist(), touchdown_tick_after_push=tick - PUSH_TICK)
 		result["peak_com_speed_m_s"] = max(result["peak_com_speed_m_s"], com_speed)
 		if com_speed < 0.05 and result["peak_com_speed_m_s"] >= 0.05 and result["arrest_seconds"] is None:
 			result["arrest_seconds"] = (tick - PUSH_TICK) / TICK_HZ
@@ -81,18 +106,23 @@ def run_trial(task, policy, *, seed, bone, impulse, scripted_step=False, on_samp
 		landed = contact & ~planted & seen_contact
 		moved = np.linalg.norm(position - last_contact, axis=1) >= STEP_DISTANCE
 		relocated = np.flatnonzero(landed & moved)
-		margin = None
+		margin = capture_margin = None
 		if len(relocated) and task.support_area:
 			feet = task.feet[contact]
 			centers, turns = collider_poses(task.state.position[0, feet], task.state.orientation[0, feet], task.foot_offsets[contact], task.foot_rotations[contact])
 			soles = centers[:, None] + task.sole_corners[contact] @ Quaternion.matrix_batch(turns).transpose(0, 2, 1)
-			margin = _support_margin(soles.reshape(-1, 3)[:, [0, 2]], task.state.center_of_mass[0, [0, 2]])
+			points = soles.reshape(-1, 3)[:, [0, 2]]
+			center = task.state.center_of_mass[0]
+			margin = _support_margin(points, center[[0, 2]])
+			capture_margin = _support_margin(points, center[[0, 2]] + velocity * np.sqrt(max(center[1], 0) / 9.81))
 		for foot in relocated:
 			landing = dict(foot=task.settings.bones[task.feet[foot]].name, seconds_after_push=(tick - PUSH_TICK) / TICK_HZ,
 				airborne_seconds=(tick - last_contact_tick[foot] - 1) / TICK_HZ,
 				takeoff_xz_m=last_contact[foot].tolist(), landing_xz_m=position[foot].tolist(),
 				displacement_along_push_m=float((position[foot] - last_contact[foot]) @ push_direction),
-				com_speed_at_touchdown_m_s=com_speed, com_speed_after_0_2s_m_s=None, support_margin_at_touchdown_m=margin, contact_ticks=0)
+				com_speed_at_touchdown_m_s=com_speed, com_speed_after_0_2s_m_s=None, support_margin_at_touchdown_m=margin, contact_ticks=0,
+				capture_margin_at_touchdown_m=capture_margin, com_velocity_along_push_at_touchdown_m_s=float(velocity @ push_direction),
+				com_velocity_along_push_after_0_2s_m_s=None, max_planted_drift_first_0_2s_m=0.0)
 			result["landings"].append(landing)
 			tracked_landings[foot] = landing
 			if track_impulse:
@@ -104,6 +134,9 @@ def run_trial(task, policy, *, seed, bone, impulse, scripted_step=False, on_samp
 				tracked_landings[foot] = None
 				continue
 			landing["contact_ticks"] += 1
+			if landing["contact_ticks"] <= LANDING_WINDOW_TICKS + 1:
+				drift = np.linalg.norm(position[foot] - landing["landing_xz_m"])
+				landing["max_planted_drift_first_0_2s_m"] = max(landing["max_planted_drift_first_0_2s_m"], float(drift))
 			if track_impulse:
 				events = task.events
 				uid = task.uids[0, task.feet[foot]]
@@ -115,6 +148,7 @@ def run_trial(task, policy, *, seed, bone, impulse, scripted_step=False, on_samp
 		for landing in result["landings"]:
 			if tick - PUSH_TICK - round(landing["seconds_after_push"] * TICK_HZ) == LANDING_WINDOW_TICKS:
 				landing["com_speed_after_0_2s_m_s"] = com_speed
+				landing["com_velocity_along_push_after_0_2s_m_s"] = float(velocity @ push_direction)
 		last_contact[contact] = position[contact]
 		last_contact_tick[contact] = tick
 		seen_contact[:] |= contact
@@ -171,6 +205,10 @@ def make_trial_controller(name, *, seed, checkpoint=None, tuning=None, max_start
 		task = StandingTask(project, whole_body=True, **options)
 		zero = np.zeros(task.action_shape, dtype=np.float32)
 		return task, lambda _: zero, None
+	if name == "adaptive_step":
+		task = StandingTask(project, adaptive_step=True, **options)
+		zero = np.zeros(task.action_shape, dtype=np.float32)
+		return task, lambda _: zero, None
 	if name == "backstep_reference":
 		task = StandingTask(project, backstep=True, strong_backstep_reference=strong_backstep_reference, **options)
 		return task, lambda _: task.backstep_zero, None
@@ -199,7 +237,7 @@ def make_trial_controller(name, *, seed, checkpoint=None, tuning=None, max_start
 	return task, lambda obs: model.predict(obs, deterministic=True)[0], metadata
 
 
-def benchmark(*, seed, episodes, impulses, checkpoint=None, stepping_checkpoint=None, whole_body_checkpoint=None, recovery_checkpoint=None, scripted_step=False, direct_checkpoint=None, hard_backward_only=False, direct_tuning=None, quiet=False, backstep_checkpoint=None, backstep_grid=False, backstep_ablation=False, strong_backstep_reference=False, recovery_seconds=RECOVERY_SECONDS, pose_recovery=False, release_backstep_hips=False):
+def benchmark(*, seed, episodes, impulses, checkpoint=None, stepping_checkpoint=None, whole_body_checkpoint=None, recovery_checkpoint=None, scripted_step=False, direct_checkpoint=None, hard_backward_only=False, direct_tuning=None, quiet=False, backstep_checkpoint=None, backstep_grid=False, backstep_ablation=False, strong_backstep_reference=False, recovery_seconds=RECOVERY_SECONDS, pose_recovery=False, release_backstep_hips=False, adaptive_step=False):
 	if quiet and (hard_backward_only or scripted_step or backstep_grid or backstep_ablation):
 		raise ValueError("--quiet cannot be combined with a push grid, scripted step or backstep ablation")
 	if hard_backward_only and backstep_grid:
@@ -226,6 +264,9 @@ def benchmark(*, seed, episodes, impulses, checkpoint=None, stepping_checkpoint=
 		if scripted_step:
 			scripted, policy, _ = make_trial_controller("scripted_step", **setup)
 			controllers["scripted_step"] = scripted, policy
+		if adaptive_step:
+			adaptive, policy, _ = make_trial_controller("adaptive_step", **setup)
+			controllers["adaptive_step"] = adaptive, policy
 		if backstep_grid or backstep_checkpoint is not None:
 			reference, policy, _ = make_trial_controller("backstep_reference", **setup)
 			controllers["backstep_reference"] = reference, policy
@@ -294,6 +335,7 @@ def main():
 	parser.add_argument("--quiet", action="store_true", help="evaluate ten-second quiet standing and save replayable trials")
 	parser.add_argument("--hard-backward-only", action="store_true", help="run only the three historically failing backward push cells")
 	parser.add_argument("--scripted-step", action="store_true", help="include a timed backward recovery step on strong -Z pushes")
+	parser.add_argument("--adaptive-step", action="store_true", help="include a contact-aware stepping baseline driven by COM motion")
 	parser.add_argument("--episodes", type=int, default=10, help="number of paired starts per grid cell")
 	parser.add_argument("--seed", type=int, default=55000, help="first evaluation seed")
 	parser.add_argument("--impulses", type=float, nargs="+", default=(0.5, 1.0, 2.0), help="impulse magnitudes in N s")
@@ -311,7 +353,7 @@ def main():
 			direct_checkpoint=args.direct_checkpoint, scripted_step=args.scripted_step, hard_backward_only=args.hard_backward_only,
 			direct_tuning=args.direct_tuning, quiet=args.quiet, backstep_checkpoint=args.backstep_checkpoint,
 			backstep_grid=args.backstep_grid, backstep_ablation=args.backstep_ablation, strong_backstep_reference=args.strong_backstep_reference,
-			recovery_seconds=args.recovery_seconds, pose_recovery=args.pose_recovery, release_backstep_hips=args.release_backstep_hips)
+			recovery_seconds=args.recovery_seconds, pose_recovery=args.pose_recovery, release_backstep_hips=args.release_backstep_hips, adaptive_step=args.adaptive_step)
 		if args.report is not None:
 			args.report.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 	except (ImportError, OSError, ValueError) as error:

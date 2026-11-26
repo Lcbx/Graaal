@@ -23,8 +23,8 @@ already exist; this file tracks **passive mechanics and learned control**.
 ## Implementation history and findings
 
 The measurements below come from recorded Windows x64 runs. The current
-priority is [a contact-aware recovery step](#p1--contact-aware-recovery-step)
-for the strong pushes that still defeat the standing controllers.
+priority is [consistent touchdown and load transfer](#p1--consistent-touchdown-and-load-transfer)
+under strong pushes.
 
 <a name="backend-validation-status"></a>
 <a name="authored-passive-humanoid-and-contact-scenarios"></a>
@@ -375,25 +375,61 @@ foot that fails to take load calls for traces of the predicted capture point,
 planned versus actual touchdown, per-foot load and slip.
 [Backstep implementation](../tools/ragdoll_recovery_step.py)
 
+### 13. Adaptive stepping baseline
+
+The benchmark's `--adaptive-step` controller uses measured COM movement,
+torso lean and foot contact. Once the balance estimate stays outside planted
+support while the body is moving, it evaluates both possible stance feet and
+three swing durations. It scores the predicted capture point against the
+proposed support area, limits foot travel, and reassesses after loading to
+allow another step. The torso and stance leg use bounded motor targets and
+both feet can contribute ankle feedback after touchdown.
+
+The report records the planned and actual touchdown, swing torque demand
+relative to the cap, signed COM velocity along the push, planted drift and
+estimated floor impulse. The viewer shows the projected support boundary,
+capture point and touchdown markers in **View → Balance overlay**, with
+per-foot estimated load and horizontal contact speed at the playhead.
+[Benchmark and replay commands](../scenes/benchmarks/README.md#ragdoll-push-recovery)
+
+The paired comparison reused the 11–16 N·s chest pushes and both start sets
+from section 11. The quiet-standing regression settled in 30/30 trials and
+all 240 light pushes recovered without a step request. A motion check in the
+trigger resolved quiet false positives found in the first sweep.
+
+| Controller | Original starts | Fresh starts | 14–16 N·s | Recovered with a braking step |
+| --- | ---: | ---: | ---: | ---: |
+| Ankle balance | 0/60 | 0/60 | 0/60 | 0/120 |
+| Fixed Backstep | 2/60 | 6/60 | 4/60 | 1/120 |
+| Backstep PPO, 336,384 steps | 14/60 | 13/60 | 16/60 | 4/120 |
+| Adaptive step | 3/60 | 2/60 | 3/60 | 2/120 |
+
+The adaptive controller completed at least two planned touchdowns in 58/60
+strong-push trials. Its median horizontal error at the first planned touchdown
+was 8.6 cm, and median planted drift over the first 0.2 s of the first relocated
+landing reached 10.1 cm. Median peak swing torque demand was 3.33 times the
+cap at the first planned step. Only 2/60 strong trials met the speed-drop
+criterion after the first relocated touchdown. Seed 60707 recovered with two
+planned steps at 15 N·s. Both touchdown placement and load transfer remain
+limiting factors before using this controller to seed PPO.
+
+The viewer discovers `build/ragdoll-adaptive-recovery-{holdout,fresh}.json`
+and the `light` and `quiet-replay` reports under the same prefix.
+
 ## Remaining work — priorities
 
-### P1 — Contact-aware recovery step
+### P1 — Consistent touchdown and load transfer
 
-1. Build a deterministic baseline using `RecoveryStep`'s capture estimate,
-   contact state and foot-space controller. Use the capture point relative to
-   planted support to decide when to step. Predict its position at touchdown
-   and select a feasible swing foot, foothold and duration together. Reassess
-   support when the new foot takes load and allow a follow-up step if needed.
-2. Compare the adaptive and fixed references without a learned residual on
-   the same 11–16 N·s backward chest pushes and both recorded start sets.
-   Include the existing Backstep PPO as a reference. Check the original quiet
-   and light-push grids for regressions and report the 14–16 N·s cells separately.
-3. Record and show the planted support area, capture point and margin, planned
-   and actual touchdown, estimated load per foot, slip and COM velocity along
-   the push. Inspect the moments before the push, at touchdown, 0.2 s later and
-   at later landings. Use foot clearance and motor saturation to diagnose a
-   missed target. If the foot reaches the target but slips or fails to take
-   load, test stance-leg support and hip/knee yielding during landing.
+1. Use the replay traces to check whether the predicted foothold remains
+   reachable under the swing torque caps. Test swing time and foot clearance
+   against actual touchdown error on the paired strong-push cases.
+2. Compare load transfer and planted drift for those landings. Test
+   stance-leg support and hip/knee yielding during landing. Check the
+   follow-up step when the first placement leaves the capture point outside
+   support.
+3. Use the same paired seeds and pose-recovery check for each ablation. Keep
+   quiet and light pushes as regressions and report the 14–16 N·s cells
+   separately, including successful braking steps.
 
 ### P2 — Learn step timing and placement, then scale
 

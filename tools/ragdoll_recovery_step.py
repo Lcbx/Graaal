@@ -156,6 +156,9 @@ LANDING_REWARD_TICKS = round(0.2 * TICK_HZ)
 
 class RecoveryStep:
 	"""Execute policy-selected steps using bounded joint torques and foot contact."""
+	max_load_seconds = 0.42
+	cooldown_seconds = 0.2
+	load_with_ankles = False
 
 	def __init__(self, task):
 		import pyjoltphysics as pj
@@ -176,6 +179,7 @@ class RecoveryStep:
 		self.side, self.phase = None, 0
 		self.cooldown = 0
 		self.landing_tick = None
+		self.planned_goal = None
 		self.pushed = self.settle_awarded = False
 		self.measure()
 
@@ -192,7 +196,8 @@ class RecoveryStep:
 		self.sole_tilt = axes[:, [0, 2], 1] @ self.heading
 		center = state.center_of_mass[0]
 		velocity = state.center_of_mass_velocity[0, [0, 2]]
-		self.capture = center[[0, 2]] + velocity * np.sqrt(max(center[1], 0) / 9.81)
+		self.capture_time = np.sqrt(max(center[1], 0) / 9.81)
+		self.capture = center[[0, 2]] + velocity * self.capture_time
 		self.speed = float(np.linalg.norm(velocity))
 		planted = state.contacts[0, feet]
 		self.capture_margin = _support_margin(self.soles[planted].reshape(-1, 3)[:, [0, 2]], self.capture) if planted.any() else None
@@ -225,19 +230,25 @@ class RecoveryStep:
 			return
 		if not self.task.state.contacts[0, self.task.feet[1 - side]]:
 			side = 1 - side
-		state = self.task.state
-		self.side, self.phase = side, 1
-		self.started = self.task.world.tick
-		self.start = state.position[0, self.task.feet[side]].copy()
-		landing = self.capture - self.start[[0, 2]]
+		start = self.task.state.position[0, self.task.feet[side]]
+		landing = self.capture - start[[0, 2]]
 		landing *= min(1, 0.21 / max(np.linalg.norm(landing), 1e-6))
 		landing += (command[1:3] * 0.12) @ self.heading.T
+		landing *= min(1, 0.33 / max(np.linalg.norm(landing), 1e-6))
+		self.start_step(side, start[[0, 2]] + landing, 0.15 + 0.07 * command[3], 0.18 + 0.07 * command[4])
+
+	def start_step(self, side, landing_xz, clearance, duration):
+		self.side, self.phase = side, 1
+		self.started = self.task.world.tick
+		self.start = self.task.state.position[0, self.task.feet[side]].copy()
 		self.goal = self.start.copy()
-		self.goal[[0, 2]] += landing * min(1, 0.33 / max(np.linalg.norm(landing), 1e-6))
+		self.goal[[0, 2]] = landing_xz
 		self.goal[1] -= max(self.clearance[side], 0) + 0.018
-		self.clear = 0.15 + 0.07 * command[3]
-		self.duration = 0.18 + 0.07 * command[4]
+		self.planned_goal = self.goal.copy()
+		self.touchdown = None
+		self.clear, self.duration = clearance, duration
 		self.airborne = False
+		self.peak_swing_torque_ratio = 0.0
 
 	def edit_motors(self, action):
 		if self.phase:
@@ -268,10 +279,19 @@ class RecoveryStep:
 		pair[2] = 210 * np.cross(turns[1, :, 1], [0, 1, 0]) - 7 * state.angular_velocity[0, foot]
 		if self.phase == 2:
 			pair[0] -= 140 * np.cross(turns[0, :, 1], [0, 1, 0]) - 35 * state.angular_velocity[0, 0]
-		pair *= np.minimum(1, self.caps[self.side] / np.maximum(np.linalg.norm(pair, axis=1), 1))[:, None]
-		contacts = state.contacts.copy()
-		contacts[0, foot] = False
-		torque = task.balance_torques(replace(state, contacts=contacts), residual)
+		magnitude = np.linalg.norm(pair, axis=1)
+		if self.phase == 1:
+			self.peak_swing_torque_ratio = max(self.peak_swing_torque_ratio, float(np.max(magnitude / self.caps[self.side])))
+		pair *= np.minimum(1, self.caps[self.side] / np.maximum(magnitude, 1))[:, None]
+		balance_state = state
+		if self.phase == 1 or not self.load_with_ankles:
+			contacts = state.contacts.copy()
+			contacts[0, foot] = False
+			balance_state = replace(state, contacts=contacts)
+		torque = task.balance_torques(balance_state, residual)
+		if self.phase == 2 and self.load_with_ankles:
+			combined = torque[foot] + pair[2]
+			pair[2] = combined * min(1, self.caps[self.side, 2] / max(np.linalg.norm(combined), 1)) - torque[foot]
 		torque[leg] += pair
 		torque[self.parents[self.side]] -= pair
 		return torque
@@ -297,6 +317,7 @@ class RecoveryStep:
 				self.phase = 2
 				self.loaded = task.world.tick
 				self.goal = task.state.position[0, task.feet[self.side]].copy()
+				self.touchdown = self.goal.copy()
 				if np.linalg.norm((self.goal - self.start)[[0, 2]]) >= 0.02 and self.landing_tick is None:
 					self.measure()
 					self.landing_tick = task.world.tick
@@ -310,12 +331,12 @@ class RecoveryStep:
 				if self.capture_margin is not None and self.capture_margin >= 0:
 					self.finish()
 					return
-			if not contact or load_time >= 0.42:
+			if not contact or load_time >= self.max_load_seconds:
 				self.finish()
 
 	def finish(self):
 		self.side, self.phase = None, 0
-		self.cooldown = self.task.world.tick + round(0.2 * TICK_HZ)
+		self.cooldown = self.task.world.tick + round(self.cooldown_seconds * TICK_HZ)
 
 	def error(self):
 		outside = 0.25 if self.capture_margin is None else np.clip(-self.capture_margin, 0, 0.25)
@@ -331,3 +352,98 @@ class RecoveryStep:
 			self.settle_awarded = True
 			result += 8
 		return result
+
+
+class AdaptiveRecoveryStep(RecoveryStep):
+	"""Choose a reachable foothold and swing time from the current balance state."""
+
+	max_load_seconds = 0.30
+	cooldown_seconds = 0.05
+	stance_roll = 0.20
+	trigger_ticks = 10
+	load_with_ankles = True
+
+	def __init__(self, task):
+		super().__init__(task)
+		self.reference_up = Quaternion.matrix_batch(task.orientations[task.chest])[..., 1]
+		task.motor_offset_caps[task.hips] = 1.0
+		task.motor_offset_caps[task.knees] = 1.2
+
+	def reset(self):
+		super().reset()
+		self.unstable_since = None
+
+	def request(self, command, *, guided=False):
+		if guided:
+			super().request(command, guided=True)
+			return
+		task = self.task
+		if self.phase or task.world.tick < self.cooldown:
+			return
+		if self.capture_margin is None or self.capture_time < 0.15:
+			self.unstable_since = None
+			return
+		state = task.state
+		spin = state.angular_velocity[0, task.chest]
+		if self.speed < 0.055 and np.hypot(spin[0], spin[2]) < 0.55:
+			self.unstable_since = None
+			return
+		positions = state.position[0, task.feet][:, [0, 2]]
+		feet = self.soles[:, :, [0, 2]]
+		planted = state.contacts[0, task.feet]
+		up = Quaternion.matrix_batch(state.orientation[0, task.chest])[..., 1]
+		lean = (up - self.reference_up + 0.10 * np.cross(spin, up))[[0, 2]]
+		capture = self.capture + 0.32 * lean
+		if _support_margin(feet[planted].reshape(-1, 2), capture) >= 0:
+			self.unstable_since = None
+			return
+		if self.unstable_since is None:
+			self.unstable_since = task.world.tick
+		if task.world.tick - self.unstable_since < self.trigger_ticks:
+			return
+		best_score = -np.inf
+		for stance in np.flatnonzero(planted):
+			side = 1 - stance
+			# Approximate the stance center of pressure by the closest point on the sole.
+			support = feet[stance]
+			origin = support[0]
+			edges = support[[1, 2]] - origin
+			pivot = origin + np.clip((edges @ (capture - origin)) / np.maximum((edges ** 2).sum(axis=1), 1e-8), 0, 1) @ edges
+			separation = ((positions[side] - positions[stance]) @ self.heading)[0]
+			outward = np.copysign(1, separation)
+			for duration in (0.16, 0.20, 0.24):
+				predicted = pivot + (capture - pivot) * np.exp(duration / self.capture_time)
+				delta = predicted - feet[side].mean(axis=0)
+				# Keep the swing on its own side and limit travel by the time available.
+				local = delta @ self.heading
+				local[0] = outward * max(min(abs(separation), 0.14) - abs(separation), outward * local[0])
+				delta = self.heading @ local
+				delta *= min(1, 1.45 * duration / max(np.linalg.norm(delta), 1e-8))
+				if np.linalg.norm(delta) < 0.04:
+					continue
+				margin = _support_margin(np.concatenate((support, feet[side] + delta)), predicted)
+				score = margin - 0.25 * duration - 0.005 * self.impulse[side]
+				if score > best_score:
+					best_score = score
+					plan = side, positions[side] + delta, duration
+		if best_score > -np.inf:
+			side, landing, duration = plan
+			self.start_step(side, landing, 0.16, duration)
+			self.unstable_since = None
+			self.command[-1] = 0.24
+
+	def start_step(self, side, landing_xz, clearance, duration):
+		super().start_step(side, landing_xz, clearance, duration)
+		travel = (landing_xz - self.start[[0, 2]]) @ self.heading
+		self.step_direction = travel / max(np.linalg.norm(travel), 1e-8)
+
+	def edit_motors(self, action):
+		super().edit_motors(action)
+		if self.phase:
+			task = self.task
+			stance = 1 - self.side
+			time = (task.world.tick - self.started) / TICK_HZ
+			weight = min(time / 0.07, 1)
+			action[0, task.hips[stance], [0, 2]] += weight * np.array([0.38 * self.step_direction[1], (2 * stance - 1) * self.stance_roll])
+			action[0, task.knees[stance], 0] -= weight * 0.54
+			action[0, task.chest, 0] -= weight * 0.20 * self.step_direction[1]

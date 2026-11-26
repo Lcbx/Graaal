@@ -290,6 +290,21 @@ records the scoring and hip-control flags used by the viewer.
 python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --backstep-grid --pose-recovery --release-backstep-hips --backstep-checkpoint build/ragdoll-backstep-pose-hips-seed97.zip --episodes 10 --seed 60700 --report build/ragdoll-backstep-pose-hips-holdout.json
 ```
 
+`--adaptive-step` adds a deterministic controller that responds to COM motion,
+torso lean and foot contacts. It predicts the capture point at touchdown,
+chooses a swing foot and a bounded target and duration, then reassesses support
+after loading. `--backstep-grid` pairs it with the fixed reference on the same
+starts. Add `--backstep-checkpoint` to include PPO in that comparison.
+
+```powershell
+python -m scenes.benchmarks.benchmark_ragdoll_push_recovery --adaptive-step --backstep-grid --pose-recovery --episodes 10 --seed 60700 --report build/ragdoll-adaptive-recovery-holdout.json
+```
+
+The adaptive report records each step request, planned and actual touchdown and
+peak requested swing torque relative to its cap. Push trials also report the
+capture margin and COM velocity along the push at relocated touchdown, velocity
+0.2 seconds later, and the maximum planted foot drift in that window.
+
 ### View recovery trials in 3D
 
 Launch the [recovery viewer](../ragdoll_recovery_viewer.py) to discover full
@@ -310,6 +325,12 @@ outcomes for the selected scenario group and controller. Use **Results** to find
 passes, failures, attempted steps, or **Recovered with steps**. Switching controllers keeps the seed and
 playhead when the same trial exists. The playback bar can jump to the push or
 first landing. Space pauses and R restarts. **View** contains the camera and speed controls.
+
+Use **View → Balance overlay** to show the projected support boundary, capture
+point, planned touchdown and actual touchdown. The playback panel shows the
+signed capture margin, COM velocity along the push, estimated load per foot
+from Jolt contact impulses, and each planted foot's horizontal speed. The
+overlay is enabled when the viewer opens on an adaptive-step report.
 
 ```powershell
 python -m scenes.ragdoll_recovery_viewer --suite build/ragdoll-direct-warm-65536-seed87 --controller ppo_direct
