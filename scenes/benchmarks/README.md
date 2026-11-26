@@ -150,6 +150,28 @@ dominated by Python input preparation, with substantial run-to-run variation;
 see the [physics status](../../implementation_plans/physics_integration_plan.md#phase-6-workload-measurements)
 for the measurements and limitations before making tuning decisions.
 
+## Genesis recovery-step search
+
+With the `genesis-training` extra and CUDA-enabled PyTorch, the diagnostic
+below samples bounded right-leg and stance targets in parallel after a known
+backward chest push. It reports survival, relocated landings, COM braking and
+settled recoveries; it is an oracle-timed reference search, not an autonomous
+policy evaluation.
+
+```powershell
+python -m scenes.benchmarks.benchmark_genesis_steps build/genesis-standing build/genesis-standing/model_99.pt --envs 512 --output build/genesis-step-search.json
+python -m scenes.benchmarks.benchmark_genesis_steps build/genesis-standing build/genesis-standing/model_99.pt --around build/genesis-step-search.json --envs 1024 --output build/genesis-step-refine.json
+```
+
+Select a trial with `--around REPORT --candidate-index N`; add
+`--max-start-tilt 0.025 --max-start-spin 0.1` for varied starts and
+`--without-swing` for the matched swing ablation. `--ground-contacts` attributes
+foot forces to floor contact pairs rather than all contacts. With a fixed candidate,
+`--dataset PATH` saves successful braking-step trajectories for the
+[imitation trainer](../../tools/README.md#experimental-genesis-ragdoll-training).
+Without `--ground-contacts`, step metrics use per-foot net upward force and do
+not verify contact-pair identity. Neither mode measures foot slip.
+
 ## Ragdoll control prerequisites
 
 ```powershell

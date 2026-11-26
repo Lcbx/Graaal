@@ -11,7 +11,95 @@ Both tools use the shared asset loader and CPU preview; neither requires the oth
 ## Physics tools
 
 - [Ragdoll tuner](ragdoll_tuner.md): edit per-bone colliders, mass, hard and soft limits, and neutral springs in a live physics preview.
+- [Experimental Genesis ragdoll training](#experimental-genesis-ragdoll-training): GPU-batched standing and push-recovery PPO.
 - [Ragdoll standing task](#ragdoll-standing-task): compare passive, fixed-pose and ankle feedback baselines, train PPO, and evaluate saved policies.
+
+### Experimental Genesis ragdoll training
+
+The prototype requires Python 3.12–3.14 and CUDA-enabled PyTorch. After
+installing PyTorch for your GPU, install the training dependencies with
+`python -m pip install -e ".[genesis-training]"`. It exports the built-in
+humanoid to MJCF, then trains a policy with RSL-RL PPO. Each run needs a new
+output directory:
+
+```sh
+python -m tools.ragdoll_genesis_train --output build/genesis-standing --envs 64 --iterations 100 --seconds 10 --push-impulse 4 --random-pushes --balance-init --motor-kp 500 --motor-kd 20 --max-start-tilt 0.025 --max-start-spin 0.1
+```
+
+`--tuning` accepts a ragdoll tuner project with the built-in humanoid's bone
+names and order. The output contains the exported rig, configuration, action
+mapping, TensorBoard logs and PPO checkpoints. Each environment steps at
+120 Hz with actions at 60 Hz; the pelvis is free. A nonzero push impulse is
+applied to the chest every two seconds in a sampled horizontal direction.
+`--random-pushes` samples magnitudes up to the specified impulse, including
+quiet events. `--balance-init` adds COM-relative-to-feet and COM-velocity
+observations and initializes the actor from a simple ankle feedback law;
+the PPO policy subsequently controls all 30 target offsets. To continue a
+checkpoint in a new output directory, pass `--resume PATH` with the same rig,
+balance-feature flag and motor gains; the push curriculum and starting tilt
+and spin ranges may change. `--hard-push-probability` optionally concentrates
+that fraction of push events on world −Z chest pushes between
+`--hard-min-impulse` and `--push-impulse`; it requires `--random-pushes`.
+For exploration experiments, `--limb-scale` changes non-ankle target ranges,
+`--limb-std` overrides their action standard deviation, and `--learning-rate`
+overrides PPO's rate, including when resuming. These settings are recorded in
+the run configuration; changing the scale also changes the policy's control
+contract and must be evaluated with that run's configuration. Use
+`--warm-start-feet PATH` with `--balance-init` to add foot position, velocity
+and contact observations to a compatible earlier actor and critic; the expanded
+first layers preserve their previous outputs, but the optimizer starts fresh.
+`--step-reward` adds experimental backward-push shaping for airborne movement,
+relocated landing, COM braking and a subsequent settled hold. It uses one
+push per episode and requires a nonzero hard-push probability. `--single-push`
+allows a matching control run without the shaping reward.
+
+The [Genesis step benchmark](../scenes/benchmarks/benchmark_genesis_steps.py)
+can collect successful oracle-timed reference trajectories with `--dataset`.
+Use `python -m tools.ragdoll_genesis_imitation RUN CHECKPOINT DATASET --output NEW_RUN`
+to warm-start a foot-observing actor and imitate them. The trainer
+holds out complete episodes for action-error monitoring. Reference labels use
+the known push time; the resulting actor receives no timing input, so evaluate
+it independently without the reference before claiming learned recovery.
+For student-state collection, the benchmark's `--student-run` and
+`--student-checkpoint` run the motion-gated student while recording reference
+labels, including for failed episodes. Pass multiple datasets to the imitation
+trainer and use `--student-checkpoint` to continue an existing foot-observing
+actor. `--save-every` retains intermediate checkpoints for evaluation.
+Datasets produced before the standing-action scale correction contain labels
+from a mismatched reference. Regenerate them before training on corrected
+references; new benchmark datasets record `standing_action_scale_corrected`
+and both limb scales in their metadata.
+Compare a checkpoint's episode completion with zero residual actions using:
+
+```sh
+python -m tools.ragdoll_genesis_evaluate build/genesis-standing build/genesis-standing/model_99.pt --envs 64 --seconds 10 --push-grid 0 1 2 4 8 12 --seed 10001 --output build/genesis-standing/holdout.json
+```
+
+The comparison samples paired initial tilts and spins and applies one chest
+push at two seconds. It reports survival and whether the final second has foot
+support, upright pelvis/chest, near-reference height and slow COM motion.
+Use `--body pelvis` to test pelvis pushes and `--direction=-Z` to select a
+single direction. It reports sampled push directions separately. A candidate
+step requires at least 0.05 s airborne, 3 cm foot lift, 5 cm displacement along
+the push and 0.05 s of contact after landing. Braking additionally requires a
+COM-speed drop of at least 0.02 m/s over 0.2 s after touchdown. The reported
+settled-step counts also require the final settled hold. Contact uses per-foot
+net upward force, so check collision-pair attribution and slip separately;
+the evaluation does not yet measure impact severity or a full per-body grid.
+Use `--ground-contacts` to attribute the measured foot forces to floor pairs.
+`--base-run` and `--base-checkpoint` evaluate an experimental blend: a
+backward-COM-speed trigger selects the step actor for a minimum hold time,
+otherwise the standing actor controls. Runs trained with `--gate-base` record
+and use that blend automatically during evaluation; `--without-base` evaluates
+the step actor alone. The trigger uses motion rather than the scheduled push
+time and is currently specific to world −Z.
+
+This is an experimental Genesis baseline, not a Jolt-ready policy. Independent
+hinge limits approximate Jolt's bent swing/twist limits; self-collision filtering,
+motor response and passive forces differ. The prototype has no cross-backend
+policy transfer, Jolt fine-tuning, ONNX runtime integration, domain randomization
+or verified autonomous stepping yet. See the [active ragdoll plan](../implementation_plans/active_ragdolls.md)
+for the remaining validation and transfer work.
 
 ### Ragdoll standing task
 

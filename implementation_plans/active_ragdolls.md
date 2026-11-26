@@ -8,23 +8,39 @@ references, protect itself during falls and get up. [Native physics integration]
 and the [ragdoll API](../graaal/physics.md#native-ragdolls-and-skeletons)
 already exist; this file tracks **passive mechanics and learned control**.
 
-- **Physics:** Jolt via the pinned `pyjoltphysics 0.1.0a3`; native constraints,
-  contacts, collisions and rigid-body motion.
-- **Control:** Python/NumPy computes observations and passive joint torques;
-  bounded joint motors execute the policy's continuous targets. PyTorch PPO
-  trains an MLP; Graaal will run NumPy inference from exported weights.
-- **Forces:** Independent passive neutral-posture springs, progressive soft
-  angular limits (native hard limits as backstops), and active motor commands.
-- **Rates:** 120 Hz physics, 60 Hz neural actions. **No root/pelvis assistance**
-  in learned training or evaluation.
-- **Boundary:** Stay within Python/NumPy and the existing pyjoltphysics API.
-  Native binding changes and other implementation languages are out of scope.
+- **Bulk training:** Use GPU-batched Genesis (`genesis-world`) simulation and
+  RSL-RL PPO with a PyTorch MLP, without mocap or motion priors. Train pose
+  matching and push recovery against the authored humanoid.
+- **Fine-tuning and runtime:** Retain the existing Jolt standing task,
+  workers, benchmarks and viewer for final fine-tuning and evaluation. Jolt
+  remains the runtime physics backend through pinned `pyjoltphysics 0.1.0a3`.
+  Export the final actor and its observation normalization to ONNX for Python
+  runtime inference with ONNX Runtime.
+- **Control:** The policy proposes bounded residual joint targets around an
+  authored pose. Genesis PD motors and Jolt motors must use a shared, explicitly
+  mapped observation/action contract. Preserve the existing Jolt passive
+  springs and soft limits when measuring or fine-tuning against that setup.
+- **Rates:** Start at 120 Hz physics and 60 Hz policy actions in both backends.
+  The pelvis is free: **no root/pelvis assistance** in learned training or
+  evaluation.
+- **Boundary:** Calibrate the existing Jolt frequency/damping motors against
+  Genesis PD response; the pinned ragdoll API does not expose direct
+  stiffness/damping motor settings. Native binding changes are out of scope.
+
+An experimental Genesis environment, approximate rig export and RSL-RL
+trainer are implemented; the cross-backend policy bridge, Jolt fine-tuning
+path and ONNX runtime are **planned**, not implemented. The existing Jolt
+training path below continues to work independently. On the current
+Windows machine, Genesis 1.5.0 and PyTorch 2.14.1+cu130 were installed in
+the regular Python user packages; PyTorch detected the RTX 5060 Ti and ran a
+CUDA tensor operation, and a Genesis GPU physics step succeeded. RSL-RL 6.0.0
+and ONNX are also installed in that interpreter. This is local setup evidence,
+not a universal performance measurement.
 
 ## Implementation history and findings
 
-The measurements below come from recorded Windows x64 runs. The current
-priority is [consistent touchdown and load transfer](#p1--consistent-touchdown-and-load-transfer)
-under strong pushes.
+The measurements below come from recorded Windows x64 Jolt runs. They provide
+baselines and diagnostics for the new training and transfer pipeline.
 
 <a name="backend-validation-status"></a>
 <a name="authored-passive-humanoid-and-contact-scenarios"></a>
@@ -416,50 +432,258 @@ limiting factors before using this controller to seed PPO.
 The viewer discovers `build/ragdoll-adaptive-recovery-{holdout,fresh}.json`
 and the `light` and `quiet-replay` reports under the same prefix.
 
+### 14. Initial Genesis training prototype
+
+The [Genesis trainer](../tools/README.md#experimental-genesis-ragdoll-training)
+exports the 13-body rig to MJCF and runs RSL-RL PPO with 129 observations and
+30 residual hinge targets at 60 Hz, with 120 Hz physics. The pelvis is free.
+The exporter preserves rest joint positions and body masses in a MuJoCo check;
+independent hinge limits approximate the Jolt swing/twist constraints. Genesis
+also filtered two neutral self-collision pairs. Motor calibration, passive
+forces, exact collision/limit parity, randomization, Jolt policy transfer and
+ONNX runtime integration remain open.
+
+An initial seed-1 run with 64 environments, 1 N·s scheduled chest pushes and
+100 PPO iterations collected 153,600 policy steps. A 64-environment comparison
+using seed 10001, the same initial pose and a five-second limit recorded 0/64
+completed episodes for both the trained actor and zero residual actions; mean
+survival was 2.30 s and 2.00 s respectively. These are survival measurements,
+not settled standing or successful push recoveries, and do not establish that
+each episode received a push. A quiet run gave the same completion and mean
+survival values, so the result does not demonstrate recovery from the
+scheduled pushes. A zero-action quiet trace showed the pelvis drifting
+backward with increasing tilt while both feet remained near their initial
+positions; it fell at approximately two seconds. The checkpoint is
+`build/genesis-standing-seed1/model_99.pt`. Diagnose the quiet stance and rig
+discrepancies before scaling the training budget.
+
+### 15. Genesis balance initialization and push training
+
+The original Genesis motor gains let the rig tip backward during quiet
+standing. A GPU gain sweep found that 500 N·m/rad stiffness, 20 N·m·s/rad
+damping and COM position/velocity ankle feedback could maintain standing for
+ten seconds in the tested cases. The trainer can add four COM balance features,
+initialize its actor near that feedback law, vary starting tilt and spin,
+sample quiet and nonzero pushes, and resume compatible PPO checkpoints.
+Selective randomized resets were checked on a four-environment GPU scene.
+
+With the feedback-initialized actor, seed 3 collected 153,600 policy steps
+using mixed quiet events and chest pushes up to 4 N·s. A paired held-out
+evaluation used 64 initial states with up to 0.025 rad tilt and 0.1 rad/s
+spin, a single chest push at two seconds and a ten-second episode. A success
+requires a full final second with foot support, near-reference pelvis height,
+upright pelvis/chest and horizontal COM speed below 0.05 m/s. Push directions
+are sampled across world ±X and ±Z. The evaluation does not yet enforce
+per-direction counts, measure foot slip or verify controlled stepping.
+
+| Policy | Quiet | 12 N·s | 16 N·s | 20 N·s |
+| --- | ---: | ---: | ---: | ---: |
+| Feedback-initialized, one PPO update | 64/64 | 64/64 | 49/64 | 49/64 |
+| PPO seed 3, 153,600 steps | 64/64 | 64/64 | 49/64 | 18/64 |
+| Seed 3 plus 307,200 stronger-push steps | 64/64 | 49/64 | 49/64 | 35/64 |
+| Initialized actor plus 307,200 stronger-push steps | 64/64 | 49/64 | 49/64 | 49/64 |
+| Initialized actor plus 307,200 varied-start, 0–12 N·s steps | 64/64 | 64/64 | 49/64 | 49/64 |
+| Varied-start actor plus 307,200 backward-focused steps | 64/64 | 49/64 | 49/64 | 49/64 |
+| Varied-start actor plus 614,400 broad-limb exploration steps | 64/64 | 49/64 | 49/64 | 49/64 |
+| Foot-observing actor plus 614,400 hard-push steps | 64/64 | 49/64 | 49/64 | 49/64 |
+
+All 16 N·s failures were the 15 sampled −Z trials. The 20 N·s outcomes show
+that additional PPO training did not improve on initialization on this grid,
+and some continuations regressed at 12 N·s. The varied-start checkpoint is
+`build/genesis-balance-varied/model_199.pt`. The table uses one evaluation seed
+and a narrow chest-push scenario, not evidence of general recovery or Jolt
+transfer. On a second set of 64 starts, the varied-start checkpoint again
+settled 64/64 through 12 N·s and 45/64 at 16 and 20 N·s; all 19 failures
+were backward pushes. A third 64-start set with pelvis pushes settled 64/64
+at 4, 8, 12 and 16 N·s. On 32 further starts with fixed −Z chest pushes,
+the varied-start policy settled 32/32 at 12 N·s, 28/32 at 13 N·s and
+0/32 at 14–16 N·s. A 16 N·s trace showed ankle actions saturating while
+other joint actions remained near zero and neither foot made a meaningful
+recovery step. A 614,400-step continuation with 0.5-rad non-ankle target
+range, 0.12 initial non-ankle exploration, a 3e-6 learning rate and the
+backward-focused push curriculum still failed the strong backward cell and
+regressed at 12 N·s. Another 614,400-step run added foot position, velocity
+and contact observations and also scored 49/64 at 12, 14, 16 and 20 N·s on
+the paired grid; it did not improve the backward cases. A separate 64-case
+probe varied a scripted right-leg hip/knee target, timing and duration after
+a 16 N·s backward push. It produced up to 0.53 m of horizontal foot movement,
+but 0/64 trials reached the final settled hold. These are single-start,
+oracle-timed diagnostics; foot movement alone does not establish a step or
+effective load transfer. Next investigate contact-aware support, reachable
+step placement and landing load transfer rather than assuming additional
+exploration alone will solve the failure. Reports are in the corresponding
+`build/genesis-balance-*/holdout.json` and `fresh.json` files. Keep the
+Genesis-only workflow until a policy has demonstrated idle
+standing and push recovery on broader held-out cases; do not begin Jolt
+fine-tuning merely because these initial tests pass.
+
+### 16. Genesis step-focused reward
+
+The evaluator now tracks post-push airborne motion, relocated landings and COM
+braking; its thresholds and contact limitations are in the
+[training guide](../tools/README.md#experimental-genesis-ragdoll-training).
+The standing checkpoint recorded no qualifying steps on the 12–16 N·s
+backward chest grid.
+
+Two 614,400-step runs used the same seed, randomized starts, a single mixed
+quiet/12–18 N·s push curriculum, foot observations, 0.5-rad limb targets and
+0.12 non-ankle exploration. One added the experimental movement, landing,
+braking and settled-hold rewards; the other was a no-reward control. On 32
+paired held-out starts, both settled 32/32 quiet trials. At 12 N·s the reward
+run settled 29/32 and the control 0/32; both settled 0/32 at 14 and 16 N·s.
+Neither produced a qualifying held-out landing or braking step. The reward
+run logged occasional qualifying landings during training but no braking or
+settled-hold reward. This one-seed comparison does not establish a reliable
+step policy. Reports are `build/genesis-step-reward/holdout.json` and
+`build/genesis-step-control/holdout.json`; retain the earlier standing
+checkpoint while investigating reachable landing and load transfer.
+
+### 17. Oracle-timed Genesis step reference and imitation
+
+**Correction:** The reference benchmark used the standing actor's non-ankle
+actions at the trial's 0.5-rad scale instead of the actor's 0.22-rad scale.
+The reference counts and trajectory labels below describe that earlier,
+mismatched setup and must not be used as evidence for the corrected reference.
+With proper scaling, the selected 16 N·s candidate and its swing ablation both
+settled 0/64 on the same paired starts, with floor-attributed contacts. See
+`build/genesis-step-corrected-candidate223.json` and
+`build/genesis-step-corrected-candidate223-noswing.json`. Previously trained
+actors were evaluated independently, but were trained on affected labels;
+regenerate reference datasets before further imitation training.
+
+With corrected scaling, a new 1,024-candidate search found 21 braking-step
+holds from its fixed starting stance. Candidate 12 then recovered 32/64 varied
+starts at 16 N·s with floor-attributed contact and a final settled hold;
+removing its swing commands recovered 0/64 on the same starts. A separate
+128-start collection yielded 70 corrected braking-step demonstrations. These
+are scripted with known push timing and are not learned-policy results. See
+`build/genesis-step-corrected-candidate12.json` and
+`build/genesis-step-corrected-teacher.json`.
+Imitation trained only on these corrected demonstrations held 32/32 quiet
+starts when motion-gated. On a fresh 32-start backward-push grid, its epoch-30
+checkpoint settled 32/32 at 12 N·s and 2/32 at 14 N·s without a qualifying
+step, and 0/32 at 16 N·s. The epoch-90 and final checkpoints settled none of
+the push trials. These results do not demonstrate learned recovery stepping;
+see `build/genesis-step-corrected-imitation/holdout.json`.
+
+The [joint-target search](../scenes/benchmarks/README.md#genesis-recovery-step-search)
+uses the known push time to probe swing, stance and landing commands without
+root assistance. A 1,024-candidate local search produced five trials with
+both a measured braking step and a final settled hold. One selected reference
+recovered with a braking step in 38/64 varied starts under a 16 N·s backward
+chest push; removing its swing commands gave 0/64 on the same starts. A fresh
+128-start collection yielded 76 braking-step recoveries. Repeating the 64-start
+evaluation with foot-to-floor contact pairs gave the same 38/64 result. Slip
+and impact severity remain unmeasured.
+
+Those successful trajectories train a 147-observation neural actor without
+push-time input. A 30-epoch imitation actor settled in 32/32 held-out quiet
+and 12, 14 and 16 N·s backward trials, but produced no qualifying recovery
+steps. A more heavily weighted 200-epoch actor failed quiet standing before
+the push. These are imitation experiments, not evidence that the actor has
+learned to step. Reference search, ablation, trajectory and actor artifacts
+are under `build/genesis-step-*`; continue Genesis training and evaluate
+quiet standing, held-out pushes and actual braking steps without oracle timing.
+
+A blend triggered by measured backward COM velocity preserved 32/32 quiet
+starts without false triggers, but the initial step actor did not settle on
+any of 32 held-out 16 N·s pushes. A 307,200-step PPO continuation with step
+rewards also settled none of 32 trials at either 12 or 16 N·s, despite
+relocated landings. It logged some braking events during training but no
+settled-hold rewards. Reports are in `build/genesis-step-gated-train/`.
+The trigger uses measured motion, whereas the reference labels still use
+the known push time. Student-state collection produced 128 additional failed
+trajectories with oracle labels; these are not successful demonstrations.
+Continuing imitation from the student on both datasets for 60 epochs yielded
+32/32 quiet holds and 13/32 settled recoveries with a relocated step at 14 N·s
+on the first 32-start set; one met the braking threshold. It settled 0/32 at
+12 and 16 N·s. Earlier checkpoints settled none of these push trials. These
+are motion-triggered results with floor-attributed contacts, not oracle-timed
+inference; they remain a narrow single-seed result. See
+`build/genesis-step-dagger/holdout.json`. On a fresh 64-start set the same
+blend held 64/64 quiet starts and recovered 16/64 at 14 N·s with a relocated
+landing, none meeting the braking threshold; it recovered 0/64 at 12 and
+16 N·s. See `build/genesis-step-dagger/fresh.json`.
+
+A 307,200-step PPO continuation from that student used the same motion gate
+and mixed pushes. It logged some braking events, but no full settled-hold
+rewards during training. On the 32-start holdout, its final checkpoint held
+32/32 quiet trials and settled 4/32 at both 12 and 14 N·s, with relocated
+steps but no braking steps; it settled 0/32 at 16 N·s. Intermediate checkpoints
+also failed to improve consistently across the push grid. Keep the original
+imitation and standing checkpoints for further work; see
+`build/genesis-step-dagger-ppo/holdout.json`.
+
+Another imitation round added 128 failed student trajectories from 16 N·s
+pushes, labeled by the same scripted reference. On the 32-start holdout its
+final actor held 32/32 quiet trials, recovered 2/32 at 12 N·s (one with a
+braking step), and recovered 0/32 at 14 and 16 N·s. Earlier checkpoints
+similarly failed at 14 and 16 N·s. The reduced action error did not translate
+to robust closed-loop recovery; see `build/genesis-step-dagger-round2/`.
+
 ## Remaining work — priorities
 
-### P1 — Consistent touchdown and load transfer
+### P1 — Matched rig and cross-backend control contract
 
-1. Use the replay traces to check whether the predicted foothold remains
-   reachable under the swing torque caps. Test swing time and foot clearance
-   against actual touchdown error on the paired strong-push cases.
-2. Compare load transfer and planted drift for those landings. Test
-   stance-leg support and hip/knee yielding during landing. Check the
-   follow-up step when the first placement leaves the capture point outside
-   support.
-3. Use the same paired seeds and pose-recovery check for each ablation. Keep
-   quiet and light pushes as regressions and report the 14–16 N·s cells
-   separately, including successful braking steps.
+1. Validate and refine the prototype MJCF export of the authored rig and tuner
+   projects. Map body order, collider dimensions and offsets, mass/inertia, rest poses,
+   joint frames, axes, limits, collision filtering and torque caps. Document
+   approximations: Jolt swing/twist constraints and scalar joint coordinates
+   need not have equivalent limits or rotations. Test rest and articulated
+   poses, isolated joint motion and contacts in both solvers.
+2. Define a versioned policy contract covering coordinate frames, joint and
+   action order, target pose, normalization, scaling, clipping, timing and
+   reset state. Start with projected gravity, root angular velocity, joint
+   positions and velocities, target angles and previous actions; add COM,
+   foot or contact features if recovery needs them. Derive the observation
+   size from the rig rather than assuming 45–60 values. Map scalar joint
+   commands to Jolt's parent-local quaternion targets and validate signs and
+   composition on every controlled axis.
+3. Calibrate the existing Jolt frequency/damping motors against Genesis
+   stiffness/damping PD using matched single-joint and whole-rig response
+   tests, including symmetric torque caps, passive forces, saturation and
+   contacts. Record residual mismatch; do not assume the gains map directly.
+   Keep root assistance disabled.
 
-### P2 — Learn step timing and placement, then scale
+### P2 — Genesis training and Jolt fine-tuning
 
-- Use the deterministic controller to seed exploration once it improves
-  hard-push recovery on paired starts. Let PPO adjust landing position and
-  timing within feasible bounds and train on both first and follow-up steps.
-  Keep quiet and light cases in the mix, vary push timing and direction, and
-  include starts near the transition to stepping. Extend to stronger and lateral
-  pushes as the controller handles the existing grid.
-- Keep the acceleration and floor-impulse costs and the one-second settled
-  hold. Use directed COM velocity to diagnose braking. If testing additional
-  shaping, compare predicted capture-point margin relative to usable support
-  and landing compliance one at a time. Allow temporary single support and
-  apply support margins only when contact defines a support area.
-- Run matched comparisons across at least three independent training seeds
-  and report per-seed outcomes on paired held-out trials. Use the optimizer
-  trace for KL, completed epochs and action variance. Scale toward a million
-  policy steps per seed, then further while held-out recovery keeps improving.
+1. Extend the prototype batched Genesis environment and RSL-RL PPO runner to
+   use the validated shared contract. Start from target-pose residual control and a standing
+   curriculum; reward pose tracking, uprightness, height and appropriate COM
+   support, with action-rate, torque and acceleration penalties. Allow single
+   support and do not penalize COM outside a nonexistent contact polygon.
+2. Add seeded torso pushes with varied timing, direction and magnitude, and
+   evaluate friction and link-mass randomization around ±15% as a transfer
+   aid. Begin with small batches and measure scaling toward 2,048–4,096
+   environments where GPU memory and throughput permit. Verify independent
+   resets and disturbances and distinguish timeouts from falls.
+3. Make the Genesis-trained actor trainable in the existing Jolt apparatus.
+   RSL-RL and Stable-Baselines3 checkpoints, network architecture,
+   normalization and observation/action spaces are not interchangeable by
+   default. Implement and test an explicit weight/normalizer transfer or a
+   Jolt environment compatible with the same RSL-RL actor and optimizer;
+   preserve existing Jolt PPO checkpoints and baseline workflows. Check actor
+   output parity before and after transfer, then fine-tune with fresh-world
+   resets and paired held-out evaluations.
+4. Export the final actor and normalization to ONNX and integrate ONNX Runtime
+   inference with Jolt observations and motor targets at 60 Hz. Verify outputs
+   against the training actor and compare complete closed-loop Jolt rollouts.
+   Keep dependencies optional and runtime physics independent of the trainer.
 
-### P3 — Reset and throughput optimization, after learning is verified
+### P3 — Recovery quality and measured scaling
 
-- Profile fresh-world creation, physics stepping, observation copies, NumPy
-  torque evaluation and PPO transfer/update separately at the larger budgets.
-- Compare the existing isolated subprocess worlds with **faster resets** or
-  **spatially batched ragdolls/worlds**, checking no cross-episode contact,
-  state leakage or changes in seeded results. A safe in-place reset requires
-  restoring native held control state **and** application state, not just pose
-  and velocity; if unavailable, retain fresh-world resets.
-- Optimize only if equivalent held-out behavior is maintained and measured
-  throughput makes multi-million-step experiments materially more practical.
+- Use the replay traces to investigate reachable touchdown, placement error,
+  load transfer, planted drift and follow-up steps under strong pushes. Keep
+  impact costs, directed COM-velocity diagnostics and the one-second settled
+  hold; use the existing quiet and light cases as regressions.
+- Compare Genesis, transferred and Jolt-fine-tuned policies on paired held-out
+  starts and disturbances. Run at least three independent training seeds and
+  report the 14–16 N·s cells and braking steps separately. Measure throughput,
+  wall time, memory and recovery outcomes; neither training time nor inference
+  latency is assumed from another machine.
+- Profile the bottlenecks before optimizing. Retain Jolt fresh-world resets
+  unless a replacement restores native held-control and application state and
+  demonstrates equivalent seeded behavior without cross-episode leakage.
 
 ## Subsequent capability roadmap
 
@@ -476,15 +700,15 @@ unverified learning setup.
 3. **Bracing and getting up:** Train fall protection and prone/supine recovery
    separately, then transitions back to standing/tracking. Keep episodes active
    through hand/knee contact; prioritize limiting head and torso impacts.
-4. **Graaal runtime:** Export policy weights and observation normalization to
-   `.npz`, implement batched NumPy MLP inference, connect Jolt transforms to
-   ECS/skin, and check training/runtime parity at 120/60 Hz. Support animation
-   changes, impulses and continuously varying motor strength.
+4. **Graaal integration:** Connect the verified ONNX/Jolt controller to
+   ECS/skin. Support animation changes, impulses and continuously varying motor
+   strength after training/runtime parity has been established.
 
 ## Evaluation rules
 
-Use paired starts, a held-out disturbance grid and matched budgets for the
-classical, historical learned and new direct-control policies. Report failures
+Use paired starts and a held-out disturbance grid for the classical, historical
+learned, Genesis-trained, transferred and Jolt-fine-tuned policies. Report
+training budgets and simulator-specific throughput alongside outcomes. Report failures
 by **direction × application body × impulse**, not only aggregate success.
 The existing [push benchmark](../scenes/benchmarks/README.md#ragdoll-push-recovery)
 is the reference; keep its recorded 2/4/8/12 N·s comparison and extend the
