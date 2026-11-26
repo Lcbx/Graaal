@@ -649,6 +649,29 @@ buffers. Submit before recording through the same pass again or calling
 `poses.close()`. Coordinate owner allocation and release with draw membership
 and recorded GPU work.
 
+#### Frustum-based pose selection
+
+`frustum_pose_mask` tests conservative animated spheres against the draw view
+on the CPU. Supply world-space centers in playback row order, using the same
+presentation transforms as the draws. Pass one world-space radius for the
+batch or an array of radii in the same row order. Spheres that touch the frustum
+stay selected.
+
+```python
+from graaal.Animation.CrowdVisibility import frustum_pose_mask
+
+view_projection = camera.view() @ camera.projection(width / height)
+visible = frustum_pose_mask(view_projection, render_centers, render_radii)
+poses.record(commands, owners, playback, parameters, pose_mask=visible)
+```
+
+`pose_mask` selects rows to evaluate and write through both pose evaluators.
+It composes with `gpu_mask`, which controls evaluator preference among those
+rows. Keep advancing all playback rows and record a current pose before a
+newly visible owner is drawn, including on frames without a simulation tick.
+If one evaluation supplies poses for multiple views, use the union of their
+masks.
+
 #### Distance-based evaluator selection
 
 `DistancePoseLod` selects a GPU preference using world-space camera distance.
@@ -676,6 +699,39 @@ the policy when the camera or owner positions move, including render frames
 without a simulation tick. A changed mask can require recording a pose again
 at the same playback time.
 
+#### Automatic skeleton LOD
+
+`reduce_crowd_skeleton` generates a compact skeleton, clips and remapped
+primitives from an imported skin. It greedily merges leaf influences into
+their parents within a conservative vertex displacement budget over the
+supplied clip frames. Roots and ancestors of surviving joints are retained.
+The result includes a source-to-compact joint map. If the budget allows no
+merge, the function returns `None`.
+
+```python
+from graaal.Animation.CrowdGraphValidation import validate_reduced_crowd_graph
+from graaal.Animation.CrowdSkeletonLod import reduce_crowd_skeleton
+
+clips = tuple(graph.clips[i] for i in range(len(graph.clips)))
+variant = reduce_crowd_skeleton(graph.plan.skeleton, clips, primitives, error_budget=0.035)
+report = None if variant is None else validate_reduced_crowd_graph(graph, variant, error_budget=0.035)
+poses = GraphPosePass(palette, max_instances, eligibility=report)
+```
+
+Validation measures the combined reduction, bake and model-space blending
+error on skinned vertex positions against the exact source graph. It samples
+states and transitions on the same phase, blend and rate grid as the
+full-rig validator. Use a budget in mesh units appropriate to the viewing
+distance. The report describes the sampled base poses. Normals and
+application-owned pose changes require separate validation.
+
+Use the original mesh and palette ranges sized for the source rig with `GraphPosePass`.
+The crowd pass evaluates only the compact joints and expands their matrices
+to source slots through the joint map. Exact CPU poses can then use those
+same slots when distance or graph eligibility changes. The compact
+primitives can also be drawn with compact palette ranges using a low-level
+`CrowdPosePass` built from the reduced pool.
+
 #### Compose custom pose paths
 
 `CrowdGraphRouter(report)` from `graaal.Animation.CrowdGraphSamples` exposes the
@@ -693,7 +749,10 @@ Allocate the owner ranges in a `SkinMatrixBuffer` first. Call
 `crowd.record(commands, owners, ids, times, weights)` with one to four samples
 per owner, clamped clip times, and normalized weights. The compute pass writes
 directly into those palette ranges. Each batch uses one rig and shares the
-palette with disjoint CPU-evaluated ranges. Submit before calling `record`
+palette with disjoint CPU-evaluated ranges. Pass `palette_joint_map` when
+each output palette slot should copy the matrix of a baked joint. The map
+length must match each allocated range. The router's report supplies the
+map as `report.joint_map` for reduced pools. Submit before calling `record`
 again on the same pass, and release ranges after their use by recorded work.
 The palette's CPU mirror does not contain compute results. Call `crowd.close()`
 to release the pass's buffers.

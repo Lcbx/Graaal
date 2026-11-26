@@ -1,7 +1,7 @@
 """Measure graph poses against the baked model-space crowd evaluator on the CPU."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from math import prod
 from operator import index
@@ -15,15 +15,17 @@ from .AnimationGraphPlayback import AnimationGraphPlayback, state_clock_clip, st
 from .AnimationStateMachine import AnimationStateMachine
 from .BakedClipPool import BakedClipPool
 from .CrowdGraphSamples import CrowdGraphBatch, pack_crowd_samples, playback_crowd_samples, state_crowd_samples
-from .SkeletalAnimation import model_matrices
+from .CrowdSkeletonLod import CrowdSkeletonLod, _skin_inputs
+from .SkeletalAnimation import model_matrices, skin_matrices
 
 
 _BATCH_SIZE = 256
+_PoseErrors = Callable[[tuple[np.ndarray, np.ndarray, np.ndarray], CrowdGraphBatch], tuple[int, np.ndarray]]
 
 
 @dataclass(frozen=True, slots=True)
 class CrowdEligibility:
-	"""Sampled eligibility for a state or an authored transition."""
+	"""Sampled state or transition eligibility and its maximum joint or vertex position error."""
 	samples: int
 	unsupported_samples: int
 	max_position_error: float | None
@@ -46,6 +48,7 @@ class CrowdGraphEligibility:
 	transitions: tuple[CrowdTransitionEligibility, ...]
 	graph: CompiledAnimationGraph = field(repr=False, compare=False)
 	pool: BakedClipPool = field(repr=False, compare=False)
+	joint_map: np.ndarray | None = field(default=None, repr=False, compare=False)
 
 
 def _sample_count(value: int, minimum: int, name: str) -> int:
@@ -129,14 +132,14 @@ def _measure(batches: Iterable[tuple[int, np.ndarray]], budget: float) -> CrowdE
 	return CrowdEligibility(count, unsupported, maximum, eligible)
 
 
-def _state_errors(graph: CompiledAnimationGraph, pool: BakedClipPool, state: int, phases: np.ndarray, axes: Mapping[int, np.ndarray]) -> Iterator[tuple[int, np.ndarray]]:
+def _state_errors(graph: CompiledAnimationGraph, measure_pose: _PoseErrors, state: int, phases: np.ndarray, axes: Mapping[int, np.ndarray]) -> Iterator[tuple[int, np.ndarray]]:
 	for parameters, (times,) in _sample_batches(graph, axes, phases):
 		exact = state_pose(graph, state, times, parameters)
 		batch = pack_crowd_samples(*state_crowd_samples(graph, state, times, parameters))
-		yield _position_errors(pool, exact, batch)
+		yield measure_pose(exact, batch)
 
 
-def _transition_errors(graph: CompiledAnimationGraph, pool: BakedClipPool, source: int, target: int, duration: float,
+def _transition_errors(graph: CompiledAnimationGraph, measure_pose: _PoseErrors, source: int, target: int, duration: float,
 	phases: np.ndarray, axes: Mapping[int, np.ndarray], fade_samples: int, rates: np.ndarray,
 ) -> Iterator[tuple[int, np.ndarray]]:
 	# Guards select an edge, but parameters can change freely once a fade starts.
@@ -147,7 +150,7 @@ def _transition_errors(graph: CompiledAnimationGraph, pool: BakedClipPool, sourc
 		playback.reset(source, times=starts, speeds=speeds)
 		playback.advance(elapsed, parameters)
 		batch = playback_crowd_samples(playback, parameters, np.arange(len(parameters)))
-		yield _position_errors(pool, playback.pose(parameters), batch)
+		yield measure_pose(playback.pose(parameters), batch)
 
 
 def validate_crowd_graph(graph: CompiledAnimationGraph, pool: BakedClipPool, *, error_budget: float,
@@ -162,6 +165,51 @@ def validate_crowd_graph(graph: CompiledAnimationGraph, pool: BakedClipPool, *, 
 	position error is within budget. This finite sweep covers base poses before
 	application-owned layers, root anchoring, IK or other pose modifications.
 	"""
+	if pool.skeleton is not graph.plan.skeleton or len(pool.clips) != len(graph.clips) or any(clip is not graph.clips[i] for i, clip in enumerate(pool.clips)):
+		raise ValueError("pool must contain the graph's skeleton and clips in compiled ID order")
+	return _validate(graph, pool, lambda exact, batch: _position_errors(pool, exact, batch), error_budget, phase_samples, blend_samples, fade_samples, playback_rates)
+
+
+def validate_reduced_crowd_graph(graph: CompiledAnimationGraph, lod: CrowdSkeletonLod, *, error_budget: float,
+	fps: float = 30, phase_samples: int = 16, blend_samples: int = 5, fade_samples: int = 9, playback_rates: ArrayLike = (1.0,),
+) -> CrowdGraphEligibility:
+	"""Bake the reduced clips and measure their skinned vertex displacement against full CPU poses.
+
+	Use the same sampled graph grid as validate_crowd_graph. The returned
+	pool uses the reduced mesh's joint indices. The report combines reduction,
+	bake and model-space blending error in source units.
+	"""
+	rig = graph.plan.skeleton
+	if lod.source_skeleton is not rig or len(lod.source_clips) != len(graph.clips) or any(clip is not graph.clips[i] for i, clip in enumerate(lod.source_clips)):
+		raise ValueError("LOD must use the graph's source skeleton and clips in compiled ID order")
+	pool = BakedClipPool(lod.skeleton, lod.clips, fps=fps)
+	bones = len(rig.parents)
+	points, joints, weights = _skin_inputs(lod.source_primitives, bones)
+	# Build weighted bind positions once. Skinning differences can then use a
+	# matrix product without gathering a transform per vertex and influence.
+	weighted_points = np.zeros((len(points), bones, 4), dtype=np.float32)
+	np.add.at(weighted_points, (np.arange(len(points))[:, None], joints), weights[..., None] * points[:, None])
+	basis = weighted_points.reshape(len(points), bones * 4)
+
+	def measure_pose(pose: tuple[np.ndarray, np.ndarray, np.ndarray], batch: CrowdGraphBatch) -> tuple[int, np.ndarray]:
+		count = len(batch.rows)
+		exact = skin_matrices(rig, model_matrices(rig, *(values[batch.rows] for values in pose)))
+		reduced = skin_matrices(lod.skeleton, pool.model(batch.clip_ids, batch.times, batch.weights))
+		difference = (reduced[:, lod.joint_map] - exact).transpose(0, 2, 1, 3).reshape(count * 3, bones * 4)
+		errors = np.zeros(count, dtype=np.float32)
+		for start in range(0, count, 16):
+			end = min(start + 16, count)
+			displacement = (difference[3 * start:3 * end] @ basis.T).reshape(end - start, 3, len(points))
+			errors[start:end] = np.sqrt(np.max(np.sum(displacement ** 2, axis=1), axis=1))
+		return len(pose[0]) - count, errors
+
+	report = _validate(graph, pool, measure_pose, error_budget, phase_samples, blend_samples, fade_samples, playback_rates)
+	return replace(report, joint_map=lod.joint_map)
+
+
+def _validate(graph: CompiledAnimationGraph, pool: BakedClipPool, measure_pose: _PoseErrors, error_budget: float,
+	phase_samples: int, blend_samples: int, fade_samples: int, playback_rates: ArrayLike,
+) -> CrowdGraphEligibility:
 	if not np.isfinite(error_budget) or error_budget < 0: raise ValueError("error_budget must be finite and nonnegative")
 	phase_samples = _sample_count(phase_samples, 1, "phase_samples")
 	blend_samples = _sample_count(blend_samples, 3, "blend_samples")
@@ -169,15 +217,13 @@ def validate_crowd_graph(graph: CompiledAnimationGraph, pool: BakedClipPool, *, 
 	rates = np.asarray(playback_rates, dtype=np.float64)
 	if rates.ndim != 1 or not len(rates) or not np.isfinite(rates).all() or np.any(rates < 0):
 		raise ValueError("playback_rates must be a nonempty row of finite nonnegative rates")
-	if pool.skeleton is not graph.plan.skeleton or len(pool.clips) != len(graph.clips) or any(clip is not graph.clips[i] for i, clip in enumerate(pool.clips)):
-		raise ValueError("pool must contain the graph's skeleton and clips in compiled ID order")
 	phase_times = {state: _phase_times(graph, state, phase_samples) for state in graph.state_ids.values()}
-	states = {name: _measure(_state_errors(graph, pool, state, phase_times[state], _parameter_axes(graph, blend_samples, state)), error_budget)
+	states = {name: _measure(_state_errors(graph, measure_pose, state, phase_times[state], _parameter_axes(graph, blend_samples, state)), error_budget)
 		for name, state in graph.state_ids.items()}
 	names = {state: name for name, state in graph.state_ids.items()}
 	transitions = []
 	for source, target, duration in graph.machine.transitions:
 		axes = _parameter_axes(graph, blend_samples, source, target)
-		errors = _transition_errors(graph, pool, source, target, duration, phase_times[source], axes, fade_samples, rates)
+		errors = _transition_errors(graph, measure_pose, source, target, duration, phase_times[source], axes, fade_samples, rates)
 		transitions.append(CrowdTransitionEligibility(names[source], names[target], duration, _measure(errors, error_budget)))
 	return CrowdGraphEligibility(float(error_budget), MappingProxyType(states), tuple(transitions), graph, pool)

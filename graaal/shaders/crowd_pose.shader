@@ -17,6 +17,9 @@ storage<0, 1, read> clips: array<BakedClip>;
 storage<0, 2, read> inverse_bind: array<mat4x4f>;
 storage<0, 3, read> rows: array<CrowdRow>;
 storage<0, 4, read_write> palette: array<SkinMatrix>;
+{% if PARAMS.get("mapped_palette", false) %}
+storage<0, 5, read> mapped_joints: array<u32>;
+{% endif %}
 
 struct Pose {
 	rotation: vec4f,
@@ -76,5 +79,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 		translation_scale += poses[i].translation_scale * weight;
 	}
 	let skin = transpose(affine(normalize(rotation), translation_scale) * inverse_bind[id.x]);
-	palette[row.base + id.x] = SkinMatrix(skin[0], skin[1], skin[2]);
+	let matrix = SkinMatrix(skin[0], skin[1], skin[2]);
+{% if PARAMS.get("mapped_palette", false) %}
+	for (var i = mapped_joints[id.x]; i < mapped_joints[id.x + 1u]; i++) {
+		palette[row.base + mapped_joints[bones + 1u + i]] = matrix;
+	}
+{% else %}
+	palette[row.base + id.x] = matrix;
+{% endif %}
 }

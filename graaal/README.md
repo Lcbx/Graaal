@@ -121,6 +121,8 @@ module names relative to their respective packages.
 | `AnimationGraph` | `AnimationGraphDefinition.compile` validates editable named states, transitions, layered tasks and clip-pair sync settings into existing state-machine, pose-plan and sync resources. |
 | `AnimationGraphPlayback` | `AnimationGraphPlayback.advance/pose/reset` plays batches of clip/1D/2D graph states with independent clocks, synchronized fades and optional state events. |
 | [AnimationLod](skeletal_animation.md#distance-based-evaluator-selection) | `DistancePoseLod` computes a per-owner GPU preference using camera distance and hysteresis. |
+| [CrowdVisibility](skeletal_animation.md#frustum-based-pose-selection) | `frustum_pose_mask` selects crowd pose rows from conservative world-space bounds and the draw view. |
+| [CrowdSkeletonLod](skeletal_animation.md#automatic-skeleton-lod) | Generate a compact rig, matching clips and remapped weights from imported skins. |
 | `SkeletalGltf` | `load_skinned_gltf` imports a supported subset of skinned glTF and resamples joint tracks into CPU animation resources. |
 | `Materials.MaterialSkinning` | `MaterialSkinningAdapter` maps owner IDs and poses to independently deformed material meshes. |
 | `Math` | `Vec2/Vec3/Vec4` are NumPy vectors; `Camera.view/projection/direction` supplies camera values; `extract_frustum_planes` derives culling planes. |
