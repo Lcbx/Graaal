@@ -2,14 +2,14 @@
 
 ## Project
 Python game engine built on wgpu and numpy. It has an ECS core and a set of rendering tools that each work on their own.
-See [README.md](README.md) for an overview and [graaal/README.md](graaal/README.md)
-for APIs and architecture.
+See [README.md](README.md) for an overview and [graaal/README.md](graaal/README.md) for APIs and architecture.
 
 ## Navigation and skills
-Prefer [tools/module_inspection.py](tools/module_inspection.py) for discovering
-Python APIs. Use focused text searches, AST inspection or direct file reads when
-module inspection cannot answer the question. Use the relevant repo-local skill for its workflow and
-guide/test map; read only references relevant to the task:
+Use the [module inspection tool](tools/module_inspection.py) for discovering Python APIs.
+See the [guide](tools/module_inspection.md) for usage instructions.
+Fall back to focused text searches, AST inspection or direct file reads when module inspection cannot answer the question.
+If you believe teh module inspection is missing functionality / could have a better API / usability, point it out.
+Use the relevant repo-local skill for its workflow and guide/test map; read only references relevant to the task:
 
 - [Repository refactoring](.agents/skills/graaal-repo-refactor/SKILL.md): navigation, downstream impact, directory structure, imports and exports.
 - [Documentation](.agents/skills/graaal-documentation/SKILL.md): API guides, examples, links and plan/status documents.

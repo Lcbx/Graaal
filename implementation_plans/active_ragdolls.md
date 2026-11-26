@@ -22,9 +22,9 @@ already exist; this file tracks **passive mechanics and learned control**.
 
 ## Implementation history and findings
 
-Completed work is summarized here, rather than repeated as future tasks. The
-numbers below describe the recorded Windows x64 runs, not cross-platform or
-full-character performance guarantees.
+The measurements below come from recorded Windows x64 runs. The current
+priority is [a contact-aware recovery step](#p1--contact-aware-recovery-step)
+for the strong pushes that still defeat the standing controllers.
 
 <a name="backend-validation-status"></a>
 <a name="authored-passive-humanoid-and-contact-scenarios"></a>
@@ -120,7 +120,7 @@ Relevant reports: `build/standing-regimen-evaluation.json`,
 [training guide](../tools/README.md#ragdoll-standing-task) and
 [push benchmark](../scenes/benchmarks/README.md#ragdoll-push-recovery).
 
-### 4. Direct continuous motor control (P0 implemented)
+### 4. Direct continuous motor control
 
 `--action-space direct` gives the MLP 30 bounded joint target offsets at
 60 Hz on the built-in humanoid. The free pelvis, passive springs, soft limits
@@ -146,7 +146,7 @@ continuous ankle targets at 20 Hz motor frequency and 0.8 damping. The
 PPO then controls the same outputs while collecting a mix of quiet, light
 and hard episodes. Each environment starts from stance and runs at 120/60 Hz.
 
-### 5. Warm-start direct control (P1 gate met)
+### 5. Warm-start direct control
 
 Paired held-out starts begin at seed 58300 with up to 0.025 rad tilt and
 0.1 rad/s spin. Recovery time includes the one-second settled hold. The
@@ -274,10 +274,9 @@ after at least 0.05 s out of contact.
 Every successful trial had at least two sustained steps, and all recoveries
 finished within five seconds. In the final training logs the last 100
 episodes averaged 2.72 and 2.78 seconds from the end of the scripted swing.
-The longer window offered little extra practice on this grid. The reference
-still prescribes one swing and overwrites both hip-pitch targets after its
-loading phase. This comparison shows the timing of subsequent landings for
-that controller. Impact peaks stayed similar across the three checkpoints.
+The longer window offered little extra practice on this grid. All three
+runs used a fixed first swing and scripted hip pitch through and after
+loading. Impact peaks stayed similar across the three checkpoints.
 The full reports are `build/ragdoll-backstep-impact-{prior,7s,12s}-holdout.json`.
 
 ### 9. Target-pose hold and post-landing hip control
@@ -332,58 +331,89 @@ seed provides no evidence that the new signal improves recovery. Reports are
 `build/ragdoll-backstep-touchdown-holdout.json` and
 `build/ragdoll-backstep-touchdown-control-holdout.json`.
 
+### 11. Scaling the Backstep training budget
+
+The 139,776-step control checkpoint continued for 360,448 policy steps in
+three stages with rollout seeds 99, 100 and 101. Training used the released
+hip targets, the same backward chest push curriculum and a learning rate of
+0.00005. Eight workers collected 1,024 steps per rollout with five PPO epochs
+scheduled per rollout. The optimizer completed 1,759 of 1,760 full epochs.
+
+Each checkpoint ran the same 11–16 N·s grid on the original starts
+60700–60709 and on fresh starts 61700–61709.
+
+| Cumulative steps | Original recoveries | Fresh recoveries | 16 N·s recoveries across both sets |
+| ---: | ---: | ---: | ---: |
+| 139,776 | 12/60 | 9/60 | 1/20 |
+| 205,312 | 10/60 | 10/60 | 0/20 |
+| 336,384 | 14/60 | 13/60 | 2/20 |
+| 500,224 | 13/60 | 13/60 | 1/20 |
+
+Fresh-start mean peak COM acceleration and estimated floor impulse fell
+from 120.59 m/s² and 36.96 N·s to 100.11 m/s² and 28.88 N·s. The highest
+combined recovery count was 27/120 at 336,384 steps in
+`build/ragdoll-backstep-scale-336384-seed100.zip`. The latest checkpoint,
+`build/ragdoll-backstep-scale-500224-seed101.zip`, recovered 26/120. These
+stages form one checkpoint lineage. The viewer discovers the paired reports as
+`build/ragdoll-backstep-scale-*-holdout.json` and
+`build/ragdoll-backstep-scale-*-fresh.json`.
+
+### 12. First-touchdown analysis
+
+Across both benchmark start sets for the 336,384-step checkpoint, all 60
+trials at 14–16 N·s recorded a landing. Median first touchdown was 0.325 s
+after the push. In 5/60 trials, horizontal COM speed dropped by at least
+0.02 m/s between first touchdown and 0.2 s later. This counts the speed
+criterion at the first landing across all outcomes. The benchmark's braking-step
+recovery metric also requires displacement, continuous contact and a later
+settled hold, and can qualify a subsequent landing.
+
+Backstep schedules the first swing from the known push and fixes its timing,
+swing side and landing offset for each reference variant. PPO first changes
+the commands after the swing phase. Separating a poorly placed foot from a
+foot that fails to take load calls for traces of the predicted capture point,
+planned versus actual touchdown, per-foot load and slip.
+[Backstep implementation](../tools/ragdoll_recovery_step.py)
+
 ## Remaining work — priorities
 
-### Extend the recovery range
+### P1 — Contact-aware recovery step
 
-Keep the original quiet and push grids as regression checks. Oversample
-14–18 N·s pushes while keeping quiet, light and other-direction starts in
-training. Learn swing timing and foot placement from contact and COM state.
-Seek reliable relocations with effective braking in the stronger backward
-and lateral cells. Use paired checkpoints and inspect target
-saturation, foot clearance, action ranges, contact geometry and COM/capture
-traces when the stronger cases plateau.
+1. Build a deterministic baseline using `RecoveryStep`'s capture estimate,
+   contact state and foot-space controller. Use the capture point relative to
+   planted support to decide when to step. Predict its position at touchdown
+   and select a feasible swing foot, foothold and duration together. Reassess
+   support when the new foot takes load and allow a follow-up step if needed.
+2. Compare the adaptive and fixed references without a learned residual on
+   the same 11–16 N·s backward chest pushes and both recorded start sets.
+   Include the existing Backstep PPO as a reference. Check the original quiet
+   and light-push grids for regressions and report the 14–16 N·s cells separately.
+3. Record and show the planted support area, capture point and margin, planned
+   and actual touchdown, estimated load per foot, slip and COM velocity along
+   the push. Inspect the moments before the push, at touchdown, 0.2 s later and
+   at later landings. Use foot clearance and motor saturation to diagnose a
+   missed target. If the foot reaches the target but slips or fails to take
+   load, test stance-leg support and hip/knee yielding during landing.
 
-### P2 — Touchdown braking and dense learning signal
+### P2 — Learn step timing and placement, then scale
 
-Direct control now measures these terms every control step and logs their
-episode totals. An initial ablation compared the three new terms as a group.
-The next comparison needs enough relocated touchdowns to exercise the
-compliance term and measure braking through landing.
+- Use the deterministic controller to seed exploration once it improves
+  hard-push recovery on paired starts. Let PPO adjust landing position and
+  timing within feasible bounds and train on both first and follow-up steps.
+  Keep quiet and light cases in the mix, vary push timing and direction, and
+  include starts near the transition to stepping. Extend to stronger and lateral
+  pushes as the controller handles the existing grid.
+- Keep the acceleration and floor-impulse costs and the one-second settled
+  hold. Use directed COM velocity to diagnose braking. If testing additional
+  shaping, compare predicted capture-point margin relative to usable support
+  and landing compliance one at a time. Allow temporary single support and
+  apply support margins only when contact defines a support area.
+- Run matched comparisons across at least three independent training seeds
+  and report per-seed outcomes on paired held-out trials. Use the optimizer
+  trace for KL, completed epochs and action variance. Scale toward a million
+  policy steps per seed, then further while held-out recovery keeps improving.
 
-- **Horizontal COM braking:** reward reductions in horizontal COM speed after
-  the impulse, particularly over the first 0.2 s after a new touchdown;
-  penalize continuing or increasing speed away from feasible support.
-- **Compliant landing:** reward controlled hip/knee yielding on impact and
-  subsequent stabilization; avoid encouraging an unrecoverable crouch. Track
-  foot slip, contact impulse, peak deceleration and excessive joint motion.
-- **Support recovery:** reward improving signed COM-to-support-area margin
-  immediately after foot contact and reducing predicted capture-point deficit.
-  Use real contact state to form a changing support area; mask unsupported
-  margins while airborne, and allow temporary single support during a step.
-- **Keep** uprightness, appropriate standing height, action smoothness and
-  small effort penalties. Retain the continuous one-second settled hold as
-  **evaluation / terminal success**, not the principal training signal.
-
-Inspect pre-impact, touchdown, +0.2 s and later recovery traces. Ablate
-braking, compliance and margin individually once the policy attempts
-relocations. Compare their effects on strong pushes and quiet and light starts.
-
-### P3 — Diagnose PPO KL stopping, then increase training budget
-
-1. Use `--optimizer-trace` for minibatch KL, accepted epochs per rollout,
-   clip fraction, entropy loss, action variance, value loss and explained
-   variance. Training logs include the reward components. Compare the effects
-   of changes on both accepted updates and held-out recovery.
-2. Compare learning rate, target KL, clip range, optimizer epochs and batch
-   size in controlled runs. Do **not** simply disable KL protection; verify
-   that updates become effective and hard-push validation improves.
-3. With the P1 gate met, scale to **500,000–1,000,000+ policy steps** with
-   **at least three training seeds**, using paired held-out evaluations and
-   checkpoints. Extend toward multi-million-step runs while success and
-   stability continue to improve. Report per-seed spread.
-
-### P4 — Reset and throughput optimization, after learning is verified
+### P3 — Reset and throughput optimization, after learning is verified
 
 - Profile fresh-world creation, physics stepping, observation copies, NumPy
   torque evaluation and PPO transfer/update separately at the larger budgets.
@@ -426,13 +456,15 @@ hard `−Z` cases with multiple starts and training seeds.
 Use the [3D recovery viewer](../scenes/benchmarks/README.md#view-recovery-trials-in-3d)
 to inspect quiet-standing or push cases and compare controllers on the same seed.
 `python -m scenes.ragdoll_recovery_viewer` discovers replayable reports in `build/`.
-Automatic discovery found both impact-reward runs, and each initial replay
-matched its recorded trial.
+Use **Scenario group** to select a report, then pick the controller, case and
+seed. The 16 N·s recoveries at seed 60700 for the 336,384-step checkpoint and
+seed 61701 for the 500,224-step checkpoint matched their recorded recovery times
+on replay.
 
 | Scenario | Initial acceptance / diagnostics |
 | --- | --- |
 | Quiet standing | At least **27/30** held-out ten-second trials; stable foot support, COM speed <0.05 m/s, pelvis height ≥90% of reference and pelvis/chest up cosine ≥0.95 in the final second. Report drift, support margin and slip. |
-| Push recovery | For the original 0.5/1/2 N·s grid, target **≥90%** recovery. A recovery requires one continuous second of settled stance within **5 s** after the push. Also report hard `−Z` success separately, time to arrest COM velocity, touchdown margin, landing displacement and fall/step counts. |
+| Push recovery | Target **≥90%** on the original 0.5/1/2 N·s grid. For Backstep pose recovery, require a one-second settled hold within **5 s** after the push, with up to one extra second to finish a hold already underway. Report hard `−Z` success separately, time to arrest COM velocity, landing displacement, contact duration, touchdown margin and fall/step counts. |
 | Platform edges / walls | Report falls, landing positions, return to foot support, arm/forearm contacts, wall load and release; compare whole-body with leg-only ablations. |
 | Motion tracking | Completion, joint and end-effector errors, heading/speed errors, contact timing and slip. |
 | Bracing / get-up | Peak head/torso impact vs passive baseline; prone/supine success, time to stand and return to tracking. |
@@ -445,7 +477,19 @@ steps, optimizer/KL statistics, throughput, per-cell outcomes and replay traces.
 
 ## Research references
 
-- [Ferigo et al. (2021): standing and push recovery](https://arxiv.org/html/2104.14534) — whole-body PPO, COM/contact feedback and stepping; substantially larger reported training budget than these pilots.
+- Egle et al. use a dynamics model to plan reachable footholds while RL adapts
+  timing and the reachable step region. Their simulated humanoid used crossover
+  steps under stronger lateral pushes. This supports testing foot placement and
+  timing together. [Step adaptation for push recovery](https://arxiv.org/html/2411.01000)
+- Poddar et al. use capture point, COM state and centroidal momentum for training.
+  Their policy learned ankle, hip and stepping responses in simulation, with
+  preliminary hardware tests. Capture point gives Graaal a way to measure how
+  motion relates to usable support before and after a landing.
+  [Balance-informed humanoid recovery](https://arxiv.org/html/2603.08619v1)
+- Ferigo et al. used whole-body PPO with randomized disturbances and foot-load
+  observations on iCub in simulation. Each training run collected 20 million
+  agent steps, about 40 times the current Backstep budget in policy steps.
+  [Whole-body push-recovery learning](https://arxiv.org/html/2104.14534)
 - [DeepMimic](https://arxiv.org/html/1804.02717) and [DReCon](https://static-wordpress.ubisoft.com/montreal.ubisoft.com/wp-content/uploads/2019/11/13214229/DReCon.pdf) — pose/velocity tracking, reference initialization and game-directed animation control.
 - [Environment design ablations](https://arxiv.org/html/2010.04304) — controlled comparisons of observations, rewards and action design.
 - [AMP](https://arxiv.org/abs/2104.02180) and [PHC](https://arxiv.org/html/2305.06456) — potential later style and recovery techniques, **not** first prerequisites.
